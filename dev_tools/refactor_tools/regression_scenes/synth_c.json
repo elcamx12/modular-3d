@@ -1,0 +1,206 @@
+{
+  "version": 1,
+  "n_floors": 6,
+  "components": [
+    {
+      "id": 1,
+      "comp_type": "module",
+      "position": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rotation": 0,
+      "dimensions": {
+        "width": 3400.0,
+        "depth": 3400.0,
+        "height": 3400.0
+      },
+      "anchor": 0,
+      "group_id": 1,
+      "floor_index": 0,
+      "sub_index": 0,
+      "anchor_edge_id": -1,
+      "mid_beam_level": null,
+      "merge_with_panel": false,
+      "merged_fp_id": null,
+      "merged_wall_ids": [],
+      "parent_id": 0
+    },
+    {
+      "id": 2,
+      "comp_type": "module",
+      "position": [
+        0.0,
+        0.0,
+        3420.0
+      ],
+      "rotation": 0,
+      "dimensions": {
+        "width": 3400.0,
+        "depth": 3400.0,
+        "height": 3400.0
+      },
+      "anchor": 0,
+      "group_id": 1,
+      "floor_index": 1,
+      "sub_index": 0,
+      "anchor_edge_id": -1,
+      "mid_beam_level": null,
+      "merge_with_panel": false,
+      "merged_fp_id": null,
+      "merged_wall_ids": [],
+      "parent_id": 0
+    },
+    {
+      "id": 3,
+      "comp_type": "module",
+      "position": [
+        0.0,
+        0.0,
+        6840.0
+      ],
+      "rotation": 0,
+      "dimensions": {
+        "width": 3400.0,
+        "depth": 3400.0,
+        "height": 3400.0
+      },
+      "anchor": 0,
+      "group_id": 1,
+      "floor_index": 2,
+      "sub_index": 0,
+      "anchor_edge_id": -1,
+      "mid_beam_level": null,
+      "merge_with_panel": false,
+      "merged_fp_id": null,
+      "merged_wall_ids": [],
+      "parent_id": 0
+    },
+    {
+      "id": 4,
+      "comp_type": "module",
+      "position": [
+        0.0,
+        0.0,
+        10260.0
+      ],
+      "rotation": 0,
+      "dimensions": {
+        "width": 3400.0,
+        "depth": 3400.0,
+        "height": 3400.0
+      },
+      "anchor": 0,
+      "group_id": 1,
+      "floor_index": 3,
+      "sub_index": 0,
+      "anchor_edge_id": -1,
+      "mid_beam_level": null,
+      "merge_with_panel": false,
+      "merged_fp_id": null,
+      "merged_wall_ids": [],
+      "parent_id": 0
+    },
+    {
+      "id": 5,
+      "comp_type": "module",
+      "position": [
+        0.0,
+        0.0,
+        13680.0
+      ],
+      "rotation": 0,
+      "dimensions": {
+        "width": 3400.0,
+        "depth": 3400.0,
+        "height": 3400.0
+      },
+      "anchor": 0,
+      "group_id": 1,
+      "floor_index": 4,
+      "sub_index": 0,
+      "anchor_edge_id": -1,
+      "mid_beam_level": null,
+      "merge_with_panel": false,
+      "merged_fp_id": null,
+      "merged_wall_ids": [],
+      "parent_id": 0
+    },
+    {
+      "id": 6,
+      "comp_type": "module",
+      "position": [
+        0.0,
+        0.0,
+        17100.0
+      ],
+      "rotation": 0,
+      "dimensions": {
+        "width": 3400.0,
+        "depth": 3400.0,
+        "height": 3400.0
+      },
+      "anchor": 0,
+      "group_id": 1,
+      "floor_index": 5,
+      "sub_index": 0,
+      "anchor_edge_id": -1,
+      "mid_beam_level": null,
+      "merge_with_panel": false,
+      "merged_fp_id": null,
+      "merged_wall_ids": [],
+      "parent_id": 0
+    },
+    {
+      "id": 7,
+      "comp_type": "vertical_module",
+      "position": [
+        3420.0,
+        0.0,
+        0.0
+      ],
+      "rotation": 0,
+      "dimensions": {
+        "width": 3400.0,
+        "depth": 3400.0,
+        "height": 10240.0
+      },
+      "anchor": 0,
+      "group_id": 2,
+      "floor_index": 0,
+      "sub_index": 0,
+      "anchor_edge_id": -1,
+      "mid_beam_level": null,
+      "merge_with_panel": false,
+      "merged_fp_id": null,
+      "merged_wall_ids": [],
+      "parent_id": 0
+    },
+    {
+      "id": 8,
+      "comp_type": "vertical_module",
+      "position": [
+        3420.0,
+        0.0,
+        10260.0
+      ],
+      "rotation": 0,
+      "dimensions": {
+        "width": 3400.0,
+        "depth": 3400.0,
+        "height": 10240.0
+      },
+      "anchor": 0,
+      "group_id": 2,
+      "floor_index": 1,
+      "sub_index": 0,
+      "anchor_edge_id": -1,
+      "mid_beam_level": null,
+      "merge_with_panel": false,
+      "merged_fp_id": null,
+      "merged_wall_ids": [],
+      "parent_id": 0
+    }
+  ]
+}

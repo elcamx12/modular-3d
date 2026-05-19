@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+
+# venv / 가상환경
+venv/
+.venv/
+env/
+
+# PyInstaller 빌드 산출물
+build/
+dist/
+*.spec.bak
+
+# IDE / 에디터
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# 로그 / 임시
+*.log
+tmp_log.txt
+*.tmp
+*.bak
+
+# 시나리오 백업 (회귀 자산은 유지, dev 백업만 제외)
+_chk*.py
+diag_*.py
+
+# 진단 산출물
+_diag_*.json
+_diag_*.txt
