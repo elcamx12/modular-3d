@@ -32,6 +32,7 @@ class SteelLineItem:
     total_length_m: float
     unit_weight_kg_m: float
     total_weight_ton: float
+    section_type: str = 'shs'  # 'shs'(각형강관) | 'h'(H형강) — 자재비 강종 분리용
     is_total: bool = False
 
 
@@ -74,6 +75,82 @@ class QuantityReport:
     ng_groups: List[str]
     # 2026-05-12 RC 코어 별도 카테고리
     core: 'CoreQuantity | None' = None
+
+
+@dataclass
+class MaterialCost:
+    """자재비(재료비) 산출 결과 — 물량 × 단가.
+
+    [정책 2026-05-24]
+    - 강재(각형강관) + 슬래브(데크 ㎡ + 콘크리트 ㎥) 만 비용 산정.
+    - 슬래브 철근은 데크플레이트 단가(㎡)에 배력근·보강근으로 이미 포함되므로
+      별도 철근 비용을 잡지 않는다(이중 계산 방지).
+    - RC 코어 콘크리트·철근은 사용자 결정에 따라 자재비에서 제외한다.
+    - 단가가 없으면(None) 해당 항목 비용은 0 으로 두고 has_missing_price 표시.
+    """
+    steel_ton: float            # 강재 총중량(각형강관+H형강)
+    steel_unit: float           # 원/ton (각형강관)
+    steel_cost: float           # 원 (각형강관+H형강 합)
+    deck_area_m2: float
+    deck_unit: float            # 원/㎡
+    deck_cost: float            # 원
+    concrete_m3: float
+    concrete_unit: float        # 원/㎥
+    concrete_cost: float        # 원
+    total_cost: float           # 원
+    has_missing_price: bool = False
+    # 강종 분리(H형강 단가가 각형강관과 달라 분리 집계).
+    steel_shs_ton: float = 0.0
+    steel_h_ton: float = 0.0
+    steel_h_unit: float = 0.0   # 원/ton (H형강)
+
+
+def compute_material_cost(
+    report: QuantityReport,
+    steel_unit_per_ton: float | None,
+    deck_unit_per_m2: float | None,
+    concrete_unit_per_m3: float | None,
+    steel_h_unit_per_ton: float | None = None,
+) -> MaterialCost:
+    """물량 보고서 + 단가 → 자재비.
+
+    강재는 각형강관/H형강 강종별로 중량을 나눠 각자 단가를 곱한다(H형강 단가가
+    각형강관과 다르기 때문). steel_h_unit_per_ton 미지정 시 각형강관 단가로 대체.
+    데크 면적은 슬래브 총면적(㎡), 콘크리트는 슬래브 총부피(㎥). 코어는 제외.
+    """
+    shs_ton = sum(it.total_weight_ton for it in report.steel_items
+                  if not it.is_total and getattr(it, 'section_type', 'shs') != 'h')
+    h_ton = sum(it.total_weight_ton for it in report.steel_items
+                if not it.is_total and getattr(it, 'section_type', 'shs') == 'h')
+    steel_ton = shs_ton + h_ton
+    deck_area = report.slab.total_area_m2
+    concrete_m3 = report.slab.total_volume_m3
+
+    su = float(steel_unit_per_ton or 0.0)
+    # H형강 단가 미입력 시 각형강관 단가로 대체.
+    hu = float(steel_h_unit_per_ton if steel_h_unit_per_ton is not None
+               else (steel_unit_per_ton or 0.0))
+    du = float(deck_unit_per_m2 or 0.0)
+    cu = float(concrete_unit_per_m3 or 0.0)
+
+    # 단가 누락 판정 — 해당 강종이 실제로 쓰일 때만 그 단가를 따진다.
+    missing = (deck_unit_per_m2 is None or concrete_unit_per_m3 is None
+               or (shs_ton > 0 and steel_unit_per_ton is None)
+               or (h_ton > 0 and steel_h_unit_per_ton is None
+                   and steel_unit_per_ton is None))
+
+    steel_cost = shs_ton * su + h_ton * hu
+    deck_cost = deck_area * du
+    concrete_cost = concrete_m3 * cu
+    total = steel_cost + deck_cost + concrete_cost
+
+    return MaterialCost(
+        steel_ton=steel_ton, steel_unit=su, steel_cost=steel_cost,
+        deck_area_m2=deck_area, deck_unit=du, deck_cost=deck_cost,
+        concrete_m3=concrete_m3, concrete_unit=cu, concrete_cost=concrete_cost,
+        total_cost=total, has_missing_price=missing,
+        steel_shs_ton=shs_ton, steel_h_ton=h_ton, steel_h_unit=hu,
+    )
 
 
 # ── 슬래브 면적 ──────────────────────────────────────────────
@@ -120,7 +197,7 @@ def _collect_slabs(scene: Scene) -> List[SlabData]:
 
 
 # ── 슬래브 집계 ──────────────────────────────────────────────
-DEFAULT_REBAR_RATIO = 0.012   # 1.2 vol% (KBC 표준 슬래브 평균 가정)
+DEFAULT_REBAR_RATIO = 0.012   # 1.2 vol% (표준 슬래브 평균 가정)
 
 
 def aggregate_slabs(scene: Scene,
@@ -232,7 +309,7 @@ def aggregate_steel(am: AnalysisModel,
     # 그룹 결정 우선순위: root 부재의 그룹 → 못 찾으면 sub 부재의 그룹.
     root_to_len: Dict[int, float] = defaultdict(float)
     root_to_section_name: Dict[int, str] = {}
-    section_lookup: Dict[str, SHSSection] = {}
+    section_lookup: Dict[str, object] = {}
 
     for mid, member in am.members.items():
         # joint_rules 의 sub 는 원본이 자중·물량을 잡고 있어 길이 합산에서 제외
@@ -274,6 +351,8 @@ def aggregate_steel(am: AnalysisModel,
         # 실제 길이의 평균이 아닌 round 값 사용 (집계의 일관성)
         item_total_length_m = (L_round * count) / 1000.0
         item_total_weight_ton = (sec.weight_per_m_kg * item_total_length_m) / 1000.0
+        from modular_3d.카탈로그.h_sections import HSection
+        _sec_type = 'h' if isinstance(sec, HSection) else 'shs'
         items.append(SteelLineItem(
             section_name=sec_name,
             length_mm=L_round,
@@ -281,6 +360,7 @@ def aggregate_steel(am: AnalysisModel,
             total_length_m=item_total_length_m,
             unit_weight_kg_m=sec.weight_per_m_kg,
             total_weight_ton=item_total_weight_ton,
+            section_type=_sec_type,
         ))
         total_length_m += item_total_length_m
         total_weight_ton += item_total_weight_ton
@@ -329,6 +409,7 @@ def build_all_reports(scene: Scene, am: AnalysisModel,
 
 __all__ = [
     'SteelLineItem', 'SlabQuantity', 'CoreQuantity', 'QuantityReport',
+    'MaterialCost', 'compute_material_cost',
     'aggregate_slabs', 'aggregate_steel', 'aggregate_core',
     'build_quantity_report', 'build_all_reports',
     'DEFAULT_REBAR_RATIO',

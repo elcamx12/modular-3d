@@ -1,0 +1,23 @@
+[
+  {
+    "name": "광로 (도시고속·고속도로)",
+    "max_length": 19000,
+    "max_width": 3500,
+    "max_height": 4500,
+    "max_weight": 40000
+  },
+  {
+    "name": "일반도로",
+    "max_length": 16500,
+    "max_width": 3300,
+    "max_height": 4200,
+    "max_weight": 25000
+  },
+  {
+    "name": "이면도로 (현장 진입로)",
+    "max_length": 12000,
+    "max_width": 3200,
+    "max_height": 4000,
+    "max_weight": 15000
+  }
+]

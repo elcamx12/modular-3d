@@ -73,6 +73,11 @@ OPS_RULE_ID_COLOR: Dict[str, Tuple[float, float, float, float]] = {
     'R08_wall_cant':   (0.10, 0.80, 0.70, 1.0),
     # R09 — 외부 부재 ↔ 코어 (벽·슬래브) 6 DOF 강결합. 짙은 적색.
     'R09_core':        (0.95, 0.20, 0.20, 1.0),
+    # 사용자가 직접 추가한 신규 접합 — 핀(R10)·강접(R11) 구분.
+    # (흰색은 밝은 배경에서 안 보여 채도 높은 색으로.)
+    'USER_ADD':        (0.10, 0.90, 0.50, 1.0),  # 구버전 호환 — 민트
+    'R10_user_pin':    (0.10, 0.90, 0.50, 1.0),  # 사용자 추가(핀) — 민트
+    'R11_user_rigid':  (1.00, 0.20, 0.60, 1.0),  # 사용자 추가(강접) — 핫핑크
     # 다이어프램 시스템 (자동 휴리스틱 아닌 표준 가정).
     'diaphragm_floor':         (0.55, 0.55, 0.55, 0.55),  # 회색
     'diaphragm_slab_edge_z':   (0.55, 0.55, 0.55, 0.85),  # 진한 회색
@@ -457,12 +462,26 @@ class Viewer3D:
     # ── 부재 비주얼 관리 ─────────────────────────────────────
 
     def add_component_visual(self, comp_id: int, vertices, faces, face_colors):
+        # [2026-05-25 버그수정] 같은 comp_id 의 기존 메시를 먼저 scene 에서 제거.
+        # 안 하면 dict 만 덮어쓰고 옛 메시가 parent 채로 화면에 잔류(유령 메시) →
+        # ops 뷰 디밍(dict 순회)에서 빠져 면으로 보이고, 삭제/되돌리기로도 안
+        # 지워진다. 단면 타입 변경(_set_beam_section_type / _sync_dependent_beam_
+        # sections)이 remove 없이 add 만 호출하던 경로에서 드러난 버그.
+        self.remove_component_visual(comp_id)
         mesh = visuals.Mesh(
             vertices=vertices, faces=faces,
             face_colors=face_colors, shading=None,
             parent=self.view.scene,
         )
         self._component_visuals[comp_id] = mesh
+        # 반투명 면 포함 시(내벽·구조벽 채움·모듈 4면벽 alpha<1) translucent gl_state.
+        # depth_test=True 라 불투명 강재(alpha=1)는 그대로 가림, 벽만 비친다.
+        try:
+            _fc = np.asarray(face_colors, dtype=np.float32)
+            if _fc.size and float(_fc[:, 3].min()) < 0.999:
+                mesh.set_gl_state('translucent', depth_test=True, cull_face=False)
+        except Exception:
+            pass
         # ops 뷰 토글 시 복원용 — 원본 face_colors 를 영구 보관 (mesh_data 추출은
         # vispy 버전에 따라 None 을 반환할 수 있어 신뢰 불가).
         if not hasattr(self, '_comp_orig_face_colors'):
@@ -492,6 +511,74 @@ class Viewer3D:
             self.canvas.update()
         if hasattr(self, '_comp_orig_face_colors'):
             self._comp_orig_face_colors.pop(comp_id, None)
+
+    # ── 실(Room) 비주얼 관리 (2026-05-24 2단계) ──────────────
+    # 실은 부재와 별개의 반투명 평면 색면. depth_test 끄지 않고 translucent
+    # gl_state 로 부재 위에 비치게 그린다.
+
+    def add_room_visual(self, room_id: int, vertices, faces, face_colors):
+        """실 폴리곤 반투명 메시 추가(같은 id 가 있으면 먼저 제거)."""
+        if not hasattr(self, '_room_visuals'):
+            self._room_visuals = {}
+        self.remove_room_visual(room_id)
+        mesh = visuals.Mesh(
+            vertices=vertices, faces=faces,
+            face_colors=face_colors, shading=None,
+            parent=self.view.scene,
+        )
+        mesh.set_gl_state('translucent', depth_test=False, cull_face=False)
+        self._room_visuals[room_id] = mesh
+        self.canvas.update()
+
+    def remove_room_visual(self, room_id: int):
+        if not hasattr(self, '_room_visuals'):
+            self._room_visuals = {}
+            return
+        mesh = self._room_visuals.pop(room_id, None)
+        if mesh is not None:
+            mesh.parent = None
+            self.canvas.update()
+
+    # ── 개구부 고스트 (2026-05-24 3단계) ─────────────────────
+    # 개구부 배치/이동 미리보기 — 반투명 박스(부재 고스트와 별개).
+
+    def update_opening_ghost(self, vertices, faces, face_colors):
+        """개구부 고스트 박스 갱신(없으면 생성)."""
+        if not hasattr(self, '_op_ghost_mesh') or self._op_ghost_mesh is None:
+            self._op_ghost_mesh = visuals.Mesh(
+                vertices=vertices, faces=faces, face_colors=face_colors,
+                shading=None, parent=self.view.scene)
+            self._op_ghost_mesh.set_gl_state(
+                'translucent', depth_test=False, cull_face=False)
+        else:
+            self._op_ghost_mesh.set_data(
+                vertices=vertices, faces=faces, face_colors=face_colors)
+        self._op_ghost_mesh.visible = True
+        self.canvas.update()
+
+    def clear_opening_ghost(self):
+        if getattr(self, '_op_ghost_mesh', None) is not None:
+            self._op_ghost_mesh.visible = False
+            self.canvas.update()
+
+    # ── 실 고스트 (2026-05-24 3단계 — 실 이동/복사 미리보기) ──
+    def update_room_ghost(self, vertices, faces, face_colors):
+        if not hasattr(self, '_room_ghost_mesh') or self._room_ghost_mesh is None:
+            self._room_ghost_mesh = visuals.Mesh(
+                vertices=vertices, faces=faces, face_colors=face_colors,
+                shading=None, parent=self.view.scene)
+            self._room_ghost_mesh.set_gl_state(
+                'translucent', depth_test=False, cull_face=False)
+        else:
+            self._room_ghost_mesh.set_data(
+                vertices=vertices, faces=faces, face_colors=face_colors)
+        self._room_ghost_mesh.visible = True
+        self.canvas.update()
+
+    def clear_room_ghost(self):
+        if getattr(self, '_room_ghost_mesh', None) is not None:
+            self._room_ghost_mesh.visible = False
+            self.canvas.update()
 
     # ── 고스트 미리보기 ──────────────────────────────────────
 
@@ -1221,6 +1308,146 @@ class Viewer3D:
         if d[idx] > threshold:
             return None
         return mids[idx]
+
+    def pick_ops_joint_at(self, qt_pos, ops_model, am, threshold: float = 12.0):
+        """F6 ops 뷰에서 마우스에 가장 가까운 컴포넌트 간 접합을 선택.
+
+        접합 = 두 노드(master, slave) 사이. 두 노드를 잇는 선분에 대한 점-선분
+        2D 거리가 최소인 접합을 반환한다. pick_ops_member_at 과 동일하게
+        vispy scene transform + perspective divide 로 화면 좌표를 구한다.
+
+        후보는 spec.equal_dofs 중 **컴포넌트 간** 결합만. 같은 컴포넌트 내부
+        보조 결합(코어 사영점 등, 두 끝 source_comp_id 가 같고 0 이 아님)은 제외.
+
+        반환(없으면 None): 선택 접합 정보 dict —
+          master/slave(노드 tag), a_xy/b_xy(평면 좌표), a_z/b_z,
+          a_comp/b_comp(source_comp_id), dofs(현재 자유도), is_rigid, rule_id.
+        threshold 단위는 픽셀.
+        """
+        if ops_model is None or getattr(ops_model, 'spec', None) is None:
+            return None
+        if not getattr(self, '_ops_initialized', False):
+            return None
+        spec = ops_model.spec
+        if not spec.equal_dofs or not ops_model.node_tags:
+            return None
+        tr = self.get_scene_transform()
+        if tr is None:
+            return None
+
+        def _comp(tag):
+            nr = spec.node(tag)
+            if nr is not None:
+                return int(getattr(nr, 'source_comp_id', 0) or 0)
+            an = am.nodes.get(tag) if am is not None else None
+            return int(getattr(an, 'source_comp_id', 0) or 0) if an is not None else 0
+
+        def _is_n1(tag):
+            """가교 중간노드(N1, role='panel_z_route')인가 — 직각(ㄴ자)접합 식별."""
+            nr = spec.node(tag)
+            return nr is not None and getattr(nr, 'role', '') == 'panel_z_route'
+
+        recs = []
+        coords = []
+        hidden = getattr(self, '_hidden_rule_ids', set())
+        for ed in spec.equal_dofs:
+            c1 = ops_model.node_tags.get(ed.master)
+            c2 = ops_model.node_tags.get(ed.slave)
+            if c1 is None or c2 is None:
+                continue
+            # 시각화로 끈 종류(rule_id)는 선택 대상에서 제외 — 같은 위치에 겹친
+            # 수직 접합 중 보이는 것만 고르도록.
+            if getattr(ed, 'rule_id', '') in hidden:
+                continue
+            ca = _comp(ed.master)
+            cb = _comp(ed.slave)
+            # N1(panel_z_route) 가교가 끼는 직각접합 수평결합은 두 끝이 같은
+            # 모듈 컴포넌트(N1 소속=모듈 본체)라도 편집 대상 — 같은-컴포넌트
+            # 필터를 면제한다. (R03 자동 직각접합 수평결합 선택 불가 원인.)
+            is_bridge = _is_n1(ed.master) or _is_n1(ed.slave)
+            # 같은 컴포넌트 내부 보조 결합 제외 — 컴포넌트 간 접합만 편집 대상.
+            if (not is_bridge) and ca != 0 and cb != 0 and ca == cb:
+                continue
+            recs.append((ed, c1, c2, ca, cb))
+            coords.append(c1)
+            coords.append(c2)
+        if not recs:
+            return None
+
+        pts = np.asarray(coords, dtype=np.float32)
+        mapped = tr.map(pts)
+        w = mapped[:, 3:4]
+        safe_w = np.where(np.abs(w) < 1e-12, 1.0, w)
+        xy = (mapped[:, :2] / safe_w).astype(np.float32)
+        p1 = xy[0::2]
+        p2 = xy[1::2]
+
+        mxy = np.array([qt_pos[0], qt_pos[1]], dtype=np.float32)
+        ab = p2 - p1
+        ab_len2 = (ab * ab).sum(axis=1)
+        ap = mxy - p1
+        denom = np.where(ab_len2 < 1e-9, 1.0, ab_len2)
+        t = np.clip((ap * ab).sum(axis=1) / denom, 0.0, 1.0)
+        proj = p1 + t[:, None] * ab
+        d = np.linalg.norm(mxy - proj, axis=1)
+
+        w_flat = w.squeeze(-1)
+        behind = (w_flat[0::2] <= 0.0) | (w_flat[1::2] <= 0.0)
+        d = np.where(behind, np.inf, d)
+
+        idx = int(np.argmin(d))
+        if d[idx] > threshold:
+            return None
+        ed, c1, c2, ca, cb = recs[idx]
+        dofs = tuple(ed.dofs)
+        is_rigid = any(x in (4, 5, 6) for x in dofs)
+        # 직각접합(USER_ADD + 중간 노드 N1=panel_z_route) 식별 — 선택·제거를
+        # 직각접합 단위(N1 + 두 결합)로 다루기 위해 N1 좌표를 함께 돌려준다.
+        rid = getattr(ed, 'rule_id', '')
+        n1_tag = None
+        for nt in (ed.master, ed.slave):
+            nr = spec.node(nt)
+            if nr is not None and getattr(nr, 'role', '') == 'panel_z_route':
+                n1_tag = nt
+                break
+        # 직각(ㄴ자)접합 식별 — rule_id 무관, N1 가교 노드가 끼면 직각접합.
+        # 사용자추가(R10/R11) + 자동(R03) 모두 포함.
+        is_ra = (n1_tag is not None)
+        n1c = ops_model.node_tags.get(n1_tag) if n1_tag is not None else None
+        return {
+            'master': int(ed.master), 'slave': int(ed.slave),
+            'a_xy': (float(c1[0]), float(c1[1])),
+            'b_xy': (float(c2[0]), float(c2[1])),
+            'a_z': float(c1[2]), 'b_z': float(c2[2]),
+            'a_comp': ca, 'b_comp': cb,
+            'dofs': dofs, 'is_rigid': is_rigid,
+            'rule_id': rid,
+            'right_angle': bool(is_ra),
+            'n1_tag': int(n1_tag) if n1_tag is not None else None,
+            'n1_xy': ((float(n1c[0]), float(n1c[1]))
+                      if n1c is not None else None),
+            'n1_z': float(n1c[2]) if n1c is not None else None,
+        }
+
+    def highlight_ops_joint_chain(self, ops_model, node_tags,
+                                  color=(1.0, 0.85, 0.0, 1.0), width=6.0):
+        """여러 노드를 잇는 접합 체인 강조(직각접합 위-N1-아래 폴리라인)."""
+        coords = []
+        for t in node_tags:
+            c = ops_model.node_tags.get(t)
+            if c is not None:
+                coords.append(c)
+        if len(coords) < 2:
+            self.clear_ops_joint_highlight()
+            return
+        self._ensure_joint_highlight_visuals()
+        pos = np.array(coords, dtype=np.float32)
+        self._joint_hl_line.set_data(pos=pos, color=color,
+                                     connect='strip', width=width)
+        self._joint_hl_line.visible = True
+        self._joint_hl_pts.set_data(pos=pos, face_color=color, size=13)
+        self._joint_hl_pts.visible = True
+        self.canvas.update()
 
     # ── OpenSees 모델 시각화 ────────────────────────────────
     # F6 후 좌측 메쉬 뷰 → 노드/엘리먼트 뷰로 전환.
@@ -2150,6 +2377,288 @@ class Viewer3D:
         if self._member_hover.visible:
             self._member_hover.visible = False
             self.canvas.update()
+
+    # ── 접합 선택 강조 (2026-05-25 접합부 변경) ──────────────
+    def _ensure_joint_highlight_visuals(self):
+        """접합 선택 강조용 Line/Markers lazy 생성."""
+        if getattr(self, '_joint_hl_line', None) is not None:
+            return
+        self._joint_hl_line = visuals.Line(parent=self.view.scene)
+        self._joint_hl_line.order = 25
+        self._joint_hl_line.set_gl_state('translucent', depth_test=False)
+        self._joint_hl_pts = visuals.Markers(parent=self.view.scene)
+        self._joint_hl_pts.order = 26
+        self._joint_hl_pts.set_gl_state('translucent', depth_test=False)
+
+    def highlight_ops_joint(self, ops_model, master: int, slave: int,
+                            color=(1.0, 0.85, 0.0, 1.0), width: float = 6.0):
+        """선택 접합 강조 — 두 노드를 잇는 굵은 선 + 끝점 마커(노란색).
+
+        수직 접합은 두 노드가 거의 같은 위치(z만 다름)라 짧은 수직 선분으로,
+        수평 접합은 떨어진 두 코너를 잇는 선분으로 보인다.
+        """
+        c1 = ops_model.node_tags.get(master)
+        c2 = ops_model.node_tags.get(slave)
+        if c1 is None or c2 is None:
+            self.clear_ops_joint_highlight()
+            return
+        self._ensure_joint_highlight_visuals()
+        pos = np.array([c1, c2], dtype=np.float32)
+        self._joint_hl_line.set_data(
+            pos=pos, color=color, connect='strip', width=width)
+        self._joint_hl_line.visible = True
+        self._joint_hl_pts.set_data(pos=pos, face_color=color, size=13)
+        self._joint_hl_pts.visible = True
+        self.canvas.update()
+
+    def clear_ops_joint_highlight(self):
+        """접합 선택 강조 제거."""
+        changed = False
+        if getattr(self, '_joint_hl_line', None) is not None and self._joint_hl_line.visible:
+            self._joint_hl_line.visible = False
+            changed = True
+        if getattr(self, '_joint_hl_pts', None) is not None and self._joint_hl_pts.visible:
+            self._joint_hl_pts.visible = False
+            changed = True
+        if changed:
+            self.canvas.update()
+
+    def highlight_ops_node(self, ops_model, tag,
+                           color=(0.1, 0.8, 0.2, 1.0)):
+        """단일 노드 강조 — 접합 추가 모드의 첫 점 표시(초록 마커)."""
+        c = ops_model.node_tags.get(tag)
+        if c is None:
+            self.clear_ops_joint_highlight()
+            return
+        self._ensure_joint_highlight_visuals()
+        pos = np.array([c], dtype=np.float32)
+        self._joint_hl_pts.set_data(pos=pos, face_color=color, size=15)
+        self._joint_hl_pts.visible = True
+        self._joint_hl_line.visible = False
+        self.canvas.update()
+
+    def pick_ops_node_at(self, qt_pos, ops_model, threshold: float = 14.0):
+        """마우스에 가장 가까운 ops 노드 반환 — 접합 추가 시 두 점 선택용.
+
+        pick_ops_member_at 과 동일한 scene transform + perspective divide 로
+        모든 노드를 화면 투영 → 점-점 2D 거리 최소 노드.
+
+        반환(없으면 None): {'tag': nid, 'xy': (x,y), 'z': z,
+                            'coord': (x,y,z)}. threshold 단위 픽셀.
+        """
+        if ops_model is None or not ops_model.node_tags:
+            return None
+        if not getattr(self, '_ops_initialized', False):
+            return None
+        tr = self.get_scene_transform()
+        if tr is None:
+            return None
+        tags = []
+        coords = []
+        for tag, c in ops_model.node_tags.items():
+            tags.append(tag)
+            coords.append(c)
+        pts = np.asarray(coords, dtype=np.float32)
+        mapped = tr.map(pts)
+        w = mapped[:, 3:4]
+        safe_w = np.where(np.abs(w) < 1e-12, 1.0, w)
+        xy = (mapped[:, :2] / safe_w).astype(np.float32)
+        mxy = np.array([qt_pos[0], qt_pos[1]], dtype=np.float32)
+        d = np.linalg.norm(xy - mxy, axis=1)
+        w_flat = w.squeeze(-1)
+        d = np.where(w_flat <= 0.0, np.inf, d)
+        idx = int(np.argmin(d))
+        if d[idx] > threshold:
+            return None
+        tag = tags[idx]
+        c = ops_model.node_tags[tag]
+        return {
+            'tag': int(tag),
+            'xy': (float(c[0]), float(c[1])),
+            'z': float(c[2]),
+            'coord': (float(c[0]), float(c[1]), float(c[2])),
+        }
+
+    def pick_ops_edge_point_at(self, qt_pos, ops_model, am,
+                               threshold: float = 10.0, snap_mm: float = 150.0):
+        """모서리(보) 위에서 마우스에 가장 가까운 점을 반환 — 접합 추가용.
+
+        pick_ops_member_at 과 동일하게 보 선분을 화면 투영해 최근접 선분을
+        찾되, 그 선분 위 투영점(3D 좌표)을 함께 돌려준다. 투영점이 끝점(노드)에
+        snap_mm(3D mm) 이내면 그 노드로 스냅한다.
+
+        반환(없으면 None): {'point':(x,y,z), 'snapped':bool, 'node':tag|None,
+                            'comp':source_comp_id, 'mid':member_id}.
+        """
+        if am is None or not am.members:
+            return None
+        if not getattr(self, '_ops_initialized', False):
+            return None
+        if ops_model is None or not ops_model.node_tags:
+            return None
+        tr = self.get_scene_transform()
+        if tr is None:
+            return None
+        mids = []
+        coords = []
+        for mid, m in am.members.items():
+            if getattr(m, 'is_split_sub', False):
+                continue
+            if m.kind != 'beam':
+                continue   # 보만 — 모서리 점 접합은 보 대상.
+            c1 = ops_model.node_tags.get(m.n1)
+            c2 = ops_model.node_tags.get(m.n2)
+            if c1 is None or c2 is None:
+                continue
+            mids.append(mid)
+            coords.append(c1)
+            coords.append(c2)
+        if not mids:
+            return None
+        pts = np.asarray(coords, dtype=np.float32)
+        mapped = tr.map(pts)
+        w = mapped[:, 3:4]
+        safe_w = np.where(np.abs(w) < 1e-12, 1.0, w)
+        xy = (mapped[:, :2] / safe_w).astype(np.float32)
+        p1 = xy[0::2]
+        p2 = xy[1::2]
+        mxy = np.array([qt_pos[0], qt_pos[1]], dtype=np.float32)
+        ab = p2 - p1
+        ab2 = (ab * ab).sum(axis=1)
+        ap = mxy - p1
+        denom = np.where(ab2 < 1e-9, 1.0, ab2)
+        t = np.clip((ap * ab).sum(axis=1) / denom, 0.0, 1.0)
+        proj = p1 + t[:, None] * ab
+        d = np.linalg.norm(mxy - proj, axis=1)
+        w_flat = w.squeeze(-1)
+        behind = (w_flat[0::2] <= 0.0) | (w_flat[1::2] <= 0.0)
+        d = np.where(behind, np.inf, d)
+        idx = int(np.argmin(d))
+        if d[idx] > threshold:
+            return None
+        mid = mids[idx]
+        # 화면상 최근접 비율 s → 원근 보정 객체 비율 tt.
+        # 카메라가 원근(fov)이라 화면 균등 s 와 3D 균등 t 가 다르다. 보정 없이
+        # 3D 직선보간하면 점이 마우스에서 미세하게 어긋남(유격). 끝점 깊이 w(clip)
+        # 가중 보간으로 화면 s 에 정확히 대응하는 3D 점을 얻는다.
+        s = float(t[idx])
+        w1 = float(w_flat[2 * idx])
+        w2 = float(w_flat[2 * idx + 1])
+        if w1 > 1e-9 and w2 > 1e-9:
+            denom = (1.0 - s) / w1 + s / w2
+            tt = (s / w2) / denom if denom > 1e-12 else s
+        else:
+            tt = s
+        m = am.members[mid]
+        c1 = np.asarray(ops_model.node_tags[m.n1], dtype=float)
+        c2 = np.asarray(ops_model.node_tags[m.n2], dtype=float)
+        pt = c1 + tt * (c2 - c1)
+        blen = float(np.linalg.norm(c2 - c1))
+        snapped = False
+        node = None
+        if blen > 1.0 and tt * blen <= snap_mm:
+            pt = c1.copy()
+            node = int(m.n1)
+            snapped = True
+        elif blen > 1.0 and (1.0 - tt) * blen <= snap_mm:
+            pt = c2.copy()
+            node = int(m.n2)
+            snapped = True
+        cid = int(m.source_comp_ids[0]) if m.source_comp_ids else 0
+        return {
+            'point': (float(pt[0]), float(pt[1]), float(pt[2])),
+            'snapped': snapped, 'node': node, 'comp': cid, 'mid': int(mid),
+        }
+
+    def _ensure_joint_ghost(self):
+        if getattr(self, '_joint_ghost_pts', None) is not None:
+            return
+        self._joint_ghost_pts = visuals.Markers(parent=self.view.scene)
+        self._joint_ghost_pts.order = 27
+        self._joint_ghost_pts.set_gl_state('translucent', depth_test=False)
+
+    def show_joint_ghost(self, point, snapped: bool = False):
+        """접합 추가 시 클릭 전 미리보기 마커. 스냅(꼭지점)이면 초록, 아니면 주황."""
+        self._ensure_joint_ghost()
+        color = (0.1, 0.85, 0.2, 0.95) if snapped else (1.0, 0.6, 0.0, 0.95)
+        pos = np.array([point], dtype=np.float32)
+        self._joint_ghost_pts.set_data(pos=pos, face_color=color, size=14)
+        self._joint_ghost_pts.visible = True
+        self.canvas.update()
+
+    def clear_joint_ghost(self):
+        if (getattr(self, '_joint_ghost_pts', None) is not None
+                and self._joint_ghost_pts.visible):
+            self._joint_ghost_pts.visible = False
+            self.canvas.update()
+
+    # ── 접합 추가 후보점·선 고스트 (2026-05-25) ──────────────
+    def _ensure_cand_visuals(self):
+        if getattr(self, '_joint_cand_pts', None) is None:
+            self._joint_cand_pts = visuals.Markers(parent=self.view.scene)
+            self._joint_cand_pts.order = 26
+            self._joint_cand_pts.set_gl_state('translucent', depth_test=False)
+        if getattr(self, '_joint_line_ghost', None) is None:
+            self._joint_line_ghost = visuals.Line(parent=self.view.scene)
+            self._joint_line_ghost.order = 26
+            self._joint_line_ghost.set_gl_state('translucent', depth_test=False)
+
+    def show_joint_candidates(self, points, color=(0.2, 0.9, 1.0, 0.9)):
+        """접합 가능한 후보점들을 하늘색 마커로 표시(첫 점 선택 후)."""
+        self._ensure_cand_visuals()
+        if not points:
+            self._joint_cand_pts.visible = False
+            self.canvas.update()
+            return
+        pos = np.array([(p[0], p[1], p[2]) for p in points], dtype=np.float32)
+        self._joint_cand_pts.set_data(pos=pos, face_color=color, size=11)
+        self._joint_cand_pts.visible = True
+        self.canvas.update()
+
+    def clear_joint_candidates(self):
+        if (getattr(self, '_joint_cand_pts', None) is not None
+                and self._joint_cand_pts.visible):
+            self._joint_cand_pts.visible = False
+            self.canvas.update()
+
+    def show_joint_line_ghost(self, p1, p2,
+                              color=(1.0, 0.85, 0.0, 0.9), width=3.0):
+        """첫 점→현재 점을 잇는 접합 미리보기 선."""
+        self._ensure_cand_visuals()
+        pos = np.array([p1, p2], dtype=np.float32)
+        self._joint_line_ghost.set_data(pos=pos, color=color,
+                                        connect='strip', width=width)
+        self._joint_line_ghost.visible = True
+        self.canvas.update()
+
+    def clear_joint_line_ghost(self):
+        if (getattr(self, '_joint_line_ghost', None) is not None
+                and self._joint_line_ghost.visible):
+            self._joint_line_ghost.visible = False
+            self.canvas.update()
+
+    def pick_nearest_candidate(self, qt_pos, points, threshold: float = 18.0):
+        """후보점들을 화면 투영해 마우스에 가장 가까운 것 반환 (point, idx)|None."""
+        if not points:
+            return None
+        if not getattr(self, '_ops_initialized', False):
+            return None
+        tr = self.get_scene_transform()
+        if tr is None:
+            return None
+        pts = np.array([(p[0], p[1], p[2]) for p in points], dtype=np.float32)
+        mapped = tr.map(pts)
+        w = mapped[:, 3:4]
+        safe_w = np.where(np.abs(w) < 1e-12, 1.0, w)
+        xy = (mapped[:, :2] / safe_w).astype(np.float32)
+        mxy = np.array([qt_pos[0], qt_pos[1]], dtype=np.float32)
+        d = np.linalg.norm(xy - mxy, axis=1)
+        w_flat = w.squeeze(-1)
+        d = np.where(w_flat <= 0.0, np.inf, d)
+        idx = int(np.argmin(d))
+        if d[idx] > threshold:
+            return None
+        return points[idx], idx
 
     def highlight_ops_members(self, ops_model, node_pairs):
         """ops 모델에서 여러 부재를 한 번에 파란색 강조.

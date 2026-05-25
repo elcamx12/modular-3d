@@ -246,6 +246,19 @@ class AlignmentCanvasPaintMixin:
             p.setPen(QColor(255, 240, 180))
             p.drawText(10, self.height() - 36, hint)
 
+        # 5b) 실(Room) 색면 + 라벨 (부재 위에 반투명)
+        self._draw_rooms(p)
+
+        # 5c) 개구부(Opening) 외곽 표시 + 미리보기 고스트
+        self._draw_openings(p)
+        self._draw_opening_preview(p)
+
+        # 5d) 실 이동/복사 미리보기 고스트
+        self._draw_room_preview(p)
+
+        # 5e) 정의 가져오기 그룹 미리보기 고스트
+        self._draw_import_preview(p)
+
         # 6) 상단 상태 표시
         layer_txt = '하부 레벨' if self._layer == LAYER_BOTTOM else '상부 레벨'
         state_txt = {
@@ -257,12 +270,34 @@ class AlignmentCanvasPaintMixin:
         }.get(self._state, '')
         if self._f5_in_preview:
             state_txt = '캔버스 클릭으로 위치 확정 (R: 회전, V: 앵커)'
+        if getattr(self, '_edit_mode', 'component') == 'room':
+            if getattr(self, '_room_draw_active', False):
+                state_txt = ('실 그리기: 좌클릭=점, Enter=완료, '
+                             '우클릭/Back=취소점, Esc=취소')
+            elif getattr(self, '_room_preview', None) is not None:
+                state_txt = ('실 배치: 클릭=확정 · V=기준꼭짓점 · R=90°회전 · Esc=취소')
+            else:
+                state_txt = ('실: 클릭=선택 · M=이동 · C=복사 · R=회전 · Del=삭제 · '
+                             'Z=되돌리기 / "실 그리기"로 새로')
+        if getattr(self, '_edit_mode', 'component') == 'opening':
+            if getattr(self, '_op_preview', None) is not None:
+                state_txt = ('개구부 배치: 대상 면 위 클릭 확정 · '
+                             'R=가로세로 · V=기준점 · Esc=취소')
+            else:
+                state_txt = ('개구부: 클릭=선택 · Del=삭제 · M=이동 · C=복사 / '
+                             '"개구부 추가" 버튼으로 새로')
+        if getattr(self, '_import_preview', None) is not None:
+            state_txt = '정의 가져오기: 클릭=배치 · R=회전 · V=기준점 · Esc=취소'
         p.setPen(QColor(220, 220, 255))
         p.drawText(10, 16, f'[{layer_txt}]  {state_txt}')
 
         # 7) F5 PREVIEW: 2D 반투명 고스트 + 스냅 마커
         if self._f5_in_preview:
             self._draw_f5_ghost(p)
+
+        # 7b) 실 그리기 진행 중 폴리곤(고무줄선)
+        if getattr(self, '_room_draw_active', False):
+            self._draw_room_in_progress(p)
 
         p.end()
 
@@ -300,6 +335,174 @@ class AlignmentCanvasPaintMixin:
             p.setPen(QPen(QColor(255, 220, 80, 240), 2))
             p.drawEllipse(QPointF(sx, sy), 8, 8)
             # 십자
+            p.drawLine(int(sx - 10), int(sy), int(sx + 10), int(sy))
+            p.drawLine(int(sx), int(sy - 10), int(sx), int(sy + 10))
+
+    # ── 실(Room) 그리기 (2026-05-24 2단계) ─────────────
+    def _draw_rooms(self, p):
+        """완성된 실들을 반투명 색면 + 외곽선 + 라벨로 그림."""
+        from modular_3d.카탈로그.room_types import ROOM_TYPE_BY_KEY
+        scene = self._controller._scene
+        rooms = getattr(scene, 'rooms', {})
+        if not rooms:
+            return
+        sel_rid = getattr(self, '_selected_room_id', -1)
+        for rid, room in rooms.items():
+            poly = getattr(room, 'polygon', None)
+            if not poly or len(poly) < 3:
+                continue
+            rt = ROOM_TYPE_BY_KEY.get(getattr(room, 'room_type', ''))
+            col = rt.color if rt is not None else (160, 160, 160)
+            screen_pts = [QPointF(*self._world_to_screen(x, y)) for (x, y) in poly]
+            qpoly = QPolygonF(screen_pts)
+            is_sel = (rid == sel_rid)
+            # 선택 실은 채움 진하게 + 굵은 흰 테두리로 강조
+            p.setBrush(QBrush(QColor(col[0], col[1], col[2], 110 if is_sel else 70)))
+            if is_sel:
+                p.setPen(QPen(QColor(255, 255, 255, 240), 3))
+            else:
+                p.setPen(QPen(QColor(col[0], col[1], col[2], 220), 2))
+            p.drawPolygon(qpoly)
+            # 라벨(용도명) — 무게중심
+            cx, cy = room.centroid()
+            lsx, lsy = self._world_to_screen(cx, cy)
+            label = rt.name if rt is not None else '실'
+            p.setPen(QColor(20, 20, 20))
+            p.drawText(int(lsx) + 1, int(lsy) + 1, label)
+            p.setPen(QColor(255, 255, 255))
+            p.drawText(int(lsx), int(lsy), label)
+
+    def _draw_openings(self, p):
+        """부재 개구부를 평면(xy) 사각형 외곽으로 표시. 선택분은 강조."""
+        from modular_3d.render.opening_mesh import opening_xy_polygons
+        scene = self._controller._scene.components
+        sel = getattr(self, '_selected_opening', None)
+        for cid, comp in scene.items():
+            if getattr(comp, 'floor_index', 0) != 0:
+                continue
+            polys = opening_xy_polygons(comp)
+            for (idx, pts, kind) in polys:
+                screen_pts = [QPointF(*self._world_to_screen(x, y)) for (x, y) in pts]
+                qpoly = QPolygonF(screen_pts)
+                is_sel = (sel is not None and sel[0] == cid and sel[1] == idx)
+                if is_sel:
+                    p.setBrush(QBrush(QColor(255, 120, 60, 110)))
+                    p.setPen(QPen(QColor(255, 255, 255, 240), 3))
+                else:
+                    # 개구부 = 뚫린 곳: 어두운 채움 + 주황 외곽
+                    p.setBrush(QBrush(QColor(20, 20, 20, 120)))
+                    p.setPen(QPen(QColor(255, 150, 60, 230), 2))
+                p.drawPolygon(qpoly)
+
+    def _draw_import_preview(self, p):
+        """정의 가져오기 그룹 고스트(부재 footprint + 실 폴리곤, 점선)를 2D 표시."""
+        pv = getattr(self, '_import_preview', None)
+        if pv is None or pv.get('_wx') is None:
+            return
+        from modular_3d.model.definition_place import transform_point
+        pivot = self._import_pivot()
+        rot = pv['rot']
+        target = (pv['_wx'], pv['_wy'])
+
+        def _T(poly):
+            return [QPointF(*self._world_to_screen(
+                *transform_point(x, y, pivot, rot, target))) for (x, y) in poly]
+
+        # 부재 footprint (청록 점선)
+        p.setBrush(QBrush(QColor(80, 200, 255, 60)))
+        p.setPen(QPen(QColor(80, 200, 255, 230), 2, Qt.DashLine))
+        for fp in pv['footprints']:
+            if len(fp) >= 3:
+                p.drawPolygon(QPolygonF(_T(fp)))
+        # 실 폴리곤 (녹색 점선)
+        p.setBrush(QBrush(QColor(120, 220, 140, 60)))
+        p.setPen(QPen(QColor(120, 220, 140, 230), 2, Qt.DashLine))
+        for rp in pv['room_polys']:
+            if len(rp) >= 3:
+                p.drawPolygon(QPolygonF(_T(rp)))
+        # 기준점(마우스) 마커
+        mx, my = self._world_to_screen(pv['_wx'], pv['_wy'])
+        p.setBrush(QBrush(QColor(255, 200, 80, 240)))
+        p.setPen(Qt.NoPen)
+        p.drawEllipse(QPointF(mx, my), 6, 6)
+
+    def _draw_room_preview(self, p):
+        """실 이동/복사 미리보기 폴리곤(녹색 점선) + 기준 꼭짓점 마커."""
+        pv = getattr(self, '_room_preview', None)
+        if pv is None:
+            return
+        poly = self._room_preview_polygon()
+        if not poly or len(poly) < 2:
+            return
+        screen_pts = [QPointF(*self._world_to_screen(x, y)) for (x, y) in poly]
+        p.setBrush(QBrush(QColor(120, 220, 140, 80)))
+        p.setPen(QPen(QColor(120, 220, 140, 240), 2, Qt.DashLine))
+        p.drawPolygon(QPolygonF(screen_pts))
+        # 기준 꼭짓점(V) 강조
+        ai = pv['anchor'] % len(poly)
+        ax, ay = self._world_to_screen(*poly[ai])
+        p.setBrush(QBrush(QColor(255, 200, 80, 240)))
+        p.setPen(Qt.NoPen)
+        p.drawEllipse(QPointF(ax, ay), 6, 6)
+
+    def _draw_opening_preview(self, p):
+        """개구부 고스트 미리보기를 2D 평면 사각형(주황 점선)으로 표시."""
+        pv = getattr(self, '_op_preview', None)
+        if pv is None or pv.get('target', -1) <= 0:
+            return
+        from modular_3d.render.opening_mesh import opening_xy_poly
+        comp = self._controller._scene.components.get(pv['target'])
+        if comp is None:
+            return
+        ew = pv['h'] if pv['rot'] == 90 else pv['w']
+        eh = pv['w'] if pv['rot'] == 90 else pv['h']
+        op = {'face': pv.get('face', 'slab'), 'u': pv['u'], 'v': pv['v'],
+              'w': ew, 'h': eh}
+        pts = opening_xy_poly(comp, op)
+        if not pts:
+            return
+        screen_pts = [QPointF(*self._world_to_screen(x, y)) for (x, y) in pts]
+        p.setBrush(QBrush(QColor(255, 150, 60, 90)))
+        p.setPen(QPen(QColor(255, 150, 60, 240), 2, Qt.DashLine))
+        p.drawPolygon(QPolygonF(screen_pts))
+
+    def _draw_room_in_progress(self, p):
+        """실 그리기 중 — 확정점·연결선·고무줄선·점 마커."""
+        pts = list(getattr(self, '_room_points', []))
+        cur = getattr(self, '_room_cursor_world', None)
+        # 확정 점들 연결선
+        screen_pts = [self._world_to_screen(x, y) for (x, y) in pts]
+        p.setPen(QPen(QColor(120, 220, 140, 230), 2))
+        for i in range(1, len(screen_pts)):
+            x0, y0 = screen_pts[i - 1]
+            x1, y1 = screen_pts[i]
+            p.drawLine(int(x0), int(y0), int(x1), int(y1))
+        # 고무줄선(마지막 점 → 현재 커서) + 닫힘 미리보기(커서 → 첫 점)
+        if screen_pts and cur is not None:
+            cxs, cys = self._world_to_screen(*cur)
+            lx, ly = screen_pts[-1]
+            p.setPen(QPen(QColor(120, 220, 140, 150), 1, Qt.DashLine))
+            p.drawLine(int(lx), int(ly), int(cxs), int(cys))
+            if len(screen_pts) >= 2:
+                fx, fy = screen_pts[0]
+                p.drawLine(int(cxs), int(cys), int(fx), int(fy))
+        # 점 마커
+        p.setPen(Qt.NoPen)
+        for i, (sx, sy) in enumerate(screen_pts):
+            # 첫 점은 강조(닫기 기준)
+            if i == 0:
+                p.setBrush(QBrush(QColor(255, 200, 80, 240)))
+                p.drawEllipse(QPointF(sx, sy), 6, 6)
+            else:
+                p.setBrush(QBrush(QColor(120, 220, 140, 240)))
+                p.drawEllipse(QPointF(sx, sy), 4, 4)
+        # 꼭짓점 스냅 마커
+        snap_v = getattr(self, '_room_snap_point', None)
+        if snap_v is not None:
+            sx, sy = self._world_to_screen(*snap_v)
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(QColor(255, 220, 80, 240), 2))
+            p.drawEllipse(QPointF(sx, sy), 8, 8)
             p.drawLine(int(sx - 10), int(sy), int(sx + 10), int(sy))
             p.drawLine(int(sx), int(sy - 10), int(sx), int(sy + 10))
 
@@ -358,7 +561,7 @@ class AlignmentCanvasPaintMixin:
         # 처리하므로 일반 자동 갭에서 제외 (Phase 1 정책)
         from modular_3d.model import ComponentType as _CT
         if ctype in (_CT.CANTILEVER_BEAM, _CT.CANTILEVER_SLAB,
-                     _CT.MID_BEAM, _CT.MID_COLUMN):
+                     _CT.MID_BEAM, _CT.MID_COLUMN, _CT.INTERIOR_WALL):
             return wx, wy
         try:
             from modular_3d.render.auto_snap import apply_auto_gap

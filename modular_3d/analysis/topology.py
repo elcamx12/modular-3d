@@ -62,6 +62,9 @@ class AnalysisMember:
     section_w: float
     section_h: float
     section_t: float
+    # 보 단면 형상 — 'shs'(각형강관) | 'h'(H형강). 보만 의미(기둥/truss 는 'shs').
+    # 소유 부재 comp.beam_section_type 에서 build_analysis_model 이 설정.
+    section_type: str = 'shs'
     source_comp_ids: List[int] = field(default_factory=list)
     merge_group: Optional[str] = None
     # 셸 전용 추가 노드. kind != 'shell' 이면 0.
@@ -986,6 +989,10 @@ def _merge_panel_overlaps_and_check(model: AnalysisModel) -> None:
 
 def build_analysis_model(scene: Scene) -> AnalysisModel:
     """Scene → AnalysisModel."""
+    # [2026-05-25 A7 수정] 종속(캔틸·중간보)·합체 구조벽의 보 단면 타입은
+    # 부모/패널을 따라가야 한다. comp.beam_section_type 직접 사용은 UI 동기화가
+    # 선행돼야만 옳아(불러오기 후 미동기화 시 어긋남) effective 로 항상 부모 추종.
+    from modular_3d.model import effective_beam_section_type
     model = AnalysisModel()
     next_node_id = 1
     next_mem_id = 1
@@ -1024,10 +1031,15 @@ def build_analysis_model(scene: Scene) -> AnalysisModel:
                 n4 = local_key_to_gid[md['n4_key']]
             mid = next_mem_id
             next_mem_id += 1
+            # 보(kind='beam')만 소유 부재의 유효 단면 타입을 따른다(종속/합체는
+            # 부모/패널 추종). 기둥/truss 는 항상 각형강관.
+            sec_type = (effective_beam_section_type(comp, scene)
+                        if md['kind'] == 'beam' else 'shs')
             model.members[mid] = AnalysisMember(
                 id=mid, n1=n1, n2=n2,
                 kind=md['kind'], role=md['role'],
                 section_w=md['section_w'], section_h=md['section_h'], section_t=md['section_t'],
+                section_type=sec_type,
                 source_comp_ids=[comp.id],
                 merge_group=local.merge_group,
                 n3=n3, n4=n4,

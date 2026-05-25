@@ -32,6 +32,9 @@ SECTION_T_MM = 8.0
 # 일치해야 이중계산·표시 오차가 사라지므로 단일값 채택.
 SLAB_THICKNESS_MODEL_MM = 150.0
 SLAB_THICKNESS_MM = 150.0
+# 비내력 벽(채움 패널) 두께 — 모듈 벽 + 구조벽 채움 패널 공통. 하중·물량에
+# 들어가지 않는 순수 시각 벽(2026-05-24 3단계). 기둥/보(SHS) 와 별개.
+NONBEARING_WALL_THICKNESS_MM = 100.0
 # 코어 슬래브 기본 두께.
 CORE_SLAB_DEFAULT_THICKNESS_MM = 180.0
 # 코어벽 기본 두께.
@@ -58,6 +61,7 @@ __all__ = [
     'VERTICAL_MODULE_FLOORS',
     'SECTION_W_MM', 'SECTION_H_MM', 'SECTION_T_MM',
     'SLAB_THICKNESS_MODEL_MM', 'SLAB_THICKNESS_MM',
+    'NONBEARING_WALL_THICKNESS_MM',
     'CORE_SLAB_DEFAULT_THICKNESS_MM', 'CORE_WALL_DEFAULT_THICKNESS_MM',
     'CORE_TRUSS_GRID_MM',
     'SPLIT_NODE_BASE_OFFSET',

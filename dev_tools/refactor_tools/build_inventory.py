@@ -12,6 +12,7 @@ modular_3d 의 모든 .py 를 읽어서 다음을 추출:
 """
 import ast
 import os
+from datetime import date
 from pathlib import Path
 
 # 옛 위치 modular_3d/_refactor_tools 에선 parents[1]=modular_3d 였음.
@@ -127,10 +128,10 @@ def main():
         and '_refactor_tools' not in p.parts
     ]
 
-    out_lines = ['# 리팩토링 인벤토리 (자동 생성)\n']
-    out_lines.append(f'생성일: 2026-05-08  |  대상 파일 수: {len(py_files)}\n')
+    out_lines = ['# 인벤토리 (자동 생성)\n']
+    out_lines.append(f'생성일: {date.today().isoformat()}  |  대상 파일 수: {len(py_files)}\n')
     out_lines.append('')
-    out_lines.append('이 파일은 `modular_3d/_refactor_tools/build_inventory.py` 가 자동 생성합니다. 직접 편집 금지.\n')
+    out_lines.append('이 파일은 `dev_tools/refactor_tools/build_inventory.py` 가 자동 생성합니다. 직접 편집 금지.\n')
     out_lines.append('')
     out_lines.append('## 파일 인벤토리\n')
 
@@ -170,7 +171,7 @@ def main():
             out_lines.append('')
         out_lines.append('')
 
-    out_path = ROOT / '리팩토링_인벤토리.md'
+    out_path = ROOT / '인벤토리.md'
     out_path.write_text('\n'.join(out_lines), encoding='utf-8')
     print(f'[OK] {out_path} ({len(py_files)} 파일, {sum(1 for ln in out_lines)} 줄)')
 

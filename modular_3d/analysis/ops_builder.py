@@ -139,6 +139,10 @@ class OpsModel:
     # ModelSpec 에도 기록 → 두 객체가 거울 관계 유지.
     # 시각화·검증 단계에서 spec 소비. 등록기 자체는 Phase 5 에서 spec 기반 전환.
     spec: Optional[object] = None
+    # 접합부 오버라이드 (2026-05-25) — 사용자가 변경/제거/추가한 컴포넌트 간 접합.
+    # build_ops_model 이 scene.joint_overrides 를 복사해 부착하면 joint_rules 의
+    # 등록 게이트(_resolve_override_dofs)가 참조한다. 비어 있으면 자동 규칙만 동작.
+    joint_overrides: List = field(default_factory=list)
 
     # ── 디버그 ────────────────────────────────────────────────
     def summary(self) -> str:
@@ -216,8 +220,30 @@ def _section_props(member: AnalysisMember) -> Tuple[float, float, float, float]:
         # 가 부재별 등가 단면 폭/높이를 계산해 넣음.
         A = float(member.section_w) * float(member.section_h)
         return A, 0.0, 0.0, 0.0
+    # H형강 보 — 공칭 H200×200 강성(자동설계 전 초기값). 강축(Ix)을 Iz 로,
+    # 약축(Iy)을 Iy 로 매핑 → 해석 Mz(로컬 z 모멘트)=강축, strength_check 와 일관.
+    if member.kind == 'beam' and getattr(member, 'section_type', 'shs') == 'h':
+        hs = _nominal_h_section()
+        return hs.A, hs.Iy, hs.Ix, hs.J
     p = SHS_200x200x8
     return p['A'], p['Iy'], p['Iz'], p['J']
+
+
+_NOMINAL_H_SECTION = None
+
+
+def _nominal_h_section():
+    """공칭 H200×200 단면(없으면 카탈로그 최소). 해석 초기 강성용 — 1회 캐시."""
+    global _NOMINAL_H_SECTION
+    if _NOMINAL_H_SECTION is None:
+        from modular_3d.카탈로그.h_sections import H_CATALOG
+        pick = None
+        for s in H_CATALOG:
+            if abs(s.H - 200.0) < 1.0 and abs(s.B - 200.0) < 1.0:
+                pick = s
+                break
+        _NOMINAL_H_SECTION = pick if pick is not None else H_CATALOG[0]
+    return _NOMINAL_H_SECTION
 
 
 def _geom_transf_tag(kind: str, vec_xz: Tuple[float, float, float]) -> int:
@@ -620,8 +646,19 @@ def build_ops_model(analysis_model: AnalysisModel, scene=None) -> OpsModel:
     # (2026-05-13 wide-column 전환으로 셸 코어 폐기, 모서리 결합기 불필요.)
 
     # 4-rules) 케이스별 명시 접합 룰.
-    from modular_3d.analysis.joint_rules import apply_all_joint_rules
+    from modular_3d.analysis.joint_rules import (
+        apply_all_joint_rules, apply_added_joints,
+        remove_dangling_bridge_nodes)
+    # [2026-05-25] 사용자 접합 오버라이드를 om 에 부착 — 룰 등록 게이트
+    # (_resolve_override_dofs)가 등록 직전에 참조해 제거/강접/핀을 반영.
+    om.joint_overrides = list(getattr(scene, 'joint_overrides', []) or [])
     apply_all_joint_rules(om)
+    # 4-add) 사용자 신규 접합(kind='add') — 자동 룰 위에 추가. 같은 평면 위치
+    # 모든 층에 자동 복제.
+    apply_added_joints(om)
+    # 4-clean) 직각접합 제거로 두 결합이 모두 빠져 허공에 남은 가교 중간노드(N1)를
+    # 정리. 회전 자유도 자동 fix(6-c) 이전에 — fix 된 노드 제거 회피.
+    remove_dangling_bridge_nodes(om)
 
     # 5) 베이스 지점 (z_min 기둥 base 노드 6DOF 고정) — 결합 아님, 유지.
     _step_fix_base_nodes(om, analysis_model)

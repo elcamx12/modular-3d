@@ -162,7 +162,7 @@ CASE_DISPLAY_MAP = {
 # 표시명 → 내부 키 역매핑 (사용자 선택 시).
 CASE_DISPLAY_TO_KEY = {v: k for k, v in CASE_DISPLAY_MAP.items()}
 
-# 비활성(추후 구현) 항목 — KBC 2022 §0303 추가 하중조합.
+# 비활성(추후 구현) 항목 — KDS 41 12 00(건축물 설계하중) 추가 하중조합.
 CASE_DISABLED_ITEMS = [
     '1.4D (자중 단독) — 추후 구현',
     '0.9D + 1.0Ex (X 지진 전도 방지) — 추후 구현',
@@ -193,6 +193,8 @@ class AnalysisPanel(QWidget):
     dof_color_toggle = pyqtSignal(bool)
     # (2026-05-19) 기둥 층구간 분할 수 변경 — controls 가 재산정 트리거.
     column_segments_changed = pyqtSignal(int)
+    # (2026-05-19 Phase 6) 정책 라디오 변경 — 운송탭 캐시 무효화 트리거.
+    policy_changed = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -212,7 +214,7 @@ class AnalysisPanel(QWidget):
 
         # ── 하중조합 콤보 (2026-05-13 표기 명확화) ──────────
         # 표시: "1.2D + 1.6L (중력)" 같은 실제 조합식. 내부 키는 itemData 에.
-        # 비활성 항목(추후 구현 KBC 추가 조합) 도 함께 보여 사용자에게 향후
+        # 비활성 항목(추후 구현 KDS 추가 조합) 도 함께 보여 사용자에게 향후
         # 지원 예정을 안내.
         case_row = QHBoxLayout()
         case_row.addWidget(QLabel("하중조합:"))
@@ -292,6 +294,8 @@ class AnalysisPanel(QWidget):
 
         # ── 탭 3: 물량산출 (2026-05-08 신규) ─────────────────
         self._build_quantity_tab()
+        # ── 탭 4: 운송 (2026-05-19 Phase 6 신규) ───────────
+        self._build_transport_tab()
         # 탭 전환 시 ratio_view 시그널 — 물량산출 탭 진입/이탈에 따라 색상 모드 변경
         self._tabs.currentChanged.connect(self._on_tab_changed)
 
@@ -320,23 +324,33 @@ class AnalysisPanel(QWidget):
     def set_visible_subtabs(self,
                             show_summary: bool = True,
                             show_member: bool = True,
-                            show_quantity: bool = True) -> None:
-        """메인 윈도우의 [구조해석]/[물량] 탭에서 서브탭만 선택적으로 노출.
+                            show_quantity: bool = True,
+                            show_transport: bool = False) -> None:
+        """메인 윈도우의 [구조해석]/[물량]/[운송] 탭에서 서브탭만 선택적으로 노출.
 
-        구조해석 탭 → 요약·내부력만 / 물량 탭 → 물량산출만.
+        구조해석 탭 → 요약·내부력만 / 물량 탭 → 물량산출만 / 운송 탭 → 운송만.
         PyQt5 5.15+ `setTabVisible` 사용. 활성 인덱스도 보이는 첫 탭으로 보정.
+
+        [Phase 6 변경 — 2026-05-19]
+        운송 sub-탭(4번째) 추가에 따라 show_transport 파라미터 추가. 기본 False
+        라 기존 호출부(3 플래그) 도 그대로 호환. 운송 sub-탭이 아직 생성되지
+        않은 환경(WebEngine 미설치 등)에서도 self._tabs.count() 안쪽만 처리.
         """
-        flags = [show_summary, show_member, show_quantity]
-        for i, vis in enumerate(flags):
+        flags = [show_summary, show_member, show_quantity, show_transport]
+        # self._tabs.count() 가 더 적으면 (운송탭 미생성 등) 그 범위만 처리
+        n = min(len(flags), self._tabs.count())
+        for i in range(n):
+            vis = flags[i]
             if hasattr(self._tabs, 'setTabVisible'):
                 self._tabs.setTabVisible(i, bool(vis))
             else:
                 # 폴백: PyQt5 < 5.15 → 탭 자체는 못 숨김. 비활성화만.
                 self._tabs.setTabEnabled(i, bool(vis))
-        # 현재 인덱스가 숨겨졌다면 보이는 첫 탭으로 이동
-        if not flags[self._tabs.currentIndex()]:
-            for i, vis in enumerate(flags):
-                if vis:
+        # 현재 인덱스가 숨겨졌거나 범위 밖이면 보이는 첫 탭으로 이동
+        cur = self._tabs.currentIndex()
+        if cur < 0 or cur >= n or not flags[cur]:
+            for i in range(n):
+                if flags[i]:
                     self._tabs.setCurrentIndex(i)
                     break
 
@@ -407,9 +421,9 @@ class AnalysisPanel(QWidget):
         # 3) 강재 본수표
         lay.addWidget(QLabel("강재 본수표:"))
         self._steel_table = QTableWidget()
-        self._steel_table.setColumnCount(5)
+        self._steel_table.setColumnCount(6)
         self._steel_table.setHorizontalHeaderLabels([
-            "단면", "길이(mm)", "본수", "총 길이(m)", "총 중량(ton)"
+            "단면", "길이(mm)", "본수", "총 길이(m)", "총 중량(ton)", "금액(원)"
         ])
         sh = self._steel_table.horizontalHeader()
         sh.setSectionResizeMode(QHeaderView.ResizeToContents)
@@ -438,6 +452,25 @@ class AnalysisPanel(QWidget):
         self._slab_table.setWordWrap(False)
         self._slab_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         lay.addWidget(self._slab_table)
+
+        # 4-B) 자재비(재료비) 총액표 — 강재 + 데크슬래브 + 콘크리트
+        # [2026-05-24] 단가 DB(material_prices.json) × 물량. 코어·노무·경비 제외.
+        lay.addWidget(QLabel("자재비 (재료비):"))
+        self._matcost_table = QTableWidget()
+        self._matcost_table.setColumnCount(4)
+        self._matcost_table.setHorizontalHeaderLabels([
+            "항목", "물량", "단가", "금액(원)"
+        ])
+        mch = self._matcost_table.horizontalHeader()
+        mch.setSectionResizeMode(QHeaderView.ResizeToContents)
+        mch.setStretchLastSection(True)
+        self._matcost_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self._matcost_table.setRowCount(4)   # 강재 / 데크슬래브 / 콘크리트 / 합계
+        self._matcost_table.setMaximumHeight(150)
+        self._matcost_table.setTextElideMode(Qt.ElideNone)
+        self._matcost_table.setWordWrap(False)
+        self._matcost_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        lay.addWidget(self._matcost_table)
 
         # 5) 부재별 응력비 트리 (2026-05-19 작업 3 — 평면 표 → 모듈/층/역할 계층)
         # 위계: [모듈 그룹]   예) "A 모듈"
@@ -468,6 +501,62 @@ class AnalysisPanel(QWidget):
 
         self._tabs.addTab(page, "물량산출")
         self._quantity_tab_index = self._tabs.count() - 1
+
+    # ── 운송탭 (Phase 6) ────────────────────────────────────
+    def _build_transport_tab(self):
+        """운송탭 — TransportTab 위젯 인스턴스를 4번째 탭으로 추가.
+
+        분석 ⑤ 영역 ①~④ + ⑧ 진단(간단판). 영역 ⑤~⑦ 는 Phase 7·8 에서 확장.
+        """
+        # 지연 임포트: PyQtWebEngine 미설치 / OpenGL 컨텍스트 미설정 환경 보호.
+        # ImportError 만이 아니라 RuntimeError (QtWebEngineWidgets must be
+        # imported before QCoreApplication...) 도 같이 잡아서 placeholder 표시.
+        try:
+            from modular_3d.ui.transport_panel import TransportTab
+        except Exception as e:
+            page = QWidget()
+            lay = QVBoxLayout(page)
+            lay.addWidget(QLabel(
+                f"운송탭 사용 불가:\n{type(e).__name__}: {e}\n\n"
+                "조치:\n"
+                "1. modular_3d/__main__.py 의 venv 자기-재실행 가드가 적용된 빌드로 다시 실행\n"
+                "2. 여전히 같은 메시지면: pip install PyQtWebEngine matplotlib plotly"
+            ))
+            self._tabs.addTab(page, "운송")
+            self._transport_tab = None
+            self._transport_tab_index = self._tabs.count() - 1
+            return
+        self._transport_tab = TransportTab(self)
+        # 운송탭의 시그널을 AnalysisPanel 이 forward — Controller 가 구독.
+        self._transport_tab.transport_member_highlight.connect(
+            self._on_transport_member_highlight
+        )
+        self._transport_tab.transport_blocked.connect(
+            self._on_transport_blocked
+        )
+        self._tabs.addTab(self._transport_tab, "운송")
+        self._transport_tab_index = self._tabs.count() - 1
+
+    def populate_transport(self, design_results: Dict[str, object],
+                            policy: str = "3종") -> None:
+        """외부에서 design_result 와 정책을 운송탭에 주입.
+
+        Controller 가 단면 산정 완료 시 호출.
+        """
+        if getattr(self, '_transport_tab', None) is None:
+            return
+        self._transport_tab.set_scene_and_model(self._scene, self._model)
+        self._transport_tab.set_design_result(design_results, policy)
+
+    def _on_transport_member_highlight(self, cids: list) -> None:
+        """운송 회차표 더블클릭 → cid 리스트. Controller 가 구독 시 forward."""
+        # members_selected 시그널을 통해 기존 강조 채널 재사용
+        self.members_selected.emit(list(cids))
+
+    def _on_transport_blocked(self, n: int) -> None:
+        """운송 불가 항목 알림 — Phase 9 진단 UI 에서 확장."""
+        # 현재는 silent (진단 영역에 이미 표시됨)
+        pass
 
     # ── 외부 API ────────────────────────────────────────
 
@@ -509,7 +598,7 @@ class AnalysisPanel(QWidget):
         self._tabs.setCurrentIndex(1 if active is not None else 0)
 
     def _populate_case_combo_initial(self):
-        """콤보박스 초기 항목 — 활성 5 종 + 비활성 추가 조합 (KBC 향후 구현용)."""
+        """콤보박스 초기 항목 — 활성 5 종 + 비활성 추가 조합 (KDS 향후 구현용)."""
         model = QStandardItemModel(self._case_combo)
         # 활성 항목 — 표시명 + 내부 키 itemData
         for key, display in CASE_DISPLAY_MAP.items():
@@ -1000,6 +1089,10 @@ class AnalysisPanel(QWidget):
         # 물량산출 탭이 활성 상태이면 viewer 색상 모드 갱신
         if self._tabs.currentIndex() == getattr(self, '_quantity_tab_index', -1):
             self.ratio_view_changed.emit(f'ratio:{self._current_policy}')
+        # Phase 6 운송탭 동기화 — 정책 변경을 운송탭에 즉시 알림.
+        self.policy_changed.emit(self._current_policy)
+        if hasattr(self, '_transport_tab') and self._transport_tab is not None:
+            self._transport_tab.on_policy_sync(self._current_policy)
 
     def _on_tab_changed(self, idx: int):
         """탭 전환 — 물량산출 탭이면 ratio:정책 emit, 아니면 off."""
@@ -1025,6 +1118,18 @@ class AnalysisPanel(QWidget):
         rep = self._quantity_reports.get(self._current_policy)
         if rep is None:
             return
+
+        # 자재 단가 로드 + 자재비 산출 (2026-05-24)
+        # 단가는 material_prices.json. 강재(각형강관)·데크슬래브·레미콘만.
+        from modular_3d.카탈로그.material_prices import get_unit_price
+        from modular_3d.analysis.quantity_takeoff import compute_material_cost
+        _steel_unit = get_unit_price('강재_각형강관_SHS')
+        _steel_h_unit = get_unit_price('강재_H형강')
+        _deck_unit = get_unit_price('데크슬래브')
+        _concrete_unit = get_unit_price('콘크리트_레미콘')
+        matcost = compute_material_cost(rep, _steel_unit, _deck_unit,
+                                        _concrete_unit,
+                                        steel_h_unit_per_ton=_steel_h_unit)
 
         # 그룹 단면 표
         groups = rep.sections_by_group
@@ -1079,8 +1184,14 @@ class AnalysisPanel(QWidget):
             self._steel_table.setItem(r, 2, QTableWidgetItem(f"{it.count}"))
             self._steel_table.setItem(r, 3, QTableWidgetItem(f"{it.total_length_m:.2f}"))
             self._steel_table.setItem(r, 4, QTableWidgetItem(f"{it.total_weight_ton:.4f}"))
+            # 금액(원) = 총 중량(ton) × 강재 단가(원/ton). 단가 없으면 '—'.
+            if _steel_unit is not None:
+                amt_text = f"{it.total_weight_ton * _steel_unit:,.0f}"
+            else:
+                amt_text = "—"
+            self._steel_table.setItem(r, 5, QTableWidgetItem(amt_text))
             if it.is_total:
-                for c in range(5):
+                for c in range(6):
                     cell = self._steel_table.item(r, c)
                     if cell is not None:
                         f = cell.font(); f.setBold(True); cell.setFont(f)
@@ -1094,10 +1205,39 @@ class AnalysisPanel(QWidget):
         self._slab_table.setItem(0, 4, QTableWidgetItem(f"{s.rebar_ratio*100:.2f}%"))
         self._slab_table.setItem(0, 5, QTableWidgetItem(f"{s.rebar_weight_ton:.3f}"))
 
+        # 자재비(재료비) 총액표 채우기 (2026-05-24)
+        self._fill_material_cost_table(matcost)
+
         # 부재별 응력비 트리 (작업 3)
         self._fill_ratio_table(rep)
         # 물량 탭 컨텐츠 폭에 맞춰 패널 너비 자동 조정 (작업 1)
         self._fit_panel_to_quantity()
+
+    def _fill_material_cost_table(self, mc):
+        """자재비 총액표 — 강재/데크슬래브/콘크리트/합계 (2026-05-24).
+
+        mc: MaterialCost. 단가 미입력(0) 이면 단가칸을 '미입력' 으로 표시.
+        """
+        def _won(v):
+            return f"{v:,.0f}"
+        rows = [
+            ("강재(각형강관)", f"{mc.steel_ton:.4f} ton",
+             (f"{mc.steel_unit:,.0f} 원/ton" if mc.steel_unit else "미입력"),
+             _won(mc.steel_cost)),
+            ("데크슬래브", f"{mc.deck_area_m2:.2f} ㎡",
+             (f"{mc.deck_unit:,.0f} 원/㎡" if mc.deck_unit else "미입력"),
+             _won(mc.deck_cost)),
+            ("콘크리트(레미콘)", f"{mc.concrete_m3:.3f} ㎥",
+             (f"{mc.concrete_unit:,.0f} 원/㎥" if mc.concrete_unit else "미입력"),
+             _won(mc.concrete_cost)),
+            ("합계", "", "", _won(mc.total_cost)),
+        ]
+        for r, (name, qty, unit, amt) in enumerate(rows):
+            for c, txt in enumerate((name, qty, unit, amt)):
+                cell = QTableWidgetItem(txt)
+                if r == 3:   # 합계 행 볼드
+                    f = cell.font(); f.setBold(True); cell.setFont(f)
+                self._matcost_table.setItem(r, c, cell)
 
     def _fill_ratio_table(self, rep):
         """부재별 응력비 트리 — 구조해석탭(_fill_member_tree_ops) 과

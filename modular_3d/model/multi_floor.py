@@ -38,6 +38,7 @@ from modular_3d.analysis.constants import (
 def _floor_z_list(comp_type: ComponentType, n_floors: int,
                   merge_with_panel: bool = False,
                   cantilever_slab_on_module: bool = False,
+                  interior_wall_plus_top: bool = False,
                   ) -> List[float]:
     """부재 타입과 종속 옵션에 따라 각 floor_index 별 z 좌표 리스트 반환.
 
@@ -72,6 +73,14 @@ def _floor_z_list(comp_type: ComponentType, n_floors: int,
         # 병합 OFF: 패널 위로 200 (k=0..N-1)
         offset = 0.0 if merge_with_panel else S
         return [k * H + offset for k in range(n_floors)]
+
+    elif comp_type == ComponentType.INTERIOR_WALL:
+        # 내벽: 부모 따라 복제. position.z = k·H (부모 base 와 동일 평면).
+        # wall_fill 로컬 z(half_s..h-s-half_s)가 같은 층 모듈 벽과 flush.
+        # 부모가 바닥패널/패널레벨이면 0..N(N+1장), 모듈/모듈종속이면 0..N-1(N장).
+        if interior_wall_plus_top:
+            return [k * H for k in range(n_floors + 1)]
+        return [k * H for k in range(n_floors)]
 
     elif comp_type == ComponentType.CANTILEVER_BEAM:
         # 각 층 모듈 천장보 레벨 (N개). 1층 바닥(z=0)은 패널·슬래브와 마찬가지로
@@ -119,10 +128,12 @@ def _floor_z_list(comp_type: ComponentType, n_floors: int,
 # ── Component 팩토리 ──────────────────────────────────────
 
 def _instantiate(comp_type: ComponentType, position: np.ndarray,
-                 dims: dict, rotation: int, anchor: int) -> Component:
+                 dims: dict, rotation: int, anchor: int,
+                 beam_section_type: str = 'shs') -> Component:
     """Component 서브클래스 생성 — model.core.instantiate 위임 (단계 2 통합)."""
     from modular_3d.model.core import instantiate
-    return instantiate(comp_type, position, dims, rotation, anchor)
+    return instantiate(comp_type, position, dims, rotation, anchor,
+                       beam_section_type)
 
 
 # ── 다층 그룹 ID 발급 ──────────────────────────────────────
@@ -150,9 +161,11 @@ def create_multi_floor_group(
     *,
     merge_with_panel: bool = False,
     cantilever_slab_on_module: bool = False,
+    interior_wall_plus_top: bool = False,
     parent_group_id: int = 0,
     anchor_edge_id: int = -1,
     mid_beam_level: Optional[str] = None,
+    beam_section_type: str = 'shs',
 ) -> Tuple[int, List[int]]:
     """다층 그룹을 생성하고 (group_id, [comp_id_list]) 반환.
 
@@ -177,6 +190,7 @@ def create_multi_floor_group(
         comp_type, n_floors,
         merge_with_panel=merge_with_panel,
         cantilever_slab_on_module=cantilever_slab_on_module,
+        interior_wall_plus_top=interior_wall_plus_top,
     )
 
     # 3·4. 각 층 부재 생성
@@ -213,7 +227,8 @@ def create_multi_floor_group(
     for floor_idx, z in enumerate(z_list):
         pos = base_pos.copy()
         pos[2] = z
-        comp = _instantiate(comp_type, pos, eff_dims, rotation, anchor)
+        comp = _instantiate(comp_type, pos, eff_dims, rotation, anchor,
+                            beam_section_type)
         # 그룹 메타데이터 부여
         comp.group_id = gid
         comp.sub_index = sub_idx

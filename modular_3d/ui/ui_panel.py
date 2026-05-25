@@ -2,7 +2,7 @@
 Qt UI — 치수 입력 패널, 상태바 관리.
 """
 from PyQt5.QtWidgets import (
-    QWidget, QHBoxLayout, QLabel, QLineEdit, QStatusBar, QCheckBox,
+    QWidget, QHBoxLayout, QLabel, QLineEdit, QStatusBar, QCheckBox, QComboBox,
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QEvent
 from PyQt5.QtGui import QIntValidator, QValidator
@@ -60,6 +60,16 @@ class DimensionInputPanel(QWidget):
         self._merge_check.setVisible(False)
         layout.addWidget(self._merge_check)
 
+        # 보 단면 타입(각형강관/H형강) — 보가 있는 직접배치 부재일 때만 노출.
+        self._section_caption = QLabel('보:')
+        self._section_combo = QComboBox()
+        self._section_combo.addItem('각형강관', 'shs')
+        self._section_combo.addItem('H형강', 'h')
+        layout.addWidget(self._section_caption)
+        layout.addWidget(self._section_combo)
+        self._section_caption.setVisible(False)
+        self._section_combo.setVisible(False)
+
         # 모드 라벨 (배치/정렬/IDLE 등 — c4)
         self._mode_label = QLabel('')
         self._mode_label.setStyleSheet('color: #88c; padding-left: 8px;')
@@ -74,6 +84,16 @@ class DimensionInputPanel(QWidget):
 
     def configure_for_type(self, comp_type: ComponentType):
         """부재 타입별 필드 표시/숨김."""
+        # 보 단면 타입 콤보 — 직접 선택 부재(모듈·바닥패널·수직3층모듈·구조벽)만.
+        # 종속(캔틸레버·중간보)은 부모를 따라가므로 숨김. 매 호출 기본값 각형강관.
+        _show_section = comp_type in (
+            ComponentType.MODULE, ComponentType.FLOOR_PANEL,
+            ComponentType.VERTICAL_MODULE, ComponentType.STRUCT_WALL,
+        )
+        self._section_caption.setVisible(_show_section)
+        self._section_combo.setVisible(_show_section)
+        if _show_section:
+            self._section_combo.setCurrentIndex(0)   # 기본 각형강관
         # 기본: 전부 활성
         for f in self._fields.values():
             f.setEnabled(True)
@@ -85,6 +105,7 @@ class DimensionInputPanel(QWidget):
             ComponentType.MODULE: '[모듈]',
             ComponentType.FLOOR_PANEL: '[바닥패널]',
             ComponentType.STRUCT_WALL: '[구조벽]',
+            ComponentType.INTERIOR_WALL: '[내벽]',
             ComponentType.CANTILEVER_BEAM: '[캔틸레버보]',
             ComponentType.CANTILEVER_SLAB: '[캔틸레버슬래브]',
             ComponentType.MID_BEAM: '[중간보]',
@@ -106,6 +127,14 @@ class DimensionInputPanel(QWidget):
             self._fields['depth'].setText('200')
             self._fields['height'].setEnabled(False)
             self._fields['height'].setText('3400')
+        elif comp_type == ComponentType.INTERIOR_WALL:
+            # 내벽: width=벽길이(입력), depth=100(두께 고정), height=자동(부모 검출).
+            # 높이는 부모를 클릭한 시점에 컨트롤러가 부모 높이로 채운다 — 모듈이면
+            # 모듈 높이, 바닥패널·캔틸레버슬래브면 같은 그룹 모듈 높이(없으면 표준 한 층).
+            self._fields['depth'].setEnabled(False)
+            self._fields['depth'].setText('100')
+            self._fields['height'].setEnabled(False)
+            self._fields['height'].setText('자동')
         elif comp_type == ComponentType.CANTILEVER_BEAM:
             # width=길이만 입력
             self._fields['depth'].setEnabled(False)
@@ -189,6 +218,9 @@ class DimensionInputPanel(QWidget):
         # 구조벽 전용 merge 플래그 (체크박스 visible 여부로 판단)
         if self._merge_check.isVisible():
             result['merge'] = bool(self._merge_check.isChecked())
+        # 보 단면 타입 (콤보 visible 일 때만)
+        if self._section_combo.isVisible():
+            result['section_type'] = self._section_combo.currentData()
         return result
 
     def activate(self, comp_type: ComponentType, defaults: dict):

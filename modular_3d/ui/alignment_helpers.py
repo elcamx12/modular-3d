@@ -10,7 +10,7 @@ self 없이 model 만 의존하는 함수들을 모았다.
 from __future__ import annotations
 
 from modular_3d.model import (
-    Module, FloorPanel, StructWall,
+    Module, FloorPanel, StructWall, InteriorWall,
     CantileverBeam, CantileverSlab, MidBeam, MidColumn, ComponentType,
     Core, CoreSlab,
 )
@@ -29,6 +29,7 @@ TYPE_COLORS = {
     _CT.MODULE:           (80, 80, 200),
     _CT.FLOOR_PANEL:      (80, 180, 80),
     _CT.STRUCT_WALL:      (200, 80, 80),
+    _CT.INTERIOR_WALL:    (230, 140, 60),
     _CT.CANTILEVER_BEAM:  (180, 80, 180),
     _CT.CANTILEVER_SLAB:  (180, 120, 180),
     _CT.MID_BEAM:         (80, 180, 180),
@@ -106,6 +107,10 @@ def allowed_parent_types(dep_type):
                     ComponentType.MID_BEAM,
                     ComponentType.MID_COLUMN):
         return {ComponentType.MODULE}
+    # 내벽: 모듈·바닥패널·캔틸레버슬래브 위에 배치 가능.
+    if dep_type == ComponentType.INTERIOR_WALL:
+        return {ComponentType.MODULE, ComponentType.FLOOR_PANEL,
+                ComponentType.CANTILEVER_SLAB}
     # 구조벽은 진정한 종속이 아니라 '바닥패널과 합체' 대상 선택용 — DEPENDENCY_PICK
     # 상태를 재사용해 사용자가 합체할 FP 를 명시적으로 클릭하게 한다.
     if dep_type == ComponentType.STRUCT_WALL:
@@ -168,6 +173,10 @@ def iter_component_rects(comp, layer):
         if layer == LAYER_TOP and comp.top_runner is not None:
             yield beam_xy(comp.top_runner), 'beam'
 
+    elif isinstance(comp, InteriorWall):
+        # 내벽 — 평면에서 두께×길이 직사각형 (기둥·보 없음). 양 레이어.
+        yield xy_bbox(comp), 'wall'
+
     elif isinstance(comp, CantileverBeam):
         if layer == LAYER_BOTTOM and comp.beam is not None:
             yield beam_xy(comp.beam), 'beam'
@@ -205,6 +214,8 @@ def component_layers(comp, scene, child_parent):
     if isinstance(comp, FloorPanel):
         return {LAYER_BOTTOM}
     if isinstance(comp, StructWall):
+        return {LAYER_BOTTOM, LAYER_TOP}
+    if isinstance(comp, InteriorWall):
         return {LAYER_BOTTOM, LAYER_TOP}
     if isinstance(comp, CantileverBeam):
         return {LAYER_BOTTOM}

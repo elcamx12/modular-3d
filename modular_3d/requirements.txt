@@ -9,3 +9,7 @@ vispy>=0.13
 openseespy>=3.7
 openseespywin>=3.7  ; sys_platform == "win32"
 pillow>=10.0
+# ── Phase 6 운송탭 추가 의존성 (2026-05-19) ──
+PyQtWebEngine>=5.15        # QWebEngineView — Plotly 그래프 임베드
+plotly>=5.0                # 운송 시각화 (top/rear view)
+pytest>=8.0                # 단위 테스트 (개발용)

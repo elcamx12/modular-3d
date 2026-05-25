@@ -44,6 +44,8 @@ DEFAULT_DIMS = {
     ComponentType.MODULE:           {'width': 3400, 'depth': 6820, 'height': 3400},
     ComponentType.FLOOR_PANEL:      {'width': 3400, 'depth': 5000, 'height': 200},
     ComponentType.STRUCT_WALL:      {'width': 3400, 'depth': 200, 'height': 3400},
+    # 내벽 — width=벽 길이, depth=두께(100 고정), height=3400(자동).
+    ComponentType.INTERIOR_WALL:    {'width': 3000, 'depth': 100, 'height': 3400},
     ComponentType.CANTILEVER_BEAM:  {'width': 1500, 'depth': 200, 'height': 200},
     ComponentType.CANTILEVER_SLAB:  {'width': 1500, 'depth': 3400, 'height': 200},
     ComponentType.MID_BEAM:         {'width': 3400, 'depth': 200, 'height': 200},
@@ -469,6 +471,18 @@ class Controller(F5Mixin, F6Mixin):
             # (3400, 3400, 10240) 로 덮어쓴다 — 치수 고정 사양.
             if self._current_comp_type == ComponentType.VERTICAL_MODULE:
                 dims = {'width': 3400.0, 'depth': 3400.0, 'height': 10240.0}
+            # 내벽: height 는 '자동'(0) 으로 들어오므로 부모 검출 높이로 채운다.
+            if self._current_comp_type == ComponentType.INTERIOR_WALL:
+                meta = getattr(self, '_f5_dep_meta', None)
+                wall_h = (meta or {}).get('wall_height') if meta else None
+                if not wall_h:
+                    from modular_3d.카탈로그.geometry import MODULE_HEIGHT_MM
+                    wall_h = float(MODULE_HEIGHT_MM)
+                dims = dict(dims)
+                dims['height'] = float(wall_h)
+            # 보 단면 타입 — 콤보 보이는 부재만 dims 에 들어옴(없으면 각형강관).
+            dims = dict(dims)
+            self._f5_pending_beam_section = dims.pop('section_type', 'shs')
             self._f5_pending_dims = dict(dims)
             self._f5_pending_placement = False
             self._dim_panel.deactivate()
@@ -886,6 +900,51 @@ class Controller(F5Mixin, F6Mixin):
                 self._snap.add_component(comp.id, comp)
             self._status.update_count(self._scene.component_count)
             print(f'[UNDO group_delete] 부재 {len(deleted_comps)}개 복원')
+
+        elif action.action_type in ('opening_add', 'opening_del', 'opening_move'):
+            # 개구부 되돌리기 (3단계) — 해당 부재 메시 재생성으로 반영.
+            cid = action.data['comp_id']
+            idx = action.data['index']
+            comp = self._scene.components.get(cid)
+            if comp is not None:
+                ops = getattr(comp, 'openings', None)
+                if ops is not None:
+                    if action.action_type == 'opening_add':
+                        if 0 <= idx < len(ops):
+                            ops.pop(idx)
+                    elif action.action_type == 'opening_del':
+                        ops.insert(min(idx, len(ops)), dict(action.data['op']))
+                    else:  # opening_move
+                        if 0 <= idx < len(ops):
+                            ops[idx] = dict(action.data['old_op'])
+                    self._viewer.remove_component_visual(cid)
+                    v, f, c = build_component_mesh(comp)
+                    self._viewer.add_component_visual(cid, v, f, c)
+                    print(f'[UNDO {action.action_type}] #{cid}')
+
+        elif action.action_type == 'room_add':
+            rid = action.data['room_id']
+            self._scene.rooms.pop(rid, None)
+            if hasattr(self._viewer, 'remove_room_visual'):
+                self._viewer.remove_room_visual(rid)
+            print(f'[UNDO room_add] #{rid}')
+
+        elif action.action_type == 'room_del':
+            room = action.data['room']
+            self._scene.rooms[room.id] = room
+            if hasattr(self, '_render_room_3d'):
+                self._render_room_3d(room)
+            print(f'[UNDO room_del] #{room.id}')
+
+        elif action.action_type == 'room_move':
+            rid = action.data['room_id']
+            room = self._scene.rooms.get(rid)
+            if room is not None:
+                room.polygon = [(float(x), float(y))
+                                for (x, y) in action.data['old_polygon']]
+                if hasattr(self, '_render_room_3d'):
+                    self._render_room_3d(room)
+                print(f'[UNDO room_move] #{rid}')
 
     # ── 피킹 (Ray-AABB) ───────────────────────────────────────
 

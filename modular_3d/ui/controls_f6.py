@@ -296,6 +296,12 @@ class F6Mixin:
         # 컨트롤러에 reports 캐시 (3D 색상 시각화용)
         self.set_quantity_reports(reports)
 
+        # Phase 6: 운송탭에 design_results 주입 + 컨트롤러 보관 (메인 운송 탭 진입 시 재사용)
+        self._design_results = design_results
+        if hasattr(self._analysis_panel, 'populate_transport'):
+            policy = getattr(self._analysis_panel, '_current_policy', '3종')
+            self._analysis_panel.populate_transport(design_results, policy)
+
         # 콘솔 요약
         dprint('QTY', '[QTY] 물량산출 자동 실행 완료')
         for policy, rep in reports.items():
@@ -361,6 +367,11 @@ class F6Mixin:
         if hasattr(self._analysis_panel, 'populate_quantity_full'):
             self._analysis_panel.populate_quantity_full(reports, m2g_by_policy)
         self.set_quantity_reports(reports)
+        # Phase 6: 운송탭에 design_results 주입 + 컨트롤러 보관.
+        self._design_results = design_results
+        if hasattr(self._analysis_panel, 'populate_transport'):
+            policy = getattr(self._analysis_panel, '_current_policy', '3종')
+            self._analysis_panel.populate_transport(design_results, policy)
         dprint('QTY',
                 f'[QTY] 케이스 {case_name} (K={n_seg}) 물량/응력비 재산정 완료')
 

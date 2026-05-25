@@ -45,14 +45,21 @@ def snap_n_floors_to_three(n: int) -> int:
 
 # ─── 직렬화 ─────────────────────────────────────────────────
 
-def save_scene(scene: Scene, n_floors: int, path: str) -> int:
-    """Scene 의 모든 Component + 층수를 JSON 으로 저장.
-    반환: 저장된 부재 수.
+def scene_to_state_dict(scene: Scene, n_floors: int) -> dict:
+    """Scene + 층수 → 직렬화 dict (파일 저장 없이 메모리 표현).
+
+    save_scene 과 모듈 정의 라이브러리(definition_library)가 공유하는 단일
+    직렬화 경로. 반환 dict 는 json 직렬화 가능.
     """
     data = {
         'version': 1,
         'n_floors': int(n_floors),
         'components': [],
+        # 실(Room) 컬렉션 — 2단계 실 배치. 부재와 별개로 직렬화.
+        'rooms': [r.to_dict() for r in getattr(scene, 'rooms', {}).values()],
+        # 접합부 오버라이드 — 사용자가 변경/제거/추가한 컴포넌트 간 접합.
+        'joint_overrides': [ov.to_dict()
+                            for ov in getattr(scene, 'joint_overrides', [])],
     }
     for cid, comp in scene.components.items():
         data['components'].append({
@@ -73,22 +80,37 @@ def save_scene(scene: Scene, n_floors: int, path: str) -> int:
             'merged_wall_ids': list(getattr(comp, 'merged_wall_ids', []) or []),
             'parent_id': int(getattr(comp, 'parent_id', 0)),
             'joint_records': list(getattr(comp, 'joint_records', []) or []),
+            'openings': [dict(o) for o in (getattr(comp, 'openings', []) or [])],
+            'beam_section_type': str(getattr(comp, 'beam_section_type', 'shs')),
         })
+    return data
+
+
+def save_scene(scene: Scene, n_floors: int, path: str) -> int:
+    """Scene 의 모든 Component + 층수를 JSON 으로 저장.
+    반환: 저장된 부재 수.
+    """
+    data = scene_to_state_dict(scene, n_floors)
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     return len(data['components'])
 
 
 def load_scene(path: str) -> Tuple[Scene, int]:
-    """JSON 파일을 읽어 (Scene, n_floors) 반환.
+    """JSON 파일을 읽어 (Scene, n_floors) 반환. 역직렬화는 state_dict_to_scene 위임."""
+    with open(path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    return state_dict_to_scene(data)
+
+
+def state_dict_to_scene(data: dict) -> Tuple[Scene, int]:
+    """직렬화 dict → (Scene, n_floors).
 
     절차:
-    1. JSON 역직렬화 + 부재 인스턴스화
+    1. dict 역직렬화 + 부재 인스턴스화
     2. 옛 → 새 ID 매핑으로 합체·부모 reference 재배선
     3. 구버전 호환성 추정 (멱등)
     """
-    with open(path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
     scene = Scene()
     # 스키마 버전 검사 — 현재 version=1. 호환성 미보장 버전은 경고만 출력.
     file_ver = int(data.get('version', 1))
@@ -124,8 +146,12 @@ def load_scene(path: str) -> Tuple[Scene, int]:
         comp.anchor_edge_id = int(d.get('anchor_edge_id', -1))
         comp.mid_beam_level = d.get('mid_beam_level', None)
         comp.merge_with_panel = bool(d.get('merge_with_panel', False))
+        # 보 단면 타입 — 기존 파일에 없으면 각형강관('shs'). generate 전에 설정해
+        # 하위 보로 전파되게 한다.
+        comp.beam_section_type = str(d.get('beam_section_type', 'shs'))
         comp.parent_id = int(d.get('parent_id', 0))
         comp.joint_records = list(d.get('joint_records', []) or [])
+        comp.openings = [dict(o) for o in (d.get('openings', []) or [])]
         if hasattr(comp, 'merged_fp_id'):
             mfid = d.get('merged_fp_id', None)
             comp.merged_fp_id = int(mfid) if mfid is not None else None
@@ -166,6 +192,22 @@ def load_scene(path: str) -> Tuple[Scene, int]:
             comp.parent_id = new
     if n_missing > 0:
         dprint('scene_io', f'[scene_io] 총 {n_missing} 개 ID 재배선 실패 (구버전 JSON 또는 손상)')
+
+    # 실(Room) 복원 — 부재와 별개. id 는 새로 발급(저장 당시 id 무시).
+    from modular_3d.model.room import Room
+    for r in data.get('rooms', []):
+        try:
+            scene.add_room(Room.from_dict(r))
+        except Exception as e:
+            dprint('scene_io', f'[scene_io] 실 복원 실패: {e}')
+
+    # 접합부 오버라이드 복원 — 평면 좌표(xy)로 식별하므로 부재 ID 재배선과 무관.
+    from modular_3d.model.joint_override import JointOverride
+    for o in data.get('joint_overrides', []):
+        try:
+            scene.joint_overrides.append(JointOverride.from_dict(o))
+        except Exception as e:
+            dprint('scene_io', f'[scene_io] 접합 오버라이드 복원 실패: {e}')
 
     # 구버전 호환성 추정 (멱등 — 새 형식 scene 은 통과만)
     _auto_match_wall_to_fp(scene)

@@ -150,6 +150,19 @@ class F5Mixin:
                 on_move_key=self._f5_on_move_key,
                 on_undo=self._f5_on_undo,
                 on_copy=self._f5_on_copy,
+                on_room_complete=self._f5_on_room_complete,
+                on_room_delete=self._delete_room,
+                on_room_commit=self._room_commit,
+                on_room_ghost=self._room_ghost,
+                on_room_ghost_clear=self._room_ghost_clear,
+                on_opening_add_start=self._opening_add_start,
+                on_opening_commit=self._opening_commit,
+                on_opening_ghost=self._opening_ghost,
+                on_opening_ghost_clear=self._opening_ghost_clear,
+                on_opening_delete=self._delete_opening,
+                on_import_ghost=self._f5_on_import_ghost,
+                on_import_commit=self._f5_on_import_commit,
+                on_import_cancel=self._f5_on_import_cancel,
             )
 
     # ── F5 저장/불러오기 ──────────────────────────────────────
@@ -185,12 +198,14 @@ class F5Mixin:
             print(f'[LOAD] 실패: {e}')
             return
 
-        # 기존 Scene/viewer/snap 모두 비우기
+        # 기존 Scene/viewer/snap 모두 비우기 (실 3D 색면 포함)
+        self._clear_rooms_3d()
         for cid in list(self._scene.components.keys()):
             self._viewer.remove_component_visual(cid)
             self._snap.remove_component(cid)
         self._scene.components.clear()
         self._scene.undo_stack.clear()
+        self._scene.rooms.clear()
 
         # 새 Scene 의 부재들을 메인 Scene 에 등록 (id 재발급은 add_component 가 처리)
         for old_id, comp in new_scene.components.items():
@@ -198,6 +213,18 @@ class F5Mixin:
             v, f, c = build_component_mesh(comp)
             self._viewer.add_component_visual(new_id, v, f, c)
             self._snap.add_component(new_id, comp)
+
+        # 실(Room) 재등록 + 3D 색면 렌더
+        for room in getattr(new_scene, 'rooms', {}).values():
+            self._scene.add_room(room)
+        self._render_all_rooms_3d()
+
+        # 접합 오버라이드 복사 — 부재 ID 재배선과 무관(평면 좌표 식별).
+        # 저장본이 있으면 접합 탭 진입 시 "저장본/새 계산" 1회 질문.
+        self._scene.joint_overrides = list(
+            getattr(new_scene, 'joint_overrides', []) or [])
+        self._scene._joint_overrides_pending_choice = bool(
+            self._scene.joint_overrides)
 
         # (2026-05-12) 불러오기로 들어간 add_component 의 'place' 액션들을 모두
         # 제거 — 사용자가 Z 키로 불러온 부재를 하나씩 지우는 일을 막음.
@@ -304,6 +331,9 @@ class F5Mixin:
         3. 본체 먼저 N층 재생성 → 새 group_id 매핑(원본 gid → 새 gid).
         4. 종속 부재도 N(+1)층 재생성 — parent_group_id 매핑으로 부모 그룹 합류.
         """
+        if getattr(self, 'single_floor_mode', False):
+            # 정의 탭: 층수 복제 비활성(단일층 고정) — 다층 재생성하지 않음.
+            return
         if n < 1 or n > 25:
             print(f'[F5] 층수 {n} 범위 초과 — 무시')
             return
@@ -491,6 +521,17 @@ class F5Mixin:
 
     def _f5_on_type_key(self, comp_type: ComponentType):
         """F5 캔버스에서 1~7 키 입력 → 배치 시작."""
+        # [2026-05-24] 배치 탭 정의 라이브러리 인터셉트(버튼·1~9키 공용 funnel).
+        # main 이 배치 컨트롤러에만 _type_select_intercept 를 주입한다. 저장된
+        # 정의가 있으면 '새로/가져오기' 프롬프트를 띄우고, 가져오기로 처리되면
+        # (=True) 기존 새로 만들기 흐름을 생략한다. 정의 탭 컨트롤러엔 미주입.
+        _hook = getattr(self, '_type_select_intercept', None)
+        if _hook is not None:
+            try:
+                if _hook(comp_type):
+                    return
+            except Exception as _e:
+                print(f'[TYPE INTERCEPT] {_e}')
         # 종속 부재(4·5·6·7)는 단계 4에서 처리 — 임시로 일반 부재처럼 직진
         self._current_comp_type = comp_type
         self._preview_rotation = 0
@@ -524,7 +565,13 @@ class F5Mixin:
         from modular_3d.render.mesh_builder import build_component_mesh
         import numpy as np
 
-        n_floors = self._f5_panel.floors if self._f5_panel else 1
+        # [정의 탭 단일층] 단일층 모드면 항상 3층 분량으로 생성(수직3층모듈이
+        # 정확히 1개 만들어지는 최소 배수) 후, 배치 끝에서 floor_index>0 을 모두
+        # 제거해 1층 1세트만 남긴다. 일반 모드는 패널 층수 그대로.
+        if getattr(self, 'single_floor_mode', False):
+            n_floors = 3
+        else:
+            n_floors = self._f5_panel.floors if self._f5_panel else 1
         merge = bool(dims.get('merge', False))
         base_pos = np.array([world_x, world_y, 0.0], dtype=np.float64)
 
@@ -691,6 +738,7 @@ class F5Mixin:
         anchor_edge_id = -1
         mid_beam_level = None
         cantilever_slab_on_module = False
+        interior_wall_plus_top = False
         merge_target_fp_group = 0
         if dep_meta is not None:
             anchor_edge_id = dep_meta['anchor_edge_id']
@@ -698,6 +746,17 @@ class F5Mixin:
             if comp_type == ComponentType.CANTILEVER_SLAB:
                 cantilever_slab_on_module = (
                     dep_meta['parent_comp_type'] == ComponentType.MODULE)
+            if comp_type == ComponentType.INTERIOR_WALL:
+                # 부모가 바닥패널이면 0..N(N+1장), 모듈/캔틸레버슬래브면 0..N-1(N장).
+                interior_wall_plus_top = (
+                    dep_meta['parent_comp_type'] == ComponentType.FLOOR_PANEL)
+
+        # 보 단면 타입 — 직접배치는 치수패널 선택값, 종속은 부모를 따라간다.
+        beam_section_type = getattr(self, '_f5_pending_beam_section', 'shs')
+        if dep_meta is not None and dep_meta.get('parent_id'):
+            _pc = self._scene.components.get(dep_meta['parent_id'])
+            if _pc is not None:
+                beam_section_type = getattr(_pc, 'beam_section_type', 'shs')
             # 구조벽 합체 모드는 자기 그룹을 가져야 하므로 parent_group_id 는
             # 0 으로 둔다(=새 그룹 발급). 합체 정보만 별도로 보관.
             if comp_type == ComponentType.STRUCT_WALL:
@@ -754,6 +813,8 @@ class F5Mixin:
                 anchor_edge_id=anchor_edge_id,
                 mid_beam_level=mid_beam_level,
                 cantilever_slab_on_module=cantilever_slab_on_module,
+                interior_wall_plus_top=interior_wall_plus_top,
+                beam_section_type=beam_section_type,
             )
 
         # 구조벽 합체 처리: 사용자가 선택한 FP 그룹에서 같은 floor 의 FP 를 찾아
@@ -801,6 +862,13 @@ class F5Mixin:
         # (2026-05-12) 코어 슬래브 자동 동반 생성 폐지 — 사용자가 별도 버튼으로
         # 생성. 본 분기는 더 이상 필요 없음.
 
+        # 합체 구조벽 등 종속 부재가 부모/패널 보 단면 타입을 따라가도록 동기화.
+        self._sync_dependent_beam_sections()
+
+        # [정의 탭 단일층] floor_index>0 부재 제거 — 정의는 1층 1세트만 유지.
+        if getattr(self, 'single_floor_mode', False):
+            self._collapse_to_single_floor()
+
         self._status.update_count(self._scene.component_count)
         if dep_meta is not None:
             sub_idx = self._scene.components[ids[0]].sub_index
@@ -833,6 +901,460 @@ class F5Mixin:
         self._f5_dep_meta = None
         self._f5_user_rv_override = False
         self._refresh_2d()
+
+    def _collapse_to_single_floor(self):
+        """[정의 탭 단일층] floor_index>0 부재를 모두 제거.
+
+        정의는 '건물 층 복제 없는 1개 인스턴스' 다. 모든 부재 타입에서
+        floor_index==0 이 곧 1층(첫 인스턴스)이며(중간보는 같은 floor_index=0
+        에 바닥+천장 2개), 수직3층모듈도 1개 인스턴스가 floor_index=0 이다.
+        따라서 floor_index>0 을 제거하면 타입과 무관하게 정확히 1세트만 남는다.
+        """
+        to_remove = [cid for cid, c in self._scene.components.items()
+                     if int(getattr(c, 'floor_index', 0)) > 0]
+        for cid in to_remove:
+            self._viewer.remove_component_visual(cid)
+            self._snap.remove_component(cid)
+            self._scene.remove_component(cid)
+        if to_remove:
+            self._refresh_2d()
+
+    # ── 실(Room) 처리 (2026-05-24 2단계) ─────────────────
+    def _f5_on_room_complete(self, points):
+        """2D 캔버스에서 폴리곤을 닫으면 호출 — 이름·용도 입력 후 실 생성.
+
+        [CoT] 절차:
+        1. 점 3개 미만이면 무시(캔버스가 이미 거르지만 방어).
+        2. 이름·용도 다이얼로그(취소 시 생성 안 함).
+        3. Room 생성 → scene.add_room → 3D 반투명 색면 렌더 → 2D 갱신.
+        """
+        if not points or len(points) < 3:
+            return
+        from modular_3d.ui.room_dialog import ask_room_type
+        from modular_3d.model.room import Room
+        from modular_3d.카탈로그.room_types import get_room_type
+        parent = self._f5_panel if self._f5_panel else None
+        room_type = ask_room_type(parent)
+        if room_type is None:
+            return  # 취소
+        room = Room(room_type=room_type,
+                    polygon=[(float(x), float(y)) for (x, y) in points],
+                    floor_index=0)
+        rid = self._scene.add_room(room)
+        from modular_3d.model import Action
+        self._scene.undo_stack.append(Action(
+            action_type='room_add', data={'room_id': rid}))
+        self._render_room_3d(room)
+        self._refresh_2d()
+        rt = get_room_type(room_type)
+        label = rt.name if rt is not None else room_type
+        if self._dim_panel is not None:
+            self._dim_panel.set_mode_text(f'[실 생성: {label}]')
+        print(f'[ROOM] 실 #{rid} 생성: {label} ({room_type}), 점 {len(points)}개')
+
+    def _render_room_3d(self, room):
+        """실 1건을 3D 반투명 색면으로 렌더(이미 있으면 갱신)."""
+        from modular_3d.render.room_mesh import build_room_mesh
+        from modular_3d.카탈로그.room_types import ROOM_TYPE_BY_KEY
+        rt = ROOM_TYPE_BY_KEY.get(getattr(room, 'room_type', ''))
+        color = rt.color if rt is not None else (160, 160, 160)
+        mesh = build_room_mesh(room.polygon, color)
+        if mesh is None:
+            return
+        v, f, c = mesh
+        if hasattr(self._viewer, 'add_room_visual'):
+            self._viewer.add_room_visual(room.id, v, f, c)
+
+    def _render_all_rooms_3d(self):
+        """씬의 모든 실을 3D 로 렌더(불러오기·작업공간 교체 후 호출)."""
+        for room in getattr(self._scene, 'rooms', {}).values():
+            self._render_room_3d(room)
+
+    def _clear_rooms_3d(self):
+        """3D 실 색면 전부 제거(작업공간 비우기 시)."""
+        if hasattr(self._viewer, 'remove_room_visual'):
+            for rid in list(getattr(self._scene, 'rooms', {}).keys()):
+                self._viewer.remove_room_visual(rid)
+
+    def _delete_room(self, room_id: int):
+        """실 1건 삭제 — 씬·3D 색면 제거 + 되돌리기 기록 + 2D 갱신."""
+        from modular_3d.model import Action
+        room = self._scene.rooms.get(room_id)
+        if room is None:
+            return
+        if hasattr(self._viewer, 'remove_room_visual'):
+            self._viewer.remove_room_visual(room_id)
+        self._scene.remove_room(room_id)
+        self._scene.undo_stack.append(Action(
+            action_type='room_del', data={'room': room}))
+        self._refresh_2d()
+        print(f'[ROOM] 실 #{room_id} 삭제')
+
+    def _room_ghost(self, room_type: str, polygon):
+        """실 이동/복사 미리보기 3D 고스트(반투명 색면) 갱신."""
+        from modular_3d.render.room_mesh import build_room_mesh
+        from modular_3d.카탈로그.room_types import ROOM_TYPE_BY_KEY
+        rt = ROOM_TYPE_BY_KEY.get(room_type)
+        color = rt.color if rt is not None else (160, 160, 160)
+        mesh = build_room_mesh(polygon, color, alpha=0.5)
+        if mesh is None:
+            return
+        v, f, c = mesh
+        if hasattr(self._viewer, 'update_room_ghost'):
+            self._viewer.update_room_ghost(v, f, c)
+
+    def _room_ghost_clear(self):
+        if hasattr(self._viewer, 'clear_room_ghost'):
+            self._viewer.clear_room_ghost()
+
+    def _room_commit(self, src_id: int, polygon, mode: str):
+        """실 이동/복사 확정 — 되돌리기 기록 + 3D/2D 갱신."""
+        from modular_3d.model import Action
+        from modular_3d.model.room import Room
+        self._room_ghost_clear()
+        poly = [(float(x), float(y)) for (x, y) in polygon]
+        if mode == 'copy':
+            src = self._scene.rooms.get(src_id)
+            rtype = src.room_type if src is not None else 'living'
+            new_room = Room(room_type=rtype, polygon=poly, floor_index=0)
+            rid = self._scene.add_room(new_room)
+            self._scene.undo_stack.append(Action(
+                action_type='room_add', data={'room_id': rid}))
+            self._render_room_3d(new_room)
+        else:  # move (제자리 회전 포함)
+            room = self._scene.rooms.get(src_id)
+            if room is None:
+                return
+            old_poly = [(float(x), float(y)) for (x, y) in room.polygon]
+            room.polygon = poly
+            self._scene.undo_stack.append(Action(
+                action_type='room_move',
+                data={'room_id': src_id, 'old_polygon': old_poly}))
+            self._render_room_3d(room)
+        self._refresh_2d()
+        print(f'[ROOM] commit {mode} → #{src_id}')
+
+    # ── 개구부(Opening) 처리 (2026-05-24 3단계) ───────────
+    def _opening_target_kind(self, comp):
+        """부재가 개구부 대상이면 'wall'|'slab', 아니면 ''."""
+        from modular_3d.model import ComponentType as _CT
+        if comp.comp_type == _CT.STRUCT_WALL and getattr(comp, 'wall_fill', None):
+            return 'wall'
+        if getattr(comp, 'slab', None) is not None:
+            return 'slab'
+        return ''
+
+    def _opening_add_start(self):
+        """'개구부 추가' → 크기 다이얼로그 후 캔버스 고스트 미리보기 시작."""
+        from modular_3d.ui.opening_dialog import ask_opening_size
+        parent = self._f5_panel if self._f5_panel else None
+        size = ask_opening_size(parent)
+        if size is None:
+            return
+        canvas = self._f5_panel.canvas if self._f5_panel else None
+        if canvas is not None and hasattr(canvas, 'begin_opening_preview'):
+            canvas.begin_opening_preview(
+                size['w'], size['h'], size['sill'], 'add')
+
+    def _opening_ghost(self, comp_id: int, op: dict):
+        """개구부 고스트(반투명 박스) 3D 갱신 — 미리보기 중 마우스 따라."""
+        from modular_3d.render.opening_mesh import opening_world_box
+        from modular_3d.render.mesh_builder import build_solid_box
+        import numpy as np
+        comp = self._scene.components.get(comp_id)
+        if comp is None:
+            return
+        box = opening_world_box(comp, op)
+        if box is None:
+            return
+        mn, mx = box
+        color = np.array([1.0, 0.55, 0.15, 0.45], dtype=np.float32)  # 주황 반투명
+        v, f, c = build_solid_box(mn, mx, color)
+        if hasattr(self._viewer, 'update_opening_ghost'):
+            self._viewer.update_opening_ghost(v, f, c)
+
+    def _opening_ghost_clear(self):
+        if hasattr(self._viewer, 'clear_opening_ghost'):
+            self._viewer.clear_opening_ghost()
+
+    def _opening_commit(self, target_id: int, op: dict, mode: str, src):
+        """개구부 확정 — add/move/copy + 되돌리기 기록 + 3D/2D 갱신."""
+        from modular_3d.model import Action
+        self._opening_ghost_clear()
+        tgt = self._scene.components.get(target_id)
+        if tgt is None:
+            return
+        if mode == 'move' and src is not None:
+            cid, idx = src
+            comp = self._scene.components.get(cid)
+            if comp is None or not (0 <= idx < len(comp.openings)):
+                return
+            old_op = dict(comp.openings[idx])
+            comp.openings[idx] = dict(op)
+            self._scene.undo_stack.append(Action(
+                action_type='opening_move',
+                data={'comp_id': cid, 'index': idx, 'old_op': old_op}))
+            self._rebuild_component_visual(cid)
+        else:  # add / copy → 대상 부재에 새 개구부
+            tgt.openings.append(dict(op))
+            self._scene.undo_stack.append(Action(
+                action_type='opening_add',
+                data={'comp_id': target_id, 'index': len(tgt.openings) - 1}))
+            self._rebuild_component_visual(target_id)
+        self._refresh_2d()
+        print(f'[OPENING] commit {mode} → #{target_id} {op}')
+
+    def _delete_opening(self, comp_id: int, index: int):
+        """부재의 index 번째 개구부 삭제 + 되돌리기 기록 + 3D/2D 갱신."""
+        from modular_3d.model import Action
+        comp = self._scene.components.get(comp_id)
+        if comp is None or not getattr(comp, 'openings', None):
+            return
+        if 0 <= index < len(comp.openings):
+            removed = dict(comp.openings[index])
+            comp.openings.pop(index)
+            self._scene.undo_stack.append(Action(
+                action_type='opening_del',
+                data={'comp_id': comp_id, 'index': index, 'op': removed}))
+            self._rebuild_component_visual(comp_id)
+            self._refresh_2d()
+            print(f'[OPENING] #{comp_id} 개구부 {index} 삭제 (남은 {len(comp.openings)})')
+
+    def _rebuild_component_visual(self, comp_id: int):
+        """부재 1개의 3D 메시를 다시 생성(개구부 변경 반영)."""
+        from modular_3d.render.mesh_builder import build_component_mesh
+        comp = self._scene.components.get(comp_id)
+        if comp is None:
+            return
+        v, f, c = build_component_mesh(comp)
+        self._viewer.remove_component_visual(comp_id)
+        self._viewer.add_component_visual(comp_id, v, f, c)
+
+    # ── 정의 가져오기 배치 (2026-05-24 4단계) ─────────────
+    def _import_definition_start(self, name: str):
+        """'가져오기' 선택 → 정의 복원 + 캔버스 그룹 고스트 미리보기 시작."""
+        lib = getattr(self, '_definition_library', None)
+        d = lib.get(name) if lib is not None else None
+        if d is None:
+            return
+        def_scene, _nf = d.to_scene()
+        comps = list(def_scene.components.values())
+        if not comps:
+            return
+        # 템플릿 보관(확정까지) — 단일층 floor 0.
+        self._import_templates = comps
+        self._import_old_ids = [int(c.id) for c in comps]
+        self._import_rooms = list(getattr(def_scene, 'rooms', {}).values())
+        self._import_n_floors = self._f5_panel.floors if self._f5_panel else 3
+        # 루트(부모 없는 본체) — 기준점 후보 = 루트 바닥 4코너 xy.
+        root = next((c for c in comps
+                     if int(getattr(c, 'parent_id', 0)) == 0
+                     and int(getattr(c, 'sub_index', 0)) == 0), comps[0])
+        corners = root.get_world_corners()[:4]
+        pivots = [(float(c[0]), float(c[1])) for c in corners]
+        # 2D footprint(부재 바닥 4코너) + 실 폴리곤.
+        footprints = []
+        for c in comps:
+            fc = c.get_world_corners()[:4]
+            footprints.append([(float(p[0]), float(p[1])) for p in fc])
+        room_polys = [[(float(x), float(y)) for (x, y) in r.polygon]
+                      for r in self._import_rooms]
+        canvas = self._f5_panel.canvas if self._f5_panel else None
+        if canvas is not None and hasattr(canvas, 'begin_import_preview'):
+            canvas.begin_import_preview(pivots, footprints, room_polys)
+        self._viewer.set_ghost_enabled(True)
+        self._dim_panel.set_mode_text(
+            f'[정의 가져오기: {name} — 마우스 이동, R 회전, V 기준점, 클릭 배치]')
+
+    def _f5_on_import_ghost(self, target, rot_deg, pivot):
+        """그룹 고스트(1층 합본 메시) 갱신 — 마우스 따라."""
+        import copy as _copy
+        import numpy as np
+        from modular_3d.model.definition_place import transform_point
+        from modular_3d.render.mesh_builder import (
+            build_ghost_component_mesh, _merge_meshes)
+        tmpls = getattr(self, '_import_templates', None)
+        if not tmpls:
+            return
+        meshes = []
+        for t in tmpls:
+            clone = _copy.deepcopy(t)
+            nx, ny = transform_point(float(clone.position[0]),
+                                     float(clone.position[1]), pivot, rot_deg, target)
+            clone.position = np.array([nx, ny, float(clone.position[2])],
+                                      dtype=np.float64)
+            clone.rotation = (int(clone.rotation) + int(rot_deg)) % 360
+            clone.generate_sub_components()
+            meshes.append(build_ghost_component_mesh(clone))
+        if meshes:
+            v, f, c = _merge_meshes(meshes)
+            self._viewer.update_ghost(v, f, c)
+
+    def _f5_on_import_cancel(self):
+        """가져오기 취소 — 고스트/템플릿 정리."""
+        self._viewer.set_ghost_enabled(False)
+        self._viewer.clear_ghost()
+        self._import_templates = None
+        self._import_rooms = None
+        self._dim_panel.set_mode_text('[IDLE]')
+
+    def _f5_on_import_commit(self, target, rot_deg, pivot):
+        """클릭 — 정의를 N층 복제 + 실 각층 복제로 씬에 삽입(되돌리기 기록)."""
+        import copy as _copy
+        import numpy as np
+        from modular_3d.model import Action, FloorPanel, StructWall
+        from modular_3d.model.definition_place import transform_point
+        from modular_3d.model.multi_floor import next_group_id
+        from modular_3d.model.room import Room
+        from modular_3d.render.mesh_builder import build_component_mesh
+        from modular_3d.카탈로그.geometry import FLOOR_HEIGHT
+
+        tmpls = getattr(self, '_import_templates', None)
+        if not tmpls:
+            self._f5_on_import_cancel()
+            return
+        old_ids = self._import_old_ids
+        rooms = getattr(self, '_import_rooms', None) or []
+        n_floors = int(getattr(self, '_import_n_floors', 3) or 3)
+        H = float(FLOOR_HEIGHT)
+        new_gid = next_group_id(self._scene)
+
+        self._scene.begin_group_action()
+        for k in range(n_floors):
+            zoff = k * H
+            old_to_new: Dict[int, int] = {}
+            created = []
+            for old_id, t in zip(old_ids, tmpls):
+                clone = _copy.deepcopy(t)
+                clone.id = 0
+                nx, ny = transform_point(float(clone.position[0]),
+                                         float(clone.position[1]),
+                                         pivot, rot_deg, target)
+                clone.position = np.array(
+                    [nx, ny, float(clone.position[2]) + zoff], dtype=np.float64)
+                clone.rotation = (int(clone.rotation) + int(rot_deg)) % 360
+                clone.group_id = new_gid
+                clone.floor_index = k
+                new_cid = self._scene.add_component(clone)
+                old_to_new[old_id] = new_cid
+                created.append((new_cid, clone))
+            # 같은 층 안에서 부모/합체 관계 재배선(템플릿 옛 id → 새 id)
+            for cid, clone in created:
+                pid = int(getattr(clone, 'parent_id', 0) or 0)
+                if pid in old_to_new:
+                    clone.parent_id = old_to_new[pid]
+                elif pid:
+                    clone.parent_id = 0
+                if isinstance(clone, FloorPanel):
+                    clone.merged_wall_ids = [
+                        old_to_new[x] for x in (clone.merged_wall_ids or [])
+                        if x in old_to_new]
+                elif isinstance(clone, StructWall):
+                    fp = getattr(clone, 'merged_fp_id', None)
+                    clone.merged_fp_id = old_to_new.get(fp) if fp in old_to_new else None
+                clone.generate_sub_components()
+                v, f, c = build_component_mesh(clone)
+                self._viewer.add_component_visual(cid, v, f, c)
+                self._snap.add_component(cid, clone)
+        self._scene.end_group_action('group_place')
+
+        # 실 — 각 층마다 복제(변환 적용).
+        for k in range(n_floors):
+            for r in rooms:
+                poly = [transform_point(float(x), float(y), pivot, rot_deg, target)
+                        for (x, y) in r.polygon]
+                nr = Room(room_type=r.room_type, polygon=poly, floor_index=k)
+                rid = self._scene.add_room(nr)
+                self._scene.undo_stack.append(Action(
+                    action_type='room_add', data={'room_id': rid}))
+                self._render_room_3d(nr)
+
+        self._viewer.set_ghost_enabled(False)
+        self._viewer.clear_ghost()
+        self._import_templates = None
+        self._import_rooms = None
+        self._status.update_count(self._scene.component_count)
+        self._refresh_2d()
+        self._dim_panel.set_mode_text('[정의 배치 완료]')
+        print(f'[IMPORT] 정의 배치: {n_floors}층 복제, gid={new_gid}')
+
+    def _update_room(self, room_id: int, room_type: str,
+                     live_load: float = -1.0, sdl: float = -1.0):
+        """실 용도·하중 수정 — 데이터 갱신 + 3D 색면 재렌더 + 2D 갱신.
+
+        live_load/sdl 이 음수면 '용도 기본값 사용'(override 해제), 0 이상이면 그
+        값을 사용자 지정 override 로 저장.
+        """
+        room = getattr(self._scene, 'rooms', {}).get(room_id)
+        if room is None:
+            return
+        room.room_type = room_type
+        room.live_load_override = None if live_load is None or live_load < 0 else float(live_load)
+        room.sdl_override = None if sdl is None or sdl < 0 else float(sdl)
+        self._render_room_3d(room)   # 색(용도) 바뀔 수 있어 재렌더
+        self._refresh_2d()
+        print(f'[ROOM] 실 #{room_id} 용도={room_type} '
+              f'활하중override={room.live_load_override} SDLoverride={room.sdl_override}')
+
+    def _sync_dependent_beam_sections(self):
+        """종속·합체 부재의 beam_section_type 을 부모/패널 유효 타입에 맞춰 동기화.
+
+        배치/합체 직후 호출 — 합체된 구조벽이 바닥패널 타입을 따라가는 등.
+        변경된 부재만 재생성 + 3D 갱신.
+        """
+        from modular_3d.model import effective_beam_section_type
+        from modular_3d.render.mesh_builder import build_component_mesh
+        for cid, c in self._scene.components.items():
+            eff = effective_beam_section_type(c, self._scene)
+            if getattr(c, 'beam_section_type', 'shs') != eff:
+                c.beam_section_type = eff
+                c.generate_sub_components()
+                v, f, col = build_component_mesh(c)
+                self._viewer.add_component_visual(cid, v, f, col)
+
+    def _set_beam_section_type(self, comp_id: int, sec_type: str):
+        """선택 부재의 보 단면 타입 변경(각형강관/H형강) — 다층 복제본 + 종속 동기화.
+
+        - 같은 group_id·같은 sub_index 의 본체 부재(그 위치 모든 층)에 일괄 적용.
+        - 그 후 모든 부재의 유효 타입을 재계산해 종속(캔틸·중간보)·합체 구조벽이
+          부모/패널 타입을 따라가도록 beam_section_type 을 동기화한다.
+        - 변경된 부재만 generate + 좌측 3D 메시 재빌드 + 2D 갱신.
+        """
+        from modular_3d.model import effective_beam_section_type
+        from modular_3d.render.mesh_builder import build_component_mesh
+        scene = self._scene
+        comp = scene.components.get(comp_id)
+        if comp is None or sec_type not in ('shs', 'h'):
+            return
+        gid = getattr(comp, 'group_id', 0)
+        sub = getattr(comp, 'sub_index', 0)
+        changed = set()
+        # 1) 본체 + 같은 그룹·같은 sub_index 다층 복제본에 적용.
+        if gid > 0:
+            for cid, c in scene.components.items():
+                if (getattr(c, 'group_id', 0) == gid
+                        and getattr(c, 'sub_index', 0) == sub):
+                    if getattr(c, 'beam_section_type', 'shs') != sec_type:
+                        c.beam_section_type = sec_type
+                        changed.add(cid)
+        else:
+            if getattr(comp, 'beam_section_type', 'shs') != sec_type:
+                comp.beam_section_type = sec_type
+                changed.add(comp_id)
+        # 2) 종속·합체 부재가 부모/패널 타입을 따라가도록 동기화.
+        for cid, c in scene.components.items():
+            eff = effective_beam_section_type(c, scene)
+            if getattr(c, 'beam_section_type', 'shs') != eff:
+                c.beam_section_type = eff
+                changed.add(cid)
+        # 3) 변경 부재 재생성 + 3D 갱신.
+        for cid in changed:
+            c = scene.components[cid]
+            c.generate_sub_components()
+            v, f, col = build_component_mesh(c)
+            self._viewer.add_component_visual(cid, v, f, col)
+        self._refresh_2d()
+        print(f'[SECTION] #{comp_id} 보 단면 타입 → {sec_type} (변경 {len(changed)}개)')
 
     def _f5_on_escape(self):
         """F5 캔버스 Esc — 배치/이동/복사 취소."""
@@ -967,6 +1489,31 @@ class F5Mixin:
 
     # ── 단계 4: 종속 부재 흐름 ───────────────────────────────
 
+    def _interior_wall_height_for_parent(self, parent) -> float:
+        """내벽 높이 = 부모 기준 자동 검출.
+
+        - 부모가 모듈: 그 모듈 높이 그대로(사용자 커스텀 높이도 반영). 모듈은
+          상부보(천장)가 있어 내벽 상단이 상부보 하면(h-s-half_s)에서 막힌다 —
+          같은 층 모듈 4면 벽과 flush.
+        - 부모가 바닥패널·캔틸레버슬래브: 천장(상부보)이 없고 다음 층 바닥이 천장이
+          되는 구조라, 모듈 대비 상부보 높이(SECTION_W_MM=200)만큼 더 높여 다음 층
+          바닥 레벨까지 올린다. 기준 높이는 같은 그룹 모듈 높이(없으면 표준 한 층).
+        """
+        from modular_3d.카탈로그.geometry import MODULE_HEIGHT_MM, SECTION_W_MM
+        from modular_3d.model import ComponentType as _CT
+        if parent.comp_type == _CT.MODULE:
+            return float(parent.dimensions.get('height', MODULE_HEIGHT_MM))
+        # 바닥패널·캔틸레버슬래브 — 같은 그룹 모듈 높이 검출 후 +200(천장보 높이).
+        base_h = float(MODULE_HEIGHT_MM)
+        gid = getattr(parent, 'group_id', 0)
+        if gid:
+            for c in self._scene.components.values():
+                if (getattr(c, 'group_id', 0) == gid
+                        and c.comp_type == _CT.MODULE):
+                    base_h = float(c.dimensions.get('height', MODULE_HEIGHT_MM))
+                    break
+        return base_h + float(SECTION_W_MM)
+
     def _f5_on_dependency_pick(self, dep_type, parent_id: int,
                                anchor_edge_id: int, mid_level):
         """DEPENDENCY_PICK 단계에서 부모 부재 클릭 시 호출.
@@ -1020,6 +1567,10 @@ class F5Mixin:
             'mid_beam_level': mid_level,
             'parent_comp_type': parent.comp_type,
         }
+
+        # 내벽: 부모 높이를 검출해 wall_height 에 저장 — dim 확정 시 height 채움.
+        if dep_type == ComponentType.INTERIOR_WALL:
+            self._f5_dep_meta['wall_height'] = self._interior_wall_height_for_parent(parent)
 
         # [2026-05-11 Phase 2 보정] 중간보(MID_BEAM) 는 dim_panel 단계를 생략한다.
         # 길이는 인접 기둥/외곽 보로 자동 결정되므로 사용자가 입력할 값이 없음.

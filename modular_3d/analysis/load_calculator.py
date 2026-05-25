@@ -340,10 +340,136 @@ def _accumulate(result: LoadResult, mem_ids: List[int], udl: float, is_live: boo
 
 
 def _slab_pressures() -> Tuple[float, float]:
-    """(슬래브 자중 압력, 활하중 압력)  N/mm²."""
+    """(슬래브 자중 압력, 활하중 압력)  N/mm². 수직3층모듈 등 기본 압력용."""
     p_dead = SLAB_THICKNESS_MM * CONCRETE_UNIT_WEIGHT_N_MM3   # N/mm²
     p_live = LIVE_LOAD_N_MM2
     return p_dead, p_live
+
+
+# ── 슬래브 상면 z / 옥상 검출 / 실 면적가중 압력 (5단계) ──────────
+
+# kN/m² → N/mm² 환산 계수 (1 kN/m² = 1000 N / 1e6 mm² = 1e-3 N/mm²).
+_KN_M2_TO_N_MM2 = 1.0e-3
+
+
+def _slab_top_z(comp) -> Optional[float]:
+    """부재 슬래브 상면 월드 z (mm). 슬래브 없으면 None.
+
+    SlabData.corners 는 슬래브 하면 월드 좌표 → 상면 = 하면 + thickness.
+    수직3층모듈(slabs 리스트)은 가장 높은 슬래브 상면.
+    """
+    slab = getattr(comp, 'slab', None)
+    if slab is not None:
+        return float(slab.corners[:, 2].min()) + float(slab.thickness)
+    slabs = getattr(comp, 'slabs', None)
+    if slabs:
+        return max(float(s.corners[:, 2].min()) + float(s.thickness)
+                   for s in slabs)
+    return None
+
+
+def _compute_roof_top_z(scene: Scene) -> Optional[float]:
+    """옥상(지붕) 레벨 = 최상단 바닥패널 슬래브 상면 z. 없으면 None.
+
+    [정책]
+    - 옥상은 최상층 위에 까는 지붕 슬래브이며, 본 프로그램에서는 바닥패널(FloorPanel)
+      로 만든다 → 옥상 검출 후보를 바닥패널로 한정한다.
+    - 모듈 바닥 슬래브는 '그 층 거주 바닥'이라 옥상이 아니다(후보 제외) — 옥상
+      슬래브 없이 모듈만 쌓아도 최상층 거주공간이 옥상으로 오판되지 않는다.
+    - 코어 슬래브는 일반 층보다 솟은 옥탑이라 후보에서 제외(애초에 FloorPanel 아님).
+    """
+    from modular_3d.analysis.room_loads import detect_roof_top_z
+    zs: List[float] = []
+    for comp in scene.components.values():
+        if not isinstance(comp, FloorPanel):
+            continue
+        z = _slab_top_z(comp)
+        if z is not None:
+            zs.append(z)
+    return detect_roof_top_z(zs)
+
+
+# 비내력벽 단위 질량 (kg/m²) — 운송 탭과 동일값. 내벽은 항상 내부 30.
+_INTERIOR_WALL_UNIT_KG_M2 = 30.0
+_EXTERIOR_WALL_UNIT_KG_M2 = 55.0
+
+
+def _wall_face_openings(comp, face: str) -> list:
+    """comp.openings 중 해당 face 의 개구부만(레거시 face 없으면 'wall' 간주)."""
+    out = []
+    for o in (getattr(comp, 'openings', None) or []):
+        if o.get('face', 'wall') == face:
+            out.append(o)
+    return out
+
+
+def _wall_panel_net_area_mm2(corners, openings) -> float:
+    """벽 채움 판 순면적 mm² = (길이 u × 높이 v) − 개구부 면적 합. 음수면 0."""
+    c = np.asarray(corners, dtype=np.float64)
+    u = float(np.linalg.norm(c[1] - c[0]))
+    v = float(np.linalg.norm(c[3] - c[0]))
+    gross = u * v
+    op_area = 0.0
+    for o in (openings or []):
+        op_area += float(o.get('w', 0.0)) * float(o.get('h', 0.0))
+    return max(0.0, gross - op_area)
+
+
+def _wall_panel_weight_n(net_area_mm2: float, unit_kg_m2: float) -> float:
+    """벽 무게 N = 순면적(m²) × 단위질량(kg/m²) × 중력가속도."""
+    from modular_3d.카탈로그.materials import G_M_PER_S2
+    return (net_area_mm2 / 1.0e6) * unit_kg_m2 * G_M_PER_S2
+
+
+def _interior_wall_sdl_on_slab(comp, scene: Scene, slab_area_mm2: float) -> float:
+    """comp(슬래브 부재) 위에 종속된 내벽들의 무게를 면적평균 사하중(N/mm²)으로.
+
+    내벽(INTERIOR_WALL)의 parent_id 가 이 슬래브 부재면 그 무게(개구부 차감)를
+    합산해 슬래브 면적으로 나눈다 — 노드 추가 없이 슬래브 압력에 얹는 근사.
+    """
+    if slab_area_mm2 <= 1e-6:
+        return 0.0
+    total_w = 0.0
+    for c in scene.components.values():
+        if (c.comp_type == ComponentType.INTERIOR_WALL
+                and getattr(c, 'parent_id', 0) == comp.id):
+            wf = getattr(c, 'wall_fill', None)
+            if wf is None:
+                continue
+            net = _wall_panel_net_area_mm2(
+                wf.corners, _wall_face_openings(c, 'wall'))
+            total_w += _wall_panel_weight_n(net, _INTERIOR_WALL_UNIT_KG_M2)
+    return total_w / slab_area_mm2
+
+
+def _comp_slab_pressures(comp, scene: Scene,
+                         roof_top_z: Optional[float]) -> Tuple[float, float]:
+    """부재 슬래브의 (사하중 압력, 활하중 압력) N/mm² — 실 면적가중 + 옥상 + 내벽.
+
+    사하중 = 슬래브 자중(두께×콘크리트) + 부가 고정하중(SDL) + 내벽 면적평균 자중.
+    활하중 = 실 용도 면적가중(빈 영역 주거 기본). 옥상 레벨이면 지붕값 강제.
+    """
+    from modular_3d.analysis.room_loads import area_weighted_loads, is_roof_level
+    from modular_3d.카탈로그.room_types import (
+        ROOF_LIVE_LOAD_KN_M2, ROOF_SDL_KN_M2,
+    )
+    from modular_3d._utils.geometry import xy_bbox
+
+    p_slab_self = SLAB_THICKNESS_MM * CONCRETE_UNIT_WEIGHT_N_MM3   # N/mm²
+    rect = xy_bbox(comp)
+    slab_area = abs((rect[2] - rect[0]) * (rect[3] - rect[1]))
+    top_z = _slab_top_z(comp)
+    if top_z is not None and is_roof_level(top_z, roof_top_z):
+        live_kn, sdl_kn = ROOF_LIVE_LOAD_KN_M2, ROOF_SDL_KN_M2
+    else:
+        fi = getattr(comp, 'floor_index', 0)
+        rooms = [r for r in getattr(scene, 'rooms', {}).values()
+                 if getattr(r, 'floor_index', 0) == fi]
+        live_kn, sdl_kn = area_weighted_loads(rect, rooms)
+    p_live = live_kn * _KN_M2_TO_N_MM2
+    p_sdl = sdl_kn * _KN_M2_TO_N_MM2
+    p_iw = _interior_wall_sdl_on_slab(comp, scene, slab_area)
+    return p_slab_self + p_sdl + p_iw, p_live
 
 
 def _distribute_vertical3_slabs(
@@ -433,15 +559,26 @@ def _distribute_vertical3_slabs(
 
 
 def _apply_slab_loads(scene: Scene, model: AnalysisModel, result: LoadResult) -> None:
-    """슬래브 하중을 둘레 보에 분배."""
-    p_dead, p_live = _slab_pressures()
+    """슬래브 하중을 둘레 보에 분배.
+
+    [5단계] 일반 슬래브(Module/FloorPanel/CantileverSlab)는 부재마다 실 용도
+    면적가중 활하중 + 부가 고정하중(SDL)을 적용하고, 옥상 레벨 슬래브는 지붕값을
+    강제한다. 수직3층모듈은 전역 기본 압력 유지(실 매칭 추후).
+    """
+    roof_top_z = _compute_roof_top_z(scene)
+    p_dead_v, p_live_v = _slab_pressures()   # 수직3층모듈 기본 압력
 
     for cid, comp in scene.components.items():
         # 수직 3층 모듈은 슬래브 4개(1F·2F·3F 바닥 + 옥상)를 자체 보유 →
         # z 레벨로 보를 그룹핑해 슬래브마다 4개 둘레 보를 찾아 분배.
         if isinstance(comp, Vertical3Module):
-            _distribute_vertical3_slabs(comp, cid, model, result, p_dead, p_live)
+            _distribute_vertical3_slabs(comp, cid, model, result,
+                                        p_dead_v, p_live_v)
             continue
+
+        # 일반 슬래브 보유 부재 — 부재별 실 면적가중 압력(활+SDL) + 옥상 검출.
+        if isinstance(comp, (Module, FloorPanel, CantileverSlab)):
+            p_dead, p_live = _comp_slab_pressures(comp, scene, roof_top_z)
 
         # 어떤 부재가 슬래브를 지지하는지 role 로 결정
         if isinstance(comp, Module):
@@ -652,6 +789,109 @@ def _apply_core_slab_self_weight(scene: Scene, model: AnalysisModel,
             result.total_slab_dead_n += share_per_col
 
 
+# ── 벽 채움 자중 → 보 선하중 (5단계) ─────────────────────────
+
+# wall_fills 인덱스 → 운송 wall_classifier 면 이름.
+# model/core.Module.wall_fills 순서 = [front(y-), back(y+), left(x-), right(x+)].
+# wall_classifier 면 매핑   = 전면(y=0), 후면(y=d), 좌면(x=0), 우면(x=w).
+_WALLFILL_FACE_NAME = {0: '전면', 1: '후면', 2: '좌면', 3: '우면'}
+
+
+def _nearest_beam_to_xy(model: AnalysisModel, beam_ids: List[int],
+                        xy) -> Optional[int]:
+    """주어진 보들 중 중점 xy 가 xy 에 가장 가까운 보 id. 없으면 None."""
+    best, best_d = None, float('inf')
+    for mid in beam_ids:
+        m = model.members[mid]
+        bm = 0.5 * (model.nodes[m.n1].coord[:2] + model.nodes[m.n2].coord[:2])
+        d = float(np.linalg.norm(np.asarray(xy) - bm))
+        if d < best_d:
+            best_d, best = d, mid
+    return best
+
+
+def _apply_wall_loads(scene: Scene, model: AnalysisModel,
+                      result: LoadResult) -> None:
+    """모듈 4면 벽 + 구조벽 채움 자중을 변의 보에 선하중으로 추가.
+
+    - 단위질량: 운송 wall_classifier 의 외부/내부 자동판별(외부 55 / 내부 30
+      가중평균). 모듈은 면별로, 구조벽은 양면 평균.
+    - 개구부 면적은 차감. 무게는 그 변에 가장 가까운 보의 self_weight 에 등분포.
+    (내벽은 _comp_slab_pressures 에서 슬래브 면적평균으로 별도 처리.)
+    """
+    try:
+        from modular_3d.transport.wall_classifier import (
+            classify_module, classify_independent_wall, face_unit_weight,
+            ClassifierOptions,
+        )
+    except Exception as e:
+        print(f"[load] WARN: wall_classifier 임포트 실패 — 벽 자중 skip ({e})")
+        return
+    copts = ClassifierOptions()
+    INT, EXT = _INTERIOR_WALL_UNIT_KG_M2, _EXTERIOR_WALL_UNIT_KG_M2
+
+    for cid, comp in scene.components.items():
+        if isinstance(comp, Module):
+            wfs = getattr(comp, 'wall_fills', None) or []
+            if not wfs:
+                continue
+            try:
+                faces = classify_module(comp, scene, copts)
+            except Exception:
+                faces = {}
+            beams = [mid for mid in model.comp_to_members.get(cid, [])
+                     if mid in model.members
+                     and model.members[mid].role == 'module_bottom_beam'
+                     and not getattr(model.members[mid], 'is_split_sub', False)]
+            if not beams:
+                continue
+            for i, wf in enumerate(wfs):
+                fc = faces.get(_WALLFILL_FACE_NAME.get(i))
+                unit = face_unit_weight(fc, INT, EXT) if fc is not None else EXT
+                net = _wall_panel_net_area_mm2(
+                    wf.corners, _wall_face_openings(comp, f'wall_{i}'))
+                W = _wall_panel_weight_n(net, unit)
+                if W <= 0:
+                    continue
+                wc = np.asarray(wf.corners, dtype=np.float64)[:, :2].mean(axis=0)
+                best = _nearest_beam_to_xy(model, beams, wc)
+                if best is None:
+                    continue
+                L = model.get_member_length(best)
+                if L <= 0:
+                    continue
+                result.get(best).self_weight += W / L
+                result.total_self_weight_n += W
+
+        elif isinstance(comp, StructWall):
+            wf = getattr(comp, 'wall_fill', None)
+            if wf is None:
+                continue
+            try:
+                fcs = classify_independent_wall(comp, scene, copts)
+                r = 0.5 * (fcs['전면'].exterior_ratio + fcs['후면'].exterior_ratio)
+            except Exception:
+                r = 1.0
+            unit = r * EXT + (1.0 - r) * INT
+            net = _wall_panel_net_area_mm2(
+                wf.corners, _wall_face_openings(comp, 'wall'))
+            W = _wall_panel_weight_n(net, unit)
+            if W <= 0:
+                continue
+            runners = [mid for mid in model.comp_to_members.get(cid, [])
+                       if mid in model.members
+                       and model.members[mid].role == 'wall_bottom_runner'
+                       and not getattr(model.members[mid], 'is_split_sub', False)]
+            if not runners:
+                continue
+            best = runners[0]
+            L = model.get_member_length(best)
+            if L <= 0:
+                continue
+            result.get(best).self_weight += W / L
+            result.total_self_weight_n += W
+
+
 # ── 메인 ─────────────────────────────────────────────────────
 
 def calculate_loads(scene: Scene, model: AnalysisModel) -> LoadResult:
@@ -659,6 +899,8 @@ def calculate_loads(scene: Scene, model: AnalysisModel) -> LoadResult:
     result = LoadResult()
     _apply_self_weight(model, result)
     _apply_slab_loads(scene, model, result)
+    # 모듈 4면 벽·구조벽 채움 자중 → 변 보 선하중 (내벽은 슬래브 압력에 포함).
+    _apply_wall_loads(scene, model, result)
     # (2026-05-12) 코어 슬래브 자중은 이제 실제 셸 자중으로 처리
     # — _apply_core_slab_self_weight 호출 제거 (구버전 core_column 가정 dead code).
     return result

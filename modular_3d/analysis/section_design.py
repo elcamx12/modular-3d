@@ -128,7 +128,11 @@ def group_members(am: AnalysisModel, policy: str
         gname = cat_to_group.get(cat)
         if gname is None:
             continue
-        groups[gname].append(mid)
+        # H형강 보는 같은 그룹이라도 타입별로 분리(각형강관 카탈로그와 섞이지 않게).
+        # 기둥·각형강관 보는 기존 그룹명 유지. H형강 보만 '<그룹>::h' 로 분리.
+        if m.kind == 'beam' and getattr(m, 'section_type', 'shs') == 'h':
+            gname = f'{gname}::h'
+        groups.setdefault(gname, []).append(mid)
     return groups
 
 
@@ -323,7 +327,12 @@ def design_for_policy(am: AnalysisModel, demands: Dict[int, MemberDemand],
     member_critical: Dict[int, str] = {}
 
     for gname, mids in groups_def.items():
-        gd = select_section_for_group(mids, demands, catalog)
+        # H형강 보 그룹('::h')은 H형강 카탈로그에서 선정. 그 외는 각형강관.
+        grp_catalog = catalog
+        if mids and getattr(am.members[mids[0]], 'section_type', 'shs') == 'h':
+            from modular_3d.카탈로그.h_sections import H_CATALOG
+            grp_catalog = H_CATALOG
+        gd = select_section_for_group(mids, demands, grp_catalog)
         gd.group_name = gname
         groups[gname] = gd
         for mid in mids:

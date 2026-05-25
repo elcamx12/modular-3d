@@ -11,9 +11,9 @@ Phase 3: 횡력 (등가정적 지진 Ex/Ey + 풍 Wx/Wy)
   4) Linear 정적 해석
   5) 결과 추출 (분할 보 sub-element 포함) + 평형 검증
 
-처리 흐름 (지진 Ex/Ey, KBC 2022 §0306 등가정적):
+처리 흐름 (지진 Ex/Ey, KDS 41 17 00 등가정적):
   1) 지진중량 W = D 합산 (주거이므로 활하중 미포함)
-  2) 베이스 전단 V = Cs·W, Cs = SDS·Ie/R 등 KBC 식
+  2) 베이스 전단 V = Cs·W, Cs = SDS·Ie/R 등 KDS 41 17 00 식
   3) 층별 분배 Fx = (wx·hx^k / Σ wi·hi^k)·V
   4) 각 층 다이어프램 마스터 노드에 X(또는 Y) 절점력
   5) 새 hLoad pattern 으로 별도 해석 후 결과 추출
@@ -616,7 +616,7 @@ def _seismic_base_shear(W_total: float,
                         sd1: float = SD1_DEFAULT,
                         Ie: float = IE_DEFAULT, R: float = R_DEFAULT,
                         T: float = 0.5) -> float:
-    """KBC 2022 §0306.4 등가정적 베이스 전단 V [N]."""
+    """KDS 41 17 00 등가정적 베이스 전단 V [N]."""
     Cs = sds * Ie / R
     Cs_max = sd1 * Ie / max(T * R, 1e-6)
     Cs_min = max(0.044 * sds * Ie, 0.01)
@@ -627,7 +627,7 @@ def _seismic_base_shear(W_total: float,
 def _seismic_floor_distribution(weights: Dict[float, float],
                                 base_z: float, V: float,
                                 k: float = 1.0) -> Dict[float, float]:
-    """층별 횡력 Fx 분배 (KBC §0306.4.5).
+    """층별 횡력 Fx 분배 (KDS 41 17 00).
 
     Fx_i = (w_i · h_i^k / Σ w_j · h_j^k) · V
     h_i = 베이스부터 해당 층까지 높이 (mm).

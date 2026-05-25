@@ -36,3 +36,9 @@ diag_*.py
 # 진단 산출물
 _diag_*.json
 _diag_*.txt
+
+# 데이터 덤프 / 대용량·저작권 참고자료 (저장소에 올리지 않음)
+modular_3d/단가/
+*.zip
+*.pdf
+modular_3d/transport/references/_근거/

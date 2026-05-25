@@ -115,6 +115,64 @@ def build_hollow_box_section(
     return verts, faces, colors
 
 
+def build_h_section(
+    start: np.ndarray,
+    end: np.ndarray,
+    H: float = 200.0,
+    B: float = 200.0,
+    t1: float = 8.0,
+    t2: float = None,
+    color: np.ndarray = COLOR_STEEL,
+) -> MeshData:
+    """H형강(I자 단면) 압출 메시. 강축 휨 — 웨브가 수직(up), 플랜지 수평(right).
+
+    H: 형강 높이(up), B: 플랜지 폭(right), t1: 웨브 두께, t2: 플랜지 두께.
+    t2 미지정 시 표시용으로 1.5·t1 근사(공칭 H200×200×8×12 와 일치). 실제 단면
+    치수는 구조해석 자동설계가 결정 — 본 메시는 형상 표현용.
+    단면 외곽 12점을 start→end 로 압출(측면 12 quad + 양끝 캡 I자 3사각형).
+    """
+    if t2 is None:
+        t2 = 1.5 * t1
+    _, right, up, _ = _local_frame(start, end)
+    hb = B / 2.0
+    hh = H / 2.0
+    hw = hh - t2     # 웨브 상/하단 y
+    tw = t1 / 2.0    # 웨브 반폭
+
+    # I자 외곽 12점 (right=x, up=y). 반시계.
+    pts2d = [
+        (-hb, -hh), (hb, -hh), (hb, -hw), (tw, -hw),
+        (tw, hw), (hb, hw), (hb, hh), (-hb, hh),
+        (-hb, hw), (-tw, hw), (-tw, -hw), (-hb, -hw),
+    ]
+    n = len(pts2d)
+    verts = np.zeros((2 * n, 3), dtype=np.float32)
+    for i, (x, y) in enumerate(pts2d):
+        off = x * right + y * up
+        verts[i] = start + off
+        verts[n + i] = end + off
+
+    faces = []
+    # 측면 12 quad
+    for i in range(n):
+        a, b = i, (i + 1) % n
+        c, d = n + (i + 1) % n, n + i
+        faces.append([a, b, c]); faces.append([a, c, d])
+    # 양끝 캡 — I자를 3 사각형(하플랜지·상플랜지·웨브)으로 분해.
+    cap_quads = [
+        (0, 1, 2, 11),   # 하플랜지
+        (8, 5, 6, 7),    # 상플랜지
+        (10, 3, 4, 9),   # 웨브
+    ]
+    for (a, b, c, d) in cap_quads:
+        faces.append([a, b, c]); faces.append([a, c, d])            # start 캡
+        faces.append([n + a, n + b, n + c]); faces.append([n + a, n + c, n + d])  # end 캡
+
+    F = np.array(faces, dtype=np.uint32)
+    C = np.tile(color, (len(F), 1))
+    return verts, F, C
+
+
 def build_solid_box(
     min_corner: np.ndarray,
     max_corner: np.ndarray,
@@ -181,26 +239,46 @@ COLOR_WALL = np.array([0.815, 0.815, 0.815, 1.0], dtype=np.float32)  # #D0D0D0
 COLOR_WALL_PARTITION = np.array([0.815, 0.815, 0.815, 0.35], dtype=np.float32)  # 반투명
 
 
-def _build_slab_mesh(slab) -> MeshData:
-    """SlabData → 솔리드 박스 메쉬."""
+def _build_slab_mesh(slab, openings=None) -> MeshData:
+    """SlabData → 솔리드 박스 메쉬. openings 있으면 z 관통 사각 구멍.
+
+    슬래브는 xy 평면 + z 두께 박스 → 관통축 = z(2), 평면축 = (x,y).
+    """
     corners = slab.corners
-    mn = corners.min(axis=0)
-    mx = corners.max(axis=0)
+    mn = corners.min(axis=0).copy()
+    mx = corners.max(axis=0).copy()
     mx[2] = mn[2] + slab.thickness
+    if openings:
+        from modular_3d.render.opening_mesh import (
+            build_box_with_holes, openings_to_world_rects)
+        rects = openings_to_world_rects(corners, openings, (0, 1))
+        holed = build_box_with_holes(mn, mx, rects, 2, COLOR_CONCRETE)
+        if holed is not None:
+            return holed
     return build_solid_box(mn, mx, COLOR_CONCRETE)
 
 
-def _build_wall_fill_mesh(wall_fill, partition=False) -> MeshData:
-    """WallPanelData → 솔리드 판 메쉬."""
+def _build_wall_fill_mesh(wall_fill, partition=False, openings=None) -> MeshData:
+    """WallPanelData → 솔리드 판 메쉬. openings 있으면 두께 관통 사각 구멍."""
     corners = wall_fill.corners  # (4, 3)
     mn = corners.min(axis=0).copy()
     mx = corners.max(axis=0).copy()
-    # 두께 방향: Y가 가장 좁은 축일 때 Y로 확장
+    # 두께 방향: 가장 좁은 축을 thickness 로 확장 (= 개구부 관통축)
+    through_axis = 2
     for axis in range(3):
         if mx[axis] - mn[axis] < 1.0:
             mn[axis] -= wall_fill.thickness / 2.0
             mx[axis] += wall_fill.thickness / 2.0
+            through_axis = axis
     color = COLOR_WALL_PARTITION if partition else COLOR_WALL
+    if openings:
+        from modular_3d.render.opening_mesh import (
+            build_box_with_holes, openings_to_world_rects)
+        plane_axes = tuple(a for a in (0, 1, 2) if a != through_axis)
+        rects = openings_to_world_rects(corners, openings, plane_axes)
+        holed = build_box_with_holes(mn, mx, rects, through_axis, color)
+        if holed is not None:
+            return holed
     return build_solid_box(mn, mx, color)
 
 
@@ -212,8 +290,19 @@ def _add_columns(meshes, columns):
 
 def _add_beams(meshes, beams):
     for beam in beams:
-        meshes.append(build_hollow_box_section(
-            beam.start, beam.end, beam.section_w, beam.section_h, beam.section_t))
+        if getattr(beam, 'section_type', 'shs') == 'h':
+            # H형강 — H=section_h(높이), B=section_w(폭), t1=section_t(웨브).
+            meshes.append(build_h_section(
+                beam.start, beam.end, beam.section_h, beam.section_w, beam.section_t))
+        else:
+            meshes.append(build_hollow_box_section(
+                beam.start, beam.end, beam.section_w, beam.section_h, beam.section_t))
+
+
+def _openings_for_face(comp, face: str, default_face: str):
+    """comp.openings 중 face 에 해당하는 것만(레거시는 default_face 로 간주)."""
+    ops = getattr(comp, 'openings', None) or []
+    return [o for o in ops if o.get('face', default_face) == face]
 
 
 def build_module_mesh(module) -> MeshData:
@@ -222,7 +311,13 @@ def build_module_mesh(module) -> MeshData:
     _add_beams(meshes, module.bottom_beams)
     _add_beams(meshes, module.top_beams)
     if module.slab is not None:
-        meshes.append(_build_slab_mesh(module.slab))
+        meshes.append(_build_slab_mesh(
+            module.slab, _openings_for_face(module, 'slab', 'slab')))
+    # 비내력 벽 4면 (각 면별 개구부) — 반투명(partition).
+    for i, wf in enumerate(getattr(module, 'wall_fills', None) or []):
+        meshes.append(_build_wall_fill_mesh(
+            wf, partition=True,
+            openings=_openings_for_face(module, f'wall_{i}', f'wall_{i}')))
     return _merge_meshes(meshes)
 
 
@@ -230,7 +325,8 @@ def build_floor_panel_mesh(panel) -> MeshData:
     meshes = []
     _add_beams(meshes, panel.edge_beams)
     if panel.slab is not None:
-        meshes.append(_build_slab_mesh(panel.slab))
+        meshes.append(_build_slab_mesh(
+            panel.slab, _openings_for_face(panel, 'slab', 'slab')))
     return _merge_meshes(meshes)
 
 
@@ -242,7 +338,19 @@ def build_struct_wall_mesh(wall) -> MeshData:
     if wall.top_runner:
         _add_beams(meshes, [wall.top_runner])
     if wall.wall_fill:
-        meshes.append(_build_wall_fill_mesh(wall.wall_fill))
+        meshes.append(_build_wall_fill_mesh(
+            wall.wall_fill, partition=True,
+            openings=_openings_for_face(wall, 'wall', 'wall')))
+    return _merge_meshes(meshes)
+
+
+def build_interior_wall_mesh(wall) -> MeshData:
+    """내벽 — 채움 판 1장만 (반투명, 개구부 face='wall')."""
+    meshes = []
+    if getattr(wall, 'wall_fill', None) is not None:
+        meshes.append(_build_wall_fill_mesh(
+            wall.wall_fill, partition=True,
+            openings=_openings_for_face(wall, 'wall', 'wall')))
     return _merge_meshes(meshes)
 
 
@@ -257,7 +365,8 @@ def build_cantilever_slab_mesh(cs) -> MeshData:
     meshes = []
     _add_beams(meshes, cs.beams)
     if cs.slab is not None:
-        meshes.append(_build_slab_mesh(cs.slab))
+        meshes.append(_build_slab_mesh(
+            cs.slab, _openings_for_face(cs, 'slab', 'slab')))
     return _merge_meshes(meshes)
 
 
@@ -325,6 +434,7 @@ _MESH_BUILDERS = {
     _CT.MODULE:           build_module_mesh,
     _CT.FLOOR_PANEL:      build_floor_panel_mesh,
     _CT.STRUCT_WALL:      build_struct_wall_mesh,
+    _CT.INTERIOR_WALL:    build_interior_wall_mesh,
     _CT.CANTILEVER_BEAM:  build_cantilever_beam_mesh,
     _CT.CANTILEVER_SLAB:  build_cantilever_slab_mesh,
     _CT.MID_BEAM:         build_mid_beam_mesh,

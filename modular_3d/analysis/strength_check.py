@@ -1,4 +1,4 @@
-"""KBC 2022 LRFD 강재 단면 강도 검토.
+"""KDS 41 31 00 강구조 LRFD 강재 단면 강도 검토.
 
 물량산출/단면 자동 산정 Phase 1 — 설계서 1-B 섹션 구현.
 
@@ -6,7 +6,7 @@
     1. 축력      check_axial      — 압축 좌굴 + 인장
     2. 휨        check_bending    — 강축·약축 동시 (단순 합)
     3. 전단      check_shear      — 강축·약축 중 큰 값
-    4. 조합      check_combined   — KBC H1.1 P-M 상관식
+    4. 조합      check_combined   — KDS 41 31 00 H1.1 P-M 상관식
     5. 처짐      check_deflection — 사용성 (L/360 일반, L/180 캔틸)
 
 단위: N, mm, MPa
@@ -155,7 +155,7 @@ def check_shear(section: SHSSection, Vy: float, Vz: float) -> float:
 # ── 4. 조합 (P-M 상관) ──────────────────────────────────────
 def check_combined(section: SHSSection, P: float, Mz: float, My: float,
                    L: float, K: float = 1.0) -> float:
-    """KBC H1.1 P-M 조합 상관식.
+    """KDS 41 31 00 H1.1 P-M 조합 상관식.
 
     Pr/Pc + (8/9)(Mrz/Mcz + Mry/Mcy) ≤ 1.0   (Pr/Pc ≥ 0.2)
     Pr/(2Pc) + (Mrz/Mcz + Mry/Mcy) ≤ 1.0     (Pr/Pc < 0.2)
@@ -237,15 +237,48 @@ def check_deflection(section: SHSSection, Mz: float, L: float, kind: str) -> flo
     return delta / limit
 
 
+# ── 단면 인터페이스 정규화 (각형강관 / H형강 공용) ────────────
+@dataclass
+class _SecView:
+    """check_* 함수가 쓰는 SHS 컨벤션 단면 속성만 추린 경량 뷰.
+
+    SHS 는 그대로, H형강은 강축/약축을 SHS 명명에 매핑한다.
+      - Sy(강축 단면계수) = H.Zx,  Sz(약축) = H.Zy
+      - Iy(강축 I, 처짐)  = H.Ix
+      - ry,rz(좌굴 반경)  = H.rx, H.ry  → min 은 약축 ry 가 지배(동일)
+      - Avy(강축 전단=웨브)= H.Avx,  Avz(약축 전단=플랜지) = H.Avy
+    """
+    A: float
+    Iy: float
+    Sy: float
+    Sz: float
+    ry: float
+    rz: float
+    Avy: float
+    Avz: float
+
+
+def _as_shs_view(section):
+    """H형강이면 SHS 컨벤션 뷰로 변환, 각형강관이면 그대로 반환(덕타이핑)."""
+    from modular_3d.카탈로그.h_sections import HSection
+    if isinstance(section, HSection):
+        return _SecView(
+            A=section.A, Iy=section.Ix, Sy=section.Zx, Sz=section.Zy,
+            ry=section.rx, rz=section.ry, Avy=section.Avx, Avz=section.Avy,
+        )
+    return section
+
+
 # ── 통합 검토 ───────────────────────────────────────────────
-def check_member(section: SHSSection, demand: MemberDemand) -> CheckResult:
-    """5개 항목 전부 계산 → CheckResult 반환."""
-    ra = check_axial(section, demand.P, demand.L, demand.K)
-    rb = check_bending(section, demand.Mz, demand.My)
-    rs = check_shear(section, demand.Vy, demand.Vz)
-    rc = check_combined(section, demand.P, demand.Mz, demand.My,
+def check_member(section, demand: MemberDemand) -> CheckResult:
+    """5개 항목 전부 계산 → CheckResult 반환. 각형강관·H형강 단면 모두 허용."""
+    sv = _as_shs_view(section)
+    ra = check_axial(sv, demand.P, demand.L, demand.K)
+    rb = check_bending(sv, demand.Mz, demand.My)
+    rs = check_shear(sv, demand.Vy, demand.Vz)
+    rc = check_combined(sv, demand.P, demand.Mz, demand.My,
                         demand.L, demand.K)
-    rd = check_deflection(section, demand.Mz, demand.L, demand.kind)
+    rd = check_deflection(sv, demand.Mz, demand.L, demand.kind)
     return CheckResult.from_ratios(ra, rb, rs, rc, rd)
 
 

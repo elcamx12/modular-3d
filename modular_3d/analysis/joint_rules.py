@@ -201,6 +201,53 @@ def _module_vertical_edges(om, corners: List[int],
 
 # ── 결합 등록 헬퍼 ─────────────────────────────────────────────
 
+# ── 접합부 오버라이드 게이트 (2026-05-25) ─────────────────────
+# 사용자가 변경/제거한 컴포넌트 간 접합을 equalDOF 등록 직전에 반영하는 관문.
+# 모든 룰(R01~R09)의 등록 지점이 이 게이트를 거친다. om.joint_overrides 가
+# 비어 있으면(평상시) 즉시 원래 dofs 를 반환 → 기존 동작과 100% 동일(회귀 0).
+
+
+def _node_xy(om, tag):
+    """노드의 평면 좌표(x, y). om.node_tags(tag→coord)에서 직접 조회.
+    사영점·split 노드도 등록과 동시에 node_tags 에 들어가므로 모두 포함."""
+    c = om.node_tags.get(tag)
+    if c is None:
+        return None
+    return (float(c[0]), float(c[1]))
+
+
+def _resolve_override_dofs(om, master, slave, dofs, rule_id=''):
+    """접합 오버라이드를 반영한 최종 자유도 묶음.
+
+    오버라이드가 없거나(평상시) 매칭 안 되면 원래 dofs 를 그대로 반환.
+    매칭되면:
+      remove → None (호출자가 이 결합 등록을 건너뜀)
+      rigid  → (1,2,3,4,5,6)
+      pin    → (1,2,3)
+    다층 자동 적용: 같은 평면 위치(xy)면 z(층) 무관하게 매칭되므로 한 오버라이드가
+    모든 층 접합에 적용된다.
+    rule_id: 등록 중인 결합의 종류. 오버라이드에 rule_id 가 지정돼 있으면 같은
+    종류만 매칭(같은 위치 겹친 다른 종류 수직 접합 구분).
+    """
+    overrides = getattr(om, 'joint_overrides', None)
+    if not overrides:
+        return tuple(dofs)
+    ma = _node_xy(om, master)
+    mb = _node_xy(om, slave)
+    if ma is None or mb is None:
+        return tuple(dofs)
+    cma = om.node_tags.get(master)
+    cmb = om.node_tags.get(slave)
+    maz = float(cma[2]) if cma is not None else None
+    mbz = float(cmb[2]) if cmb is not None else None
+    from modular_3d.model.joint_override import match_override
+    ov = match_override(overrides, ma, mb, rule_id=rule_id,
+                        ma_z=maz, mb_z=mbz)
+    if ov is None:
+        return tuple(dofs)
+    return ov.effective_dofs()   # remove → None
+
+
 def _register_pin_link(om, master: int, slave: int,
                        rule_id: str, kind: str,
                        dofs: Tuple[int, ...] = (1, 2, 3),
@@ -235,19 +282,22 @@ def _register_pin_link(om, master: int, slave: int,
     # master 후보는 제약 없음 — 이미 slave 였던 노드도 master 가능(체인).
     if master == slave:
         return False
+    _dofs = _resolve_override_dofs(om, master, slave, dofs, rule_id)
+    if _dofs is None:
+        return False   # remove 오버라이드 — 이 결합 건너뜀
     try:
-        ops.equalDOF(master, slave, *dofs)
+        ops.equalDOF(master, slave, *_dofs)
     except Exception as e:
-        dprint('joint_rules', f'[joint_rules] equalDOF({master},{slave},{dofs}) 실패: {e}')
+        dprint('joint_rules', f'[joint_rules] equalDOF({master},{slave},{_dofs}) 실패: {e}')
         om.registration_failures.append(
-            (slave, f'equalDOF master={master} dofs={dofs}: {e}'))
+            (slave, f'equalDOF master={master} dofs={_dofs}: {e}'))
         return False
     om.constrained_node_ids.add(slave)
     masters_seen.add(master)
     if om.spec is not None:
         from modular_3d.analysis.model_spec import EqualDofRec
         om.spec.equal_dofs.append(EqualDofRec(
-            master=master, slave=slave, dofs=tuple(dofs),
+            master=master, slave=slave, dofs=tuple(_dofs),
             kind=kind, rule_id=rule_id,
         ))
     return True
@@ -611,8 +661,11 @@ def _split_edges_and_link_corners(
             for extra_nP, extra_rid in extra_at.get(idx, []):
                 if extra_nP == Q:
                     continue   # 자기 자신 결합 방지
+                _dofs = _resolve_override_dofs(om, extra_nP, Q, dofs, extra_rid)
+                if _dofs is None:
+                    continue   # remove 오버라이드 — 이 결합 건너뜀
                 try:
-                    ops.equalDOF(extra_nP, Q, *dofs)
+                    ops.equalDOF(extra_nP, Q, *_dofs)
                 except Exception as e:
                     dprint('joint_rules', f'[joint_rules] equalDOF({extra_nP},{Q}) 묶음 강제 등록 실패: {e}')
                     om.registration_failures.append(
@@ -621,7 +674,7 @@ def _split_edges_and_link_corners(
                 om.constrained_node_ids.add(Q)
                 if om.spec is not None:
                     om.spec.equal_dofs.append(EqualDofRec(
-                        master=extra_nP, slave=Q, dofs=tuple(dofs),
+                        master=extra_nP, slave=Q, dofs=tuple(_dofs),
                         kind='corner_edge', rule_id=extra_rid,
                     ))
                 registered += 1
@@ -711,8 +764,12 @@ def _apply_vstack_rule(
                     if (master, slave) in seen:
                         continue
                     seen.add((master, slave))
+                    _dofs = _resolve_override_dofs(om, master, slave, dofs,
+                                                   rule_id)
+                    if _dofs is None:
+                        continue   # remove 오버라이드 — 이 결합 건너뜀
                     try:
-                        ops.equalDOF(master, slave, *dofs)
+                        ops.equalDOF(master, slave, *_dofs)
                     except Exception as e:
                         dprint('joint_rules', f'[joint_rules] equalDOF({master},{slave}) 실패: {e}')
                         om.registration_failures.append(
@@ -721,7 +778,7 @@ def _apply_vstack_rule(
                     om.constrained_node_ids.add(slave)
                     if om.spec is not None:
                         om.spec.equal_dofs.append(EqualDofRec(
-                            master=master, slave=slave, dofs=tuple(dofs),
+                            master=master, slave=slave, dofs=tuple(_dofs),
                             kind='vstack', rule_id=rule_id,
                         ))
                     registered += 1
@@ -979,8 +1036,11 @@ def apply_panel_module(
     def _link(master: int, slave: int, kind: str) -> None:
         """equalDOF 등록 — 충돌 검사 없음(Penalty handler 가 과구속 견딤)."""
         nonlocal registered
+        _dofs = _resolve_override_dofs(om, master, slave, dofs, RULE_ID_PANEL_MOD)
+        if _dofs is None:
+            return   # remove 오버라이드 — 이 결합 건너뜀
         try:
-            ops.equalDOF(master, slave, *dofs)
+            ops.equalDOF(master, slave, *_dofs)
         except Exception as e:
             dprint('joint_rules', f'[joint_rules] equalDOF({master},{slave}) 실패: {e}')
             om.registration_failures.append(
@@ -989,7 +1049,7 @@ def apply_panel_module(
         om.constrained_node_ids.add(slave)
         if om.spec is not None:
             om.spec.equal_dofs.append(EqualDofRec(
-                master=master, slave=slave, dofs=tuple(dofs),
+                master=master, slave=slave, dofs=tuple(_dofs),
                 kind=kind, rule_id=RULE_ID_PANEL_MOD))
         registered += 1
 
@@ -1337,8 +1397,12 @@ def apply_wall_floor_vertical(
                     if (master, slave) in seen:
                         continue
                     seen.add((master, slave))
+                    _dofs = _resolve_override_dofs(om, master, slave, dofs,
+                                                   RULE_ID_WALL_FLOOR_V)
+                    if _dofs is None:
+                        continue   # remove 오버라이드 — 이 결합 건너뜀
                     try:
-                        ops.equalDOF(master, slave, *dofs)
+                        ops.equalDOF(master, slave, *_dofs)
                     except Exception as e:
                         dprint('joint_rules', f'[joint_rules][R05] equalDOF({master},{slave}) 실패: {e}')
                         om.registration_failures.append(
@@ -1347,7 +1411,7 @@ def apply_wall_floor_vertical(
                     om.constrained_node_ids.add(slave)
                     if om.spec is not None:
                         om.spec.equal_dofs.append(EqualDofRec(
-                            master=master, slave=slave, dofs=tuple(dofs),
+                            master=master, slave=slave, dofs=tuple(_dofs),
                             kind='wall_floor_vstack',
                             rule_id=RULE_ID_WALL_FLOOR_V,
                         ))
@@ -1429,8 +1493,11 @@ def apply_wall_module(
 
     def _link(master: int, slave: int, kind: str) -> None:
         nonlocal registered
+        _dofs = _resolve_override_dofs(om, master, slave, dofs, RULE_ID_WALL_MOD)
+        if _dofs is None:
+            return   # remove 오버라이드 — 이 결합 건너뜀
         try:
-            ops.equalDOF(master, slave, *dofs)
+            ops.equalDOF(master, slave, *_dofs)
         except Exception as e:
             dprint('joint_rules', f'[joint_rules][R06] equalDOF({master},{slave}) 실패: {e}')
             om.registration_failures.append(
@@ -1439,7 +1506,7 @@ def apply_wall_module(
         om.constrained_node_ids.add(slave)
         if om.spec is not None:
             om.spec.equal_dofs.append(EqualDofRec(
-                master=master, slave=slave, dofs=tuple(dofs),
+                master=master, slave=slave, dofs=tuple(_dofs),
                 kind=kind, rule_id=RULE_ID_WALL_MOD))
         registered += 1
 
@@ -1581,8 +1648,11 @@ def apply_wall_cantilever_beam(
 
     def _link(master: int, slave: int, kind: str) -> None:
         nonlocal registered
+        _dofs = _resolve_override_dofs(om, master, slave, dofs, RULE_ID_WALL_CANT)
+        if _dofs is None:
+            return   # remove 오버라이드 — 이 결합 건너뜀
         try:
-            ops.equalDOF(master, slave, *dofs)
+            ops.equalDOF(master, slave, *_dofs)
         except Exception as e:
             dprint('joint_rules', f'[joint_rules][R08] equalDOF({master},{slave}) 실패: {e}')
             om.registration_failures.append(
@@ -1591,7 +1661,7 @@ def apply_wall_cantilever_beam(
         om.constrained_node_ids.add(slave)
         if om.spec is not None:
             om.spec.equal_dofs.append(EqualDofRec(
-                master=master, slave=slave, dofs=tuple(dofs),
+                master=master, slave=slave, dofs=tuple(_dofs),
                 kind=kind, rule_id=RULE_ID_WALL_CANT))
         registered += 1
 
@@ -1827,8 +1897,11 @@ def apply_core_joint(
         nonlocal registered
         if master == slave:
             return
+        _dofs = _resolve_override_dofs(om, master, slave, dofs_6, RULE_ID_CORE)
+        if _dofs is None:
+            return   # remove 오버라이드 — 이 결합 건너뜀
         try:
-            ops.equalDOF(master, slave, *dofs_6)
+            ops.equalDOF(master, slave, *_dofs)
         except Exception as e:
             dprint('joint_rules', f'[joint_rules][R09] equalDOF({master},{slave}) 실패: {e}')
             om.registration_failures.append(
@@ -1837,7 +1910,7 @@ def apply_core_joint(
         om.constrained_node_ids.add(slave)
         if om.spec is not None:
             om.spec.equal_dofs.append(EqualDofRec(
-                master=master, slave=slave, dofs=tuple(dofs_6),
+                master=master, slave=slave, dofs=tuple(_dofs),
                 kind=kind, rule_id=RULE_ID_CORE))
         registered += 1
 
@@ -1997,3 +2070,512 @@ def apply_all_joint_rules(om, dofs: Tuple[int, ...] = (1, 2, 3)) -> int:
     # R09 는 6 DOF 강결합 + 자체 사영점 분할이라 _split 이후 호출.
     n += apply_core_joint(om)                                                # R09
     return n
+
+
+# ── 사용자 신규 접합 (2026-05-25 — 모서리 위 점 분할 재설계) ──
+# 자동 규칙 R01~R09 다음. 사용자 추가 접합은 성질에 따라 R10(핀)·R11(강접)으로
+# 구분 — 와이어프레임 색·범례에서 핀/강접 추가가 따로 보인다.
+RULE_ID_USER_ADD = 'USER_ADD'        # 구버전 저장본 호환(성질 미구분)
+RULE_ID_USER_PIN = 'R10_user_pin'    # 사용자 추가 — 핀
+RULE_ID_USER_RIGID = 'R11_user_rigid'  # 사용자 추가 — 강접
+
+
+def _seg_seg_closest(p1, p2, p3, p4):
+    """두 선분 [p1,p2],[p3,p4]의 최근접점 쌍(Q12, Q34)과 거리."""
+    d1 = p2 - p1
+    d2 = p4 - p3
+    r = p1 - p3
+    a = float(np.dot(d1, d1))
+    e = float(np.dot(d2, d2))
+    f = float(np.dot(d2, r))
+    eps = 1e-9
+    if a < eps and e < eps:
+        return p1.copy(), p3.copy(), float(np.linalg.norm(p1 - p3))
+    if a < eps:
+        s = 0.0
+        t = float(np.clip(f / e, 0.0, 1.0))
+    else:
+        c = float(np.dot(d1, r))
+        if e < eps:
+            t = 0.0
+            s = float(np.clip(-c / a, 0.0, 1.0))
+        else:
+            b = float(np.dot(d1, d2))
+            denom = a * e - b * b
+            s = float(np.clip((b * f - c * e) / denom, 0.0, 1.0)) if denom > eps else 0.0
+            t = (b * s + f) / e
+            if t < 0.0:
+                t = 0.0
+                s = float(np.clip(-c / a, 0.0, 1.0))
+            elif t > 1.0:
+                t = 1.0
+                s = float(np.clip((b - c) / a, 0.0, 1.0))
+    q1 = p1 + s * d1
+    q2 = p3 + t * d2
+    return q1, q2, float(np.linalg.norm(q1 - q2))
+
+
+def candidate_joint_points(om, p, exclude_comp=0,
+                           max_dist=400.0, tol=60.0, right_angle=False):
+    """첫 점 p 에서 접합 가능한 다른 부재 위 점 목록 — 접합 추가 두번째 점 후보.
+
+    right_angle=False(직선): p 와 축정렬(x·y·z 중 한 축만 다름) + max_dist 이내 +
+    다른 컴포넌트 보 위. p 의 3축선과 각 보 선분 최근접점으로.
+    right_angle=True(직각·R03식): p 의 평면 위치에서 수직으로 내린/올린 다른 높이의
+    보 위에서, 그 평면 위치에 가장 가까운 점(직각으로 닿을 수 있는 점)을 후보로.
+    반환: [(x, y, z, comp_id), ...] (중복 ±tol 제거).
+    """
+    am = getattr(om, 'analysis_model', None)
+    if am is None:
+        return []
+    P = np.asarray(p, dtype=float)
+    out = []
+    if right_angle:
+        az = float(P[2])
+        p0 = np.array([P[0], P[1], 0.0])
+        for mid, m in am.members.items():
+            if getattr(m, 'is_split_sub', False) or m.kind != 'beam':
+                continue
+            cid = m.source_comp_ids[0] if m.source_comp_ids else 0
+            if exclude_comp and cid == exclude_comp:
+                continue
+            c1 = np.asarray(am.nodes[m.n1].coord, dtype=float)
+            c2 = np.asarray(am.nodes[m.n2].coord, dtype=float)
+            mz = 0.5 * (float(c1[2]) + float(c2[2]))
+            if abs(mz - az) <= tol:
+                continue   # 같은 높이 — 직선용(직각 아님)
+            a2 = np.array([c1[0], c1[1], 0.0])
+            b2 = np.array([c2[0], c2[1], 0.0])
+            blen = float(np.linalg.norm(b2 - a2))
+            if blen < 1.0:
+                continue
+            proj2, dxy, t = _user_point_seg(p0, a2, b2)
+            if t * blen < 50.0 or (1.0 - t) * blen < 50.0:
+                continue   # 보 끝점 영역 제외
+            if dxy <= tol or dxy > max_dist:
+                continue   # 평면으로 안 떨어지면 수직 직선(직각 아님)
+            q = np.array([proj2[0], proj2[1], mz])
+            if float(np.linalg.norm(q - P)) > max_dist:
+                continue
+            out.append((float(q[0]), float(q[1]), float(q[2]), int(cid)))
+    else:
+        axes = (np.array([1.0, 0.0, 0.0]),
+                np.array([0.0, 1.0, 0.0]),
+                np.array([0.0, 0.0, 1.0]))
+        for mid, m in am.members.items():
+            if getattr(m, 'is_split_sub', False) or m.kind != 'beam':
+                continue
+            cid = m.source_comp_ids[0] if m.source_comp_ids else 0
+            if exclude_comp and cid == exclude_comp:
+                continue
+            c1 = np.asarray(am.nodes[m.n1].coord, dtype=float)
+            c2 = np.asarray(am.nodes[m.n2].coord, dtype=float)
+            for ai, e in enumerate(axes):
+                a0 = P - max_dist * e
+                a1 = P + max_dist * e
+                qb, qa, dist = _seg_seg_closest(c1, c2, a0, a1)
+                if dist > tol:
+                    continue
+                q = P.copy()
+                q[ai] = qb[ai]
+                if float(np.linalg.norm(q - qb)) > tol:
+                    continue
+                dd = float(np.linalg.norm(q - P))
+                if dd < 1.0 or dd > max_dist:
+                    continue
+                out.append((float(q[0]), float(q[1]), float(q[2]), int(cid)))
+    uniq = []
+    for q in out:
+        if not any(abs(q[0] - u[0]) < tol and abs(q[1] - u[1]) < tol
+                   and abs(q[2] - u[2]) < tol for u in uniq):
+            uniq.append(q)
+    return uniq
+
+
+def _user_point_seg(p, a, b):
+    """점 p 와 선분 a-b: (투영점, 거리, 매개변수 t∈[0,1]) 반환."""
+    ab = b - a
+    ll = float(np.dot(ab, ab))
+    if ll < 1e-9:
+        return a.copy(), float(np.linalg.norm(p - a)), 0.0
+    t = float(np.clip(np.dot(p - a, ab) / ll, 0.0, 1.0))
+    proj = a + t * ab
+    return proj, float(np.linalg.norm(p - proj)), t
+
+
+def _split_member_at_point(om, point, line_tol=80.0):
+    """point 에 가장 가까운 보 element 를 그 점에서 분할하고 새 노드 tag 반환.
+    가까운 보가 없거나 끝점 근처(스냅 영역)면 None.
+
+    [2026-05-25] 미분할 원본뿐 아니라 **이미 자동분할된 보(sub)** 도 대상으로
+    한다(om.beam_elements 전체 순회). 그래야 1층 바닥·최상층처럼 자동분할이
+    일어난 층에서도 모서리 중간 점 접합이 된다. 단면·부모는 ele→원본 역맵으로
+    추적해 member_to_split_ele_tags 를 일관되게 갱신(자중 분포 유지)."""
+    am = om.analysis_model
+    if am is None:
+        return None
+    from modular_3d.analysis.ops_builder import (
+        _section_props, _vecxz_for_member, _geom_transf_tag)
+    from modular_3d.analysis.constants import STEEL_E_MPA, STEEL_G_MPA
+    from modular_3d.analysis.topology import AnalysisNode, AnalysisMember
+    from modular_3d.analysis.model_spec import NodeRec, BeamRec
+    P = np.asarray(point, dtype=float)
+    # element → 원본 부재 mid (단면·자중 추적용).
+    ele_to_parent = {}
+    for mid, et in om.member_to_ele_tag.items():
+        ele_to_parent[et] = mid
+    for mid, ets in om.member_to_split_ele_tags.items():
+        for et in ets:
+            ele_to_parent[et] = mid
+    best_ele = None
+    best_d = line_tol
+    best_proj = None
+    best_n1 = best_n2 = None
+    for ele, (n1, n2, kind, role) in list(om.beam_elements.items()):
+        if kind != 'beam':
+            continue
+        cc1 = om.node_tags.get(n1)
+        cc2 = om.node_tags.get(n2)
+        if cc1 is None or cc2 is None:
+            continue
+        cc1 = np.asarray(cc1, dtype=float)
+        cc2 = np.asarray(cc2, dtype=float)
+        blen = float(np.linalg.norm(cc2 - cc1))
+        if blen < 1.0:
+            continue
+        proj, d, t = _user_point_seg(P, cc1, cc2)
+        # 끝점 50mm 이내는 분할 안 함(스냅 영역).
+        if t * blen < 50.0 or (1.0 - t) * blen < 50.0:
+            continue
+        if d < best_d:
+            best_d, best_ele, best_proj = d, ele, proj
+            best_n1, best_n2 = n1, n2
+    if best_ele is None:
+        return None
+    n1, n2, kind, role = om.beam_elements[best_ele]
+    parent_mid = ele_to_parent.get(best_ele)
+    pm = am.members.get(parent_mid) if parent_mid is not None else None
+    # 단면·메타는 원본 부재에서. (없으면 기본 SHS 200×200 으로 안전 폴백.)
+    if pm is not None:
+        A, Iy, Iz, J = _section_props(pm)
+        src_cid = pm.source_comp_ids[0] if pm.source_comp_ids else 0
+        sw, sh, st = pm.section_w, pm.section_h, pm.section_t
+        sect_type = getattr(pm, 'section_type', 'shs')
+        mg = pm.merge_group
+        scids = list(pm.source_comp_ids)
+    else:
+        from modular_3d.analysis.section_catalog import SHS_200x200x8 as _P
+        A, Iy, Iz, J = _P['A'], _P['Iy'], _P['Iz'], _P['J']
+        src_cid = 0
+        sw, sh, st = 200.0, 200.0, 8.0
+        sect_type = 'shs'
+        mg = 0
+        scids = []
+    cc1 = np.asarray(om.node_tags[n1], dtype=float)
+    cc2 = np.asarray(om.node_tags[n2], dtype=float)
+    vec_xz = _vecxz_for_member(cc1, cc2)
+    tt = _geom_transf_tag(kind, vec_xz)
+    # 새 노드 Q (SPLIT 영역 — 빌드 청소 대상이라 다음 빌드에서 재생성됨).
+    Q = max(max(om.node_tags.keys()) + 1, SPLIT_NODE_BASE_OFFSET)
+    ops.node(Q, float(best_proj[0]), float(best_proj[1]), float(best_proj[2]))
+    om.node_tags[Q] = best_proj.copy()
+    am.nodes[Q] = AnalysisNode(id=Q, coord=best_proj.copy(),
+                               source_comp_id=src_cid)
+    if om.spec is not None:
+        om.spec.nodes.append(NodeRec(
+            tag=Q, coord=best_proj.copy(), role='user_add_split',
+            source_comp_id=src_cid))
+    # 기존 element 제거
+    try:
+        ops.remove('element', best_ele)
+    except Exception:
+        pass
+    om.beam_elements.pop(best_ele, None)
+    if om.spec is not None:
+        om.spec.beams = [b for b in om.spec.beams if b.tag != best_ele]
+    # 분할 대상이 미분할 원본이면 member_to_ele_tag 에서 제거.
+    if parent_mid is not None and om.member_to_ele_tag.get(parent_mid) == best_ele:
+        om.member_to_ele_tag.pop(parent_mid, None)
+    next_ele = max(om.beam_elements.keys()) + 1 if om.beam_elements else 1
+    next_sub = max(am.members.keys()) + 1 if am.members else 1
+    new_sub_tags = []
+    for (na, nb) in ((n1, Q), (Q, n2)):
+        ops.element('elasticBeamColumn', next_ele, na, nb,
+                    A, STEEL_E_MPA, STEEL_G_MPA, J, Iy, Iz, tt)
+        om.beam_elements[next_ele] = (na, nb, kind, role)
+        if om.spec is not None:
+            om.spec.beams.append(BeamRec(
+                tag=next_ele, n1=na, n2=nb, kind=kind, role=role,
+                section_w=float(sw), section_h=float(sh), section_t=float(st),
+                source_comp_ids=list(scids)))
+        am.members[next_sub] = AnalysisMember(
+            id=next_sub, n1=na, n2=nb, kind=kind, role=role,
+            section_w=float(sw), section_h=float(sh), section_t=float(st),
+            section_type=sect_type, source_comp_ids=list(scids),
+            merge_group=mg, is_split_sub=True,
+            parent_member_id=parent_mid if parent_mid is not None else next_sub)
+        new_sub_tags.append(next_ele)
+        next_ele += 1
+        next_sub += 1
+    # member_to_split_ele_tags 갱신 — 분할된 best_ele 를 두 새 sub 로 교체.
+    if parent_mid is not None:
+        cur = [t for t in om.member_to_split_ele_tags.get(parent_mid, [])
+               if t != best_ele]
+        cur += new_sub_tags
+        om.member_to_split_ele_tags[parent_mid] = cur
+        if om.spec is not None:
+            om.spec.member_to_split_tags[parent_mid] = list(cur)
+    return Q
+
+
+def _can_anchor(om, x, y, z, snap_tol=120.0, line_tol=80.0, on_edge=False):
+    """(x,y,z) 에 접합 끝점을 만들 수 있는가 — 노드 스냅 또는 보 분할 가능 여부만
+    판단(노드를 실제로 만들지 않음). 접합 실패 층에 분할 노드가 남는 것을 막기
+    위해, 두 끝점이 모두 가능한 층에서만 실제 분할/연결을 하도록 사전 검사한다.
+
+    on_edge=True 면 노드 스냅을 쓰지 않고 보 분할만으로 가능한지 검사한다
+    (사용자가 '선 위 점'을 골랐으면 그 자리에 노드를 새로 만들어야 하므로)."""
+    P = np.array([x, y, z], dtype=float)
+    if not on_edge:
+        for tag, c in om.node_tags.items():
+            if float(np.linalg.norm(P - np.asarray(c, dtype=float))) <= snap_tol:
+                return True
+    for ele, (n1, n2, kind, role) in om.beam_elements.items():
+        if kind != 'beam':
+            continue
+        c1 = om.node_tags.get(n1)
+        c2 = om.node_tags.get(n2)
+        if c1 is None or c2 is None:
+            continue
+        c1 = np.asarray(c1, dtype=float)
+        c2 = np.asarray(c2, dtype=float)
+        blen = float(np.linalg.norm(c2 - c1))
+        if blen < 1.0:
+            continue
+        proj, d, t = _user_point_seg(P, c1, c2)
+        if t * blen < 50.0 or (1.0 - t) * blen < 50.0:
+            continue
+        if d <= line_tol:
+            return True
+    return False
+
+
+def _anchor_node_at(om, x, y, z, snap_tol=120.0, line_tol=80.0, on_edge=False):
+    """(x,y,z) 위치의 접합 끝점 노드 — 가까운 기존 노드가 있으면 스냅,
+    없으면 가장 가까운 보를 분할해 새 노드. 둘 다 없으면 None.
+
+    on_edge=True 면 노드 스냅을 건너뛰고 그 자리에 보를 분할해 새 노드를
+    만든다 — 사용자가 '선 위 점'을 골랐을 때 가까운 기존 노드로 끌려가지 않게."""
+    P = np.array([x, y, z], dtype=float)
+    if not on_edge:
+        best_n = None
+        best_d = snap_tol
+        for tag, c in om.node_tags.items():
+            d = float(np.linalg.norm(P - np.asarray(c, dtype=float)))
+            if d <= best_d:
+                best_d, best_n = d, tag
+        if best_n is not None:
+            return best_n
+    return _split_member_at_point(om, P, line_tol)
+
+
+def _anchor_zs(om, x, y, tol):
+    """평면 위치 (x,y) 에 존재하는 z 집합 — 그 위치의 노드 z + 그 xy 를 지나는
+    수평 보의 z. 다층 복제를 위해 '같은 위치의 모든 층'을 모은다.
+
+    [함정] member_to_ele_tag 는 자동 분할(R01·R03 등)된 보를 빼버려서, 분할된
+    층(예: 1층 바닥·최상층)이 누락된다. 대신 am.members 의 원본 보(is_split_sub
+    아닌 것 — 분할돼도 원본은 am.members 에 남음)를 순회해 모든 층을 모은다."""
+    zs = set()
+    for tag, c in om.node_tags.items():
+        if abs(float(c[0]) - x) <= tol and abs(float(c[1]) - y) <= tol:
+            zs.add(round(float(c[2]), 1))
+    am = om.analysis_model
+    if am is not None:
+        p0 = np.array([x, y, 0.0])
+        for mid, m in am.members.items():
+            if getattr(m, 'is_split_sub', False) or m.kind != 'beam':
+                continue
+            c1 = am.nodes[m.n1].coord
+            c2 = am.nodes[m.n2].coord
+            a2 = np.array([c1[0], c1[1], 0.0])
+            b2 = np.array([c2[0], c2[1], 0.0])
+            proj, d, t = _user_point_seg(p0, a2, b2)
+            if d <= tol:
+                zc = float(c1[2]) + t * (float(c2[2]) - float(c1[2]))
+                zs.add(round(zc, 1))
+    return zs
+
+
+def apply_added_joints(om, tol: float = None) -> int:
+    """사용자 신규 접합(kind='add')을 등록 — 모서리 위 점도 지원.
+
+    각 add 의 두 끝점(A=a_xy/z_a, B=b_xy/z_b):
+      - 끝점 자리에 가까운 기존 노드가 있으면 그 노드(꼭지점 스냅),
+        없으면 그 자리에서 가장 가까운 보를 분할해 새 노드 생성.
+      - 두 노드를 add_dofs(핀/강접)로 연결.
+    다층 복제: A 평면 위치에 존재하는 모든 층(z)을 순회하며 같은 접합을 만든다.
+
+    [함정] equalDOF 는 한 노드를 두 번 slave 로 잡으면 Penalty 충돌. slave 가
+    이미 종속이면 master/slave 를 swap, 둘 다 종속이면 건너뜀.
+    build_ops_model 에서 apply_all_joint_rules 직후 호출(자동 결합·분할 뒤).
+    """
+    overrides = getattr(om, 'joint_overrides', None)
+    if not overrides:
+        return 0
+    from modular_3d.model.joint_override import MATCH_TOL_MM
+    from modular_3d.analysis.model_spec import EqualDofRec, NodeRec
+    from modular_3d.analysis.topology import AnalysisNode
+    if tol is None:
+        tol = MATCH_TOL_MM
+    am = om.analysis_model
+    seen_pairs = set()
+    counter = [0]
+
+    def _emit(master, slave, dofs, rid, force=False):
+        """equalDOF 등록(slave 중복 swap/skip + spec 기록). 성공 시 카운트.
+
+        force=True 면 종속 검사를 건너뛰고 강제 등록(Penalty handler 가 과구속
+        견딤) — 직각접합 체인(위→N1→아래)은 N1·아래가 이미 종속이라도 두 결합을
+        모두 만들어야 하므로(R03 의 _link 와 동일 정책)."""
+        if not force:
+            if slave in om.constrained_node_ids:
+                if master in om.constrained_node_ids:
+                    return
+                master, slave = slave, master
+        if master == slave:
+            return
+        key = (min(master, slave), max(master, slave))
+        if key in seen_pairs:
+            return
+        seen_pairs.add(key)
+        try:
+            ops.equalDOF(master, slave, *dofs)
+        except Exception as e:
+            om.registration_failures.append(
+                (slave, f'USER_ADD equalDOF master={master}: {e}'))
+            return
+        om.constrained_node_ids.add(slave)
+        if om.spec is not None:
+            om.spec.equal_dofs.append(EqualDofRec(
+                master=master, slave=slave, dofs=tuple(dofs),
+                kind='user_add', rule_id=rid))
+        counter[0] += 1
+
+    def _mk_n1(px, py, pz, cid):
+        """직각(ㄴ자)용 중간 노드 N1 — role='panel_z_route' 라 빌드가 회전
+        자유도를 자동 fix(자체 부재 없는 가교라 mechanism 방지). SPLIT 영역 tag."""
+        nid = max(max(om.node_tags.keys()) + 1, SPLIT_NODE_BASE_OFFSET)
+        coord = np.array([px, py, pz], dtype=float)
+        ops.node(nid, float(px), float(py), float(pz))
+        om.node_tags[nid] = coord
+        if am is not None:
+            am.nodes[nid] = AnalysisNode(id=nid, coord=coord.copy(),
+                                         source_comp_id=cid)
+        if om.spec is not None:
+            om.spec.nodes.append(NodeRec(
+                tag=nid, coord=coord.copy(), role='panel_z_route',
+                source_comp_id=cid))
+        return nid
+
+    for ov in overrides:
+        if getattr(ov, 'kind', '') != 'add':
+            continue
+        ax, ay = float(ov.a_xy[0]), float(ov.a_xy[1])
+        bx, by = float(ov.b_xy[0]), float(ov.b_xy[1])
+        dz_rel = float(ov.z_b) - float(ov.z_a)
+        dofs = tuple(ov.add_dofs) if ov.add_dofs else (1, 2, 3)
+        # 성질에 따라 rule_id 구분: 강접(회전 자유도 포함)=R11, 핀=R10.
+        is_rigid = any(x in (4, 5, 6) for x in dofs)
+        rid = RULE_ID_USER_RIGID if is_rigid else RULE_ID_USER_PIN
+        single = getattr(ov, 'single_layer', False)
+        right = getattr(ov, 'right_angle', False)
+        # 끝점 종류 — 선 위 점이면 그 자리에 보 분할(노드 추가), 꼭지점이면 노드 스냅.
+        a_edge = getattr(ov, 'a_on_edge', False)
+        b_edge = getattr(ov, 'b_on_edge', False)
+        # single_layer 면 클릭한 그 층(z_a)만, 아니면 모든 층(분할 전 수집).
+        if single:
+            a_zs = [round(float(ov.z_a), 1)]
+        else:
+            a_zs = sorted(_anchor_zs(om, ax, ay, tol))
+        for za in a_zs:
+            zb = za + dz_rel
+            # 양쪽 끝점을 만들 수 있는 층만 — 한쪽만 가능하면 분할 노드가 접합
+            # 없이 남으므로(노드 생성 전에) 건너뛴다.
+            if not _can_anchor(om, ax, ay, za, on_edge=a_edge):
+                continue
+            if not _can_anchor(om, bx, by, zb, on_edge=b_edge):
+                continue
+            nA = _anchor_node_at(om, ax, ay, za, on_edge=a_edge)
+            nB = _anchor_node_at(om, bx, by, zb, on_edge=b_edge)
+            if nA is None or nB is None:
+                continue
+            if right:
+                # ㄴ자(R03 방식) — 위 점에서 아래 점 높이로 수직 내린 N1 경유.
+                cA = np.asarray(om.node_tags[nA], dtype=float)
+                cB = np.asarray(om.node_tags[nB], dtype=float)
+                if cA[2] >= cB[2]:
+                    nU, cU, nD, cD = nA, cA, nB, cB
+                else:
+                    nU, cU, nD, cD = nB, cB, nA, cA
+                # N1 의 source_comp_id 는 0(중립). 아래 점 comp 와 같게 두면
+                # 'N1↔아래' 수평 결합이 같은 컴포넌트 내부로 분류돼 픽킹에서
+                # 빠진다(→ 수평 선택·제거 불가). 0 이면 두 결합 다 픽킹된다.
+                n1 = _mk_n1(float(cU[0]), float(cU[1]), float(cD[2]), 0)
+                # 체인 강제 등록 — N1·아래가 이미 종속이어도 두 결합 모두 생성.
+                _emit(nU, n1, dofs, rid, force=True)   # ① 수직
+                _emit(n1, nD, dofs, rid, force=True)   # ② 수평
+            else:
+                _emit(nA, nB, dofs, rid)
+    n = counter[0]
+    if n:
+        dprint('joint_rules', f'[joint_rules][USER_ADD] 사용자 신규 접합 {n}쌍 등록')
+    return n
+
+
+def remove_dangling_bridge_nodes(om) -> int:
+    """접합이 모두 제거되어 허공에 남은 가교 중간노드(N1, panel_z_route)를 정리.
+
+    직각(ㄴ자)접합의 중간노드 N1 은 자체 부재 없이 두 결합(위↔N1, N1↔아래)으로만
+    구조에 매달린 가교다. 사용자가 그 직각접합을 제거하면 두 결합이 모두 등록에서
+    빠지지만(게이트가 None 반환), N1 노드 자체는 이미 생성돼 허공에 남는다.
+    링크(equalDOF)도 부재(beam element)도 없는 N1 을 삭제한다.
+
+    [호출 시점] 회전 자유도 자동 fix(build_ops_model 6-c) 이전 — 이미 fix 된
+    노드를 지우면 ops.remove 가 꼬일 수 있으므로 apply_added_joints 직후 호출.
+
+    Returns: 삭제한 노드 수.
+    """
+    if om.spec is None:
+        return 0
+    # 등록된 결합·부재에 쓰인 노드(살아있는 노드).
+    linked = set()
+    for ed in om.spec.equal_dofs:
+        linked.add(ed.master)
+        linked.add(ed.slave)
+    in_beam = set()
+    for (n1, n2, kind, role) in om.beam_elements.values():
+        in_beam.add(n1)
+        in_beam.add(n2)
+    removed = 0
+    for nr in list(om.spec.nodes):
+        if getattr(nr, 'role', '') != 'panel_z_route':
+            continue
+        tag = nr.tag
+        if tag in linked or tag in in_beam:
+            continue   # 아직 결합/부재에 매달려 있음 — 유지.
+        try:
+            ops.remove('node', tag)
+        except Exception as e:
+            om.registration_failures.append(
+                (tag, f'허공 가교노드 제거 실패: {e}'))
+            continue
+        om.node_tags.pop(tag, None)
+        om.spec.nodes = [n for n in om.spec.nodes if n.tag != tag]
+        if om.analysis_model is not None:
+            om.analysis_model.nodes.pop(tag, None)
+        removed += 1
+    if removed:
+        dprint('joint_rules',
+               f'[joint_rules] 허공 가교노드 {removed}개 제거(직각접합 제거 정리)')
+    return removed

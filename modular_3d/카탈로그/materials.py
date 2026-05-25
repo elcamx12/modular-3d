@@ -19,7 +19,7 @@ STEEL_UNIT_WEIGHT_N_MM3 = STEEL_UNIT_WEIGHT_N_M3 * 1e-9            # ≈ 7.70e-5
 STEEL_FY_MPA = 275.0   # 항복강도
 STEEL_FU_MPA = 410.0   # 인장강도
 
-# 부분안전계수 (KBC LRFD)
+# 부분안전계수 (KDS 41 31 00 강구조 LRFD)
 PHI_T = 0.9   # 인장
 PHI_C = 0.9   # 압축
 PHI_B = 0.9   # 휨

@@ -9,6 +9,9 @@ import numpy as np
 
 # 단면 폭 — 카탈로그 단일 진실 원천. 모든 generate_sub_components 에서 사용.
 from modular_3d.카탈로그.geometry import SECTION_W_MM as _SECTION_W
+from modular_3d.카탈로그.geometry import (
+    NONBEARING_WALL_THICKNESS_MM as _NB_WALL_T,
+)
 
 
 # ── 앱 상태 ──────────────────────────────────────────────────
@@ -25,6 +28,12 @@ class ComponentType(Enum):
     MODULE = 'module'
     FLOOR_PANEL = 'floor_panel'
     STRUCT_WALL = 'struct_wall'
+
+    # 내벽(비내력 칸막이벽) — 사용자가 세대 내부에 직접 배치하는 벽 (2026-05-24).
+    # 구조벽과 별개. 기둥·보·런너 없이 채움 판 1장만. 두께 100, 높이 자동(부모).
+    # 부모(모듈·바닥패널·캔틸레버슬래브)에 종속해 다층 복제된다. 하중·물량 0
+    # (순수 시각). 개구부를 뚫을 수 있다. 반투명 렌더링.
+    INTERIOR_WALL = 'interior_wall'
 
     CANTILEVER_BEAM = 'cantilever_beam'
     CANTILEVER_SLAB = 'cantilever_slab'
@@ -57,6 +66,11 @@ class BeamData:
     section_w: float = 200.0   # 단면 폭
     section_h: float = 200.0   # 단면 높이
     section_t: float = 8.0     # 두께
+    # 단면 형상 종류 — 'shs'(각형강관) | 'h'(H형강). 보 전용(기둥은 항상 shs).
+    # 부재의 beam_section_type 이 generate_sub_components 에서 각 보로 전파된다.
+    # 3D 메시·구조해석·물량이 이 값으로 단면 형상을 분기한다. 실제 치수는
+    # 구조해석 자동설계가 타입별 카탈로그(SHS/H)에서 결정.
+    section_type: str = 'shs'
 
 
 @dataclass
@@ -154,6 +168,31 @@ class Component:
     #                     노드들 중 가장 가까운 1개를 찾는데 사용)
     joint_records: List[Dict] = field(default_factory=list)
 
+    # ── 개구부 (2026-05-24, 3단계) ──────────────────────────────
+    # openings: 본 부재 면(슬래브 또는 벽체 채움)에 뚫는 사각 구멍 목록.
+    # 부재 '면 로컬' 좌표(mm)로 보관 — 면의 코너[0]→[1]=u축, 코너[0]→[3]=v축.
+    #   슬래브: u=폭(local x), v=깊이(local y), 관통=두께(z).
+    #   벽체:   u=벽 길이,     v=높이(z),       관통=벽 두께.
+    # 각 opening dict: {'u':mm, 'v':mm, 'w':mm, 'h':mm} (u,v=좌하단, w,h=크기).
+    # 사용자 데이터이므로 generate_sub_components 가 건드리지 않는다.
+    openings: List[Dict] = field(default_factory=list)
+
+    # ── 보 단면 형상 타입 (2026-05-25) ──────────────────────────
+    # beam_section_type: 'shs'(각형강관) | 'h'(H형강). 본 부재의 모든 보에 적용.
+    # 기둥은 항상 각형강관(본 값 무시). 종속 부재(캔틸레버·중간보)와 바닥패널에
+    # 합체된 구조벽은 부모/패널 타입을 따라가도록 배치 시 컨트롤러가 설정한다.
+    # generate_sub_components 끝에서 _apply_beam_section_type 로 각 보에 전파.
+    beam_section_type: str = 'shs'
+
+    def _apply_beam_section_type(self):
+        """본 부재의 모든 보(BeamData)에 beam_section_type 을 전파.
+
+        각 서브클래스 generate_sub_components 마지막에서 호출 — translate 등으로
+        보가 재생성돼도 타입이 유지된다(BeamData 기본은 'shs' 라 미호출 시 각형강관).
+        """
+        bt = getattr(self, 'beam_section_type', 'shs') or 'shs'
+        for b in self._get_all_beams():
+            b.section_type = bt
 
     def get_bounding_box(self) -> Tuple[np.ndarray, np.ndarray]:
         """AABB 바운딩박스 (min_xyz, max_xyz) 반환."""
@@ -217,11 +256,18 @@ class Component:
 
 @dataclass
 class Module(Component):
-    """모듈: 기둥 4 + 하부보 4 + 상부보 4 + 슬래브 1."""
+    """모듈: 기둥 4 + 하부보 4 + 상부보 4 + 슬래브 1 + 비내력 벽 4면(채움).
+
+    [2026-05-24 3단계] wall_fills: 4면 비내력 벽(채움 패널, 두께 100, 시각 전용).
+    순서 = [front(y-), back(y+), left(x-), right(x+)] → 개구부 face 'wall_0'~'wall_3'.
+    하중·물량에 들어가지 않음(구조벽 채움과 동일 — 순수 메시). 개구부로 뚫거나
+    면 전체를 덮어 그 면 벽을 시각적으로 제거할 수 있다.
+    """
     columns: List[ColumnData] = field(default_factory=list)
     bottom_beams: List[BeamData] = field(default_factory=list)
     top_beams: List[BeamData] = field(default_factory=list)
     slab: Optional[SlabData] = None
+    wall_fills: List["WallPanelData"] = field(default_factory=list)
 
     def generate_sub_components(self):
         """dimensions + position + rotation으로 하위 부재 자동 생성."""
@@ -291,6 +337,35 @@ class Module(Component):
             thickness=150.0,
         )
 
+        # 비내력 벽 4면 (채움 패널, 두께 100, 시각 전용) — 기둥 사이, 보 사이 높이.
+        # 면 코너 순서 [원점, +u, +u+v, +v] (u=면 길이, v=높이 z) — 개구부 면 로컬과 일치.
+        wt = _NB_WALL_T
+        wz0 = half_s
+        wz1 = h - s - half_s
+        self.wall_fills = [
+            # wall_0 front (y = half_s), u = x
+            WallPanelData(corners=np.array([
+                to_world(s, half_s, wz0), to_world(w - s, half_s, wz0),
+                to_world(w - s, half_s, wz1), to_world(s, half_s, wz1)]),
+                thickness=wt),
+            # wall_1 back (y = d - half_s), u = x
+            WallPanelData(corners=np.array([
+                to_world(s, d - half_s, wz0), to_world(w - s, d - half_s, wz0),
+                to_world(w - s, d - half_s, wz1), to_world(s, d - half_s, wz1)]),
+                thickness=wt),
+            # wall_2 left (x = half_s), u = y
+            WallPanelData(corners=np.array([
+                to_world(half_s, s, wz0), to_world(half_s, d - s, wz0),
+                to_world(half_s, d - s, wz1), to_world(half_s, s, wz1)]),
+                thickness=wt),
+            # wall_3 right (x = w - half_s), u = y
+            WallPanelData(corners=np.array([
+                to_world(w - half_s, s, wz0), to_world(w - half_s, d - s, wz0),
+                to_world(w - half_s, d - s, wz1), to_world(w - half_s, s, wz1)]),
+                thickness=wt),
+        ]
+        self._apply_beam_section_type()
+
     def _get_all_beams(self) -> list:
         return self.bottom_beams + self.top_beams
 
@@ -331,6 +406,7 @@ class FloorPanel(Component):
                 to_world(s, s, slab_bot), to_world(w - s, s, slab_bot),
                 to_world(w - s, d - s, slab_bot), to_world(s, d - s, slab_bot),
             ]), thickness=150.0)
+        self._apply_beam_section_type()
 
     def _get_all_beams(self) -> list:
         return self.edge_beams
@@ -383,11 +459,14 @@ class StructWall(Component):
             start=to_world(s, half_d, h - s), end=to_world(w - s, half_d, h - s))
 
         # 벽체 채움 (하부런너 상면 ~ 상부런너 하면)
+        # [2026-05-24] 채움 패널 두께는 비내력 벽 두께(100) 고정 — 모듈 벽과 통일.
+        # 구조 두께(d=기둥 간격)·해석은 그대로, 채움 시각 두께만 100.
         self.wall_fill = WallPanelData(
             corners=np.array([
                 to_world(s, half_d, half_s), to_world(w - s, half_d, half_s),
                 to_world(w - s, half_d, h - s - half_s), to_world(s, half_d, h - s - half_s),
-            ]), thickness=d)
+            ]), thickness=_NB_WALL_T)
+        self._apply_beam_section_type()
 
     def _get_all_beams(self) -> list:
         beams = []
@@ -396,6 +475,51 @@ class StructWall(Component):
         if self.top_runner:
             beams.append(self.top_runner)
         return beams
+
+
+@dataclass
+class InteriorWall(Component):
+    """내벽(비내력 칸막이벽) — 채움 판 1장. 기둥·보·런너 없음.
+
+    [형상]
+    - dimensions.width  = 벽 길이 L (사용자 입력)
+    - dimensions.depth  = 벽 두께 t (기본 100, 고정)
+    - dimensions.height = 벽 높이 h (기본 3400 = 단층 모듈 높이, 자동)
+
+    채움 판은 길이 전체(0..L)에 걸쳐 서고, z 범위는 모듈 4면 벽과 같은
+    레벨(half_s .. h-s-half_s)로 맞춰 같은 층 모듈 벽과 면이 일치한다.
+    개구부(face='wall')를 뚫을 수 있다. 하중·물량 0 (순수 시각 메시).
+    """
+    wall_fill: Optional[WallPanelData] = None
+
+    def generate_sub_components(self):
+        w = self.dimensions['width']                 # 벽 길이
+        d = self.dimensions.get('depth', _NB_WALL_T)  # 벽 두께 (100)
+        h = self.dimensions.get('height', 3400.0)    # 벽 높이
+        s = _SECTION_W                               # 200 — z 범위를 모듈 벽과 flush
+        half_s = s / 2.0
+        half_d = d / 2.0
+        ax, ay = self._anchor_offset(w, d)
+        rot = self.rotation
+        pos = self.position
+
+        def to_world(lx, ly, lz):
+            return _rotate_local_to_world(lx - ax, ly - ay, lz, rot, pos)
+
+        # 채움 판 — 면 코너 [원점, +u, +u+v, +v] (u=길이 x, v=높이 z).
+        # 두께 방향(y)은 중심선 half_d 한 평면, 메시가 thickness 만큼 양쪽 확장.
+        wz0 = half_s
+        wz1 = h - s - half_s
+        self.wall_fill = WallPanelData(
+            corners=np.array([
+                to_world(0, half_d, wz0), to_world(w, half_d, wz0),
+                to_world(w, half_d, wz1), to_world(0, half_d, wz1),
+            ]),
+            thickness=d,
+        )
+
+    def _get_all_beams(self) -> list:
+        return []
 
 
 @dataclass
@@ -493,6 +617,7 @@ class Vertical3Module(Component):
             self.top_beams.append(BeamData(
                 start=to_world(bx, s, roof_z),
                 end=to_world(bx, d - s, roof_z)))
+        self._apply_beam_section_type()
 
 
     def _get_all_beams(self) -> list:
@@ -622,6 +747,7 @@ class CantileverBeam(Component):
 
         self.beam = BeamData(
             start=to_world(0, half_s, 0), end=to_world(w, half_s, 0))
+        self._apply_beam_section_type()
 
     def _get_all_beams(self) -> list:
         return [self.beam] if self.beam else []
@@ -667,6 +793,7 @@ class CantileverSlab(Component):
                 to_world(0, s, slab_bot), to_world(w, s, slab_bot),
                 to_world(w, d - s, slab_bot), to_world(0, d - s, slab_bot),
             ]), thickness=150.0)
+        self._apply_beam_section_type()
 
     def _get_all_beams(self) -> list:
         return self.beams
@@ -690,6 +817,7 @@ class MidBeam(Component):
 
         self.beam = BeamData(
             start=to_world(0, half_s, 0), end=to_world(w, half_s, 0))
+        self._apply_beam_section_type()
 
     def _get_all_beams(self) -> list:
         return [self.beam] if self.beam else []
@@ -734,6 +862,87 @@ class Scene:
         self.components: Dict[int, Component] = {}
         self.next_id: int = 1
         self.undo_stack: List[Action] = []
+        # 실(Room) 컬렉션 — 부재와 별개. 2단계 실 배치(폴리곤 영역+용도).
+        # Room import 는 순환참조 방지를 위해 add_room 내부에서 지연 임포트.
+        self.rooms: Dict[int, "object"] = {}
+        self.next_room_id: int = 1
+        # 접합부 오버라이드 — 사용자가 컴포넌트 간 접합을 직접 제거/변경/추가한
+        # 기록. 부재·실과 별개로 직렬화되며 undo 스택과도 분리(접합 편집은 자체
+        # 토글 모드에서만 발생). JointOverride 목록.
+        self.joint_overrides: List["object"] = []
+        # 불러오기 직후 접합 탭 첫 진입 시 "저장본/새 자동계산" 1회 질문 대기
+        # 플래그(런타임 전용 — 직렬화 안 함). 불러오기가 True 로 set, 질문 후 clear.
+        self._joint_overrides_pending_choice: bool = False
+
+    def add_room(self, room) -> int:
+        """실 추가, ID 반환(undo 스택에는 넣지 않음 — 부재와 별개 흐름)."""
+        room.id = self.next_room_id
+        self.next_room_id += 1
+        self.rooms[room.id] = room
+        return room.id
+
+    def remove_room(self, room_id: int):
+        """실 삭제, 삭제된 실 반환(없으면 None)."""
+        return self.rooms.pop(room_id, None)
+
+    # ── 접합부 오버라이드 (2026-05-25) ───────────────────────────
+    # 컴포넌트 간 접합의 사용자 변경 계층. 같은 평면 위치(xy)의 모든 층 접합에
+    # 자동 적용된다(다층 복제는 group_id 공유 + 같은 xy 반복). 자세한 매칭
+    # 규칙은 model/joint_override.py 참조.
+
+    def set_joint_override(self, ov) -> None:
+        """접합 오버라이드 추가. 같은 접합을 가리키는 동종 오버라이드는 교체.
+        - remove/rigid/pin: 같은 접합의 기존 변경을 교체(사용자 최신 우선).
+        - add: 같은 두 점의 기존 신규 접합을 교체(중복 누적 방지)."""
+        from modular_3d.model.joint_override import same_joint
+        if ov.kind in ('remove', 'rigid', 'pin'):
+            ov_rid = getattr(ov, 'rule_id', '')
+            ov_single = getattr(ov, 'single_layer', False)
+            ov_za = float(getattr(ov, 'z_a', 0.0))
+            ov_zb = float(getattr(ov, 'z_b', 0.0))
+
+            def _dup(o):
+                if getattr(o, 'kind', '') not in ('remove', 'rigid', 'pin'):
+                    return False
+                if not same_joint(o, ov.a_xy, ov.b_xy):
+                    return False
+                if getattr(o, 'rule_id', '') != ov_rid:
+                    return False
+                # 한쪽이라도 '이 층만'이면 층(z)까지 같아야 같은 접합으로 교체.
+                if ov_single or getattr(o, 'single_layer', False):
+                    oza = float(getattr(o, 'z_a', 0.0))
+                    ozb = float(getattr(o, 'z_b', 0.0))
+                    zf = abs(oza - ov_za) <= 50.0 and abs(ozb - ov_zb) <= 50.0
+                    zb = abs(oza - ov_zb) <= 50.0 and abs(ozb - ov_za) <= 50.0
+                    if not (zf or zb):
+                        return False
+                return True
+
+            self.joint_overrides = [o for o in self.joint_overrides
+                                    if not _dup(o)]
+        elif ov.kind == 'add':
+            self.joint_overrides = [
+                o for o in self.joint_overrides
+                if not (getattr(o, 'kind', '') == 'add'
+                        and same_joint(o, ov.a_xy, ov.b_xy))
+            ]
+        self.joint_overrides.append(ov)
+
+    def clear_joint_override_at(self, a_xy, b_xy) -> bool:
+        """노드쌍에 매칭되는 기존-접합 오버라이드 제거(자동 규칙 복귀).
+        하나라도 제거되면 True."""
+        from modular_3d.model.joint_override import same_joint
+        before = len(self.joint_overrides)
+        self.joint_overrides = [
+            o for o in self.joint_overrides
+            if not (getattr(o, 'kind', '') in ('remove', 'rigid', 'pin')
+                    and same_joint(o, a_xy, b_xy))
+        ]
+        return len(self.joint_overrides) < before
+
+    def clear_joint_overrides(self) -> None:
+        """모든 접합 오버라이드 제거(불러오기 시 '새로 자동계산' 선택용)."""
+        self.joint_overrides = []
 
     def add_component(self, comp: Component) -> int:
         """부재 추가, ID 반환."""
@@ -861,6 +1070,7 @@ TYPE_TO_CLASS: Dict[ComponentType, type] = {
     ComponentType.MODULE:           Module,
     ComponentType.FLOOR_PANEL:      FloorPanel,
     ComponentType.STRUCT_WALL:      StructWall,
+    ComponentType.INTERIOR_WALL:    InteriorWall,
     ComponentType.CANTILEVER_BEAM:  CantileverBeam,
     ComponentType.CANTILEVER_SLAB:  CantileverSlab,
     ComponentType.MID_BEAM:         MidBeam,
@@ -874,6 +1084,7 @@ TYPE_NAMES: Dict[ComponentType, str] = {
     ComponentType.MODULE:           '모듈',
     ComponentType.FLOOR_PANEL:      '바닥패널',
     ComponentType.STRUCT_WALL:      '구조벽',
+    ComponentType.INTERIOR_WALL:    '내벽',
     ComponentType.CANTILEVER_BEAM:  '캔틸레버보',
     ComponentType.CANTILEVER_SLAB:  '캔틸레버슬래브',
     ComponentType.MID_BEAM:         '중간보',
@@ -885,18 +1096,43 @@ TYPE_NAMES: Dict[ComponentType, str] = {
 
 
 def instantiate(comp_type: ComponentType, position: np.ndarray,
-                dims: dict, rotation: int = 0, anchor: int = 0) -> Component:
+                dims: dict, rotation: int = 0, anchor: int = 0,
+                beam_section_type: str = 'shs') -> Component:
     """Component 서브클래스 생성 + 하위 부재 자동 생성.
 
     [통합 — 단계 2 (2026-05-08)]
     이전: ui/controls_geom.create_component, model/multi_floor._instantiate 가
          같은 8 분기 isinstance 체인을 각자 보유.
     현재: 본 함수 하나로 통합. TYPE_TO_CLASS dict 룩업 → 인스턴스화.
+
+    beam_section_type: 'shs'|'h' — 생성 직후 generate_sub_components 에서 보로 전파.
     """
     cls = TYPE_TO_CLASS.get(comp_type, Module)  # 미지의 타입은 Module 폴백
     comp = cls(
         id=0, comp_type=comp_type, position=position.copy(),
         rotation=rotation, dimensions=dict(dims), anchor=anchor,
+        beam_section_type=beam_section_type,
     )
     comp.generate_sub_components()
     return comp
+
+
+def effective_beam_section_type(comp, scene) -> str:
+    """부재의 유효 보 단면 타입 — 종속/합체는 부모/패널을 따라간다.
+
+    - 캔틸레버보·캔틸레버슬래브·중간보: parent_id 부모의 타입.
+    - 바닥패널에 합체된 구조벽(merged_fp_id): 그 바닥패널의 타입.
+    - 그 외(모듈·바닥패널·수직3층모듈·독립 구조벽): 자기 beam_section_type.
+    """
+    ct = comp.comp_type
+    if ct in (ComponentType.CANTILEVER_BEAM, ComponentType.CANTILEVER_SLAB,
+              ComponentType.MID_BEAM):
+        pid = getattr(comp, 'parent_id', 0)
+        parent = scene.components.get(pid) if pid else None
+        if parent is not None:
+            return getattr(parent, 'beam_section_type', 'shs')
+    if ct == ComponentType.STRUCT_WALL and getattr(comp, 'merged_fp_id', None):
+        fp = scene.components.get(comp.merged_fp_id)
+        if fp is not None:
+            return getattr(fp, 'beam_section_type', 'shs')
+    return getattr(comp, 'beam_section_type', 'shs')
