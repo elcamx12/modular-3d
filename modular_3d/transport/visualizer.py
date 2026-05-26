@@ -56,12 +56,13 @@ def _overload_diagnose(trip: Trip) -> Optional[str]:
         reasons.append(
             f"길이 {trip.used_length_mm:.0f}mm > 유효 {trip.usable_length_mm:.0f}mm"
         )
-    # 폭/높이 초과는 각 item 별 확인
+    # 폭 초과는 각 item 별 확인 — 트럭 폭 + 양쪽 여유(튀어나옴) 까지 허용.
     inner_h = tr.max_height - tr.vehicle_height_offset
+    eff_w = tr.max_width + 2.0 * SpacingParams().side_overhang_mm
     for it in list(trip.items) + [s for s in trip.stacked_items if s is not None]:
         w = getattr(it, "width", 0.0)
-        if w > tr.max_width + 1e-6:
-            reasons.append(f"{getattr(it, 'name', '?')} 폭 {w:.0f}mm > {tr.max_width:.0f}mm")
+        if w > eff_w + 1e-6:
+            reasons.append(f"{getattr(it, 'name', '?')} 폭 {w:.0f}mm > 적재폭 {eff_w:.0f}mm")
     if not reasons:
         return None
     return "⚠ " + " | ".join(reasons)
@@ -187,20 +188,25 @@ def draw_top_view(trip: Trip, truck: Optional[Truck] = None,
             font=dict(size=12, color="gray"),
         )
     elif trip.kind == "module":
+        # [Phase 8 안전성] 모듈 + 패널 혼적 회차에서도 *모듈만 추려서* 박스를 그림.
+        # 패널은 별도 색상으로 옆자리에 작게 표시 — 시각 혼동 방지.
         _edge_zones_top(fig, truck, edge)
         cursor = edge
         for k, item in enumerate(trip.items):
             cy = (truck.max_width - item.width) / 2
+            is_module = isinstance(item, Module)
+            color = MODULE_COLOR if is_module else SEAT_PALETTE[k % len(SEAT_PALETTE)]
             fig.add_shape(
                 type="rect",
                 x0=cursor, y0=cy,
                 x1=cursor + item.length, y1=cy + item.width,
-                line=dict(color=MODULE_COLOR, width=2),
-                fillcolor=MODULE_COLOR, opacity=0.5,
+                line=dict(color=color, width=2),
+                fillcolor=color, opacity=0.5,
             )
+            label_kind = "" if is_module else "<br>(패널 동시 적재)"
             fig.add_annotation(
                 x=cursor + item.length / 2, y=cy + item.width / 2,
-                text=f"<b>{item.name}</b><br>{int(item.weight)}kg",
+                text=f"<b>{item.name}</b><br>{int(item.weight)}kg{label_kind}",
                 showarrow=False, font=dict(size=11),
             )
             cursor += item.length + gap
@@ -345,22 +351,40 @@ def draw_rear_view(trip: Trip, truck: Optional[Truck] = None,
             text="(빈 회차)", showarrow=False, font=dict(size=12, color="gray"),
         )
     elif trip.kind == "module":
-        tallest = max(trip.items, key=lambda i: i.height)
-        cx = (truck.max_width - tallest.width) / 2
-        fig.add_shape(
-            type="rect",
-            x0=cx, y0=veh_h,
-            x1=cx + tallest.width, y1=veh_h + tallest.height,
-            line=dict(color=MODULE_COLOR, width=2),
-            fillcolor=MODULE_COLOR, opacity=0.5,
-        )
-        names = list(dict.fromkeys(i.name for i in trip.items))
-        name_str = " + ".join(names) if len(names) > 1 else names[0]
-        fig.add_annotation(
-            x=cx + tallest.width / 2, y=veh_h + tallest.height / 2,
-            text=f"<b>{name_str}</b><br>폭 {int(tallest.width)} × 높이 {int(tallest.height)}mm",
-            showarrow=False, font=dict(size=10),
-        )
+        # [Phase 8 안전성] 신규 패커가 만든 *모듈 + 패널 혼적* 회차도 trip.kind=="module"
+        # (items[0] 이 Module 이라 분기). Panel 은 .height 가 없어 AttributeError 발생 가능 →
+        # Module 만 필터해 그린다. 패널이 끼어 있으면 별도 라벨로 표시.
+        modules_in_trip = [i for i in trip.items if isinstance(i, Module)]
+        panels_in_trip = [i for i in trip.items if not isinstance(i, Module)]
+        if not modules_in_trip:
+            # 안전판 — items[0]이 Module 인데 필터 결과가 비면 그릴 게 없음
+            fig.add_annotation(
+                x=truck.max_width / 2, y=(veh_h + truck.max_height) / 2,
+                text="(모듈 없음)", showarrow=False,
+                font=dict(size=12, color="gray"),
+            )
+        else:
+            tallest = max(modules_in_trip, key=lambda i: i.height)
+            cx = (truck.max_width - tallest.width) / 2
+            fig.add_shape(
+                type="rect",
+                x0=cx, y0=veh_h,
+                x1=cx + tallest.width, y1=veh_h + tallest.height,
+                line=dict(color=MODULE_COLOR, width=2),
+                fillcolor=MODULE_COLOR, opacity=0.5,
+            )
+            names = list(dict.fromkeys(i.name for i in modules_in_trip))
+            name_str = " + ".join(names) if len(names) > 1 else names[0]
+            label = (
+                f"<b>{name_str}</b><br>폭 {int(tallest.width)} × "
+                f"높이 {int(tallest.height)}mm"
+            )
+            if panels_in_trip:
+                label += f"<br>+ 패널 {len(panels_in_trip)} 매 동시 적재"
+            fig.add_annotation(
+                x=cx + tallest.width / 2, y=veh_h + tallest.height / 2,
+                text=label, showarrow=False, font=dict(size=10),
+            )
 
     else:
         sample = trip.items[0]
@@ -490,4 +514,517 @@ def draw_rear_view(trip: Trip, truck: Optional[Truck] = None,
     return fig
 
 
-__all__ = ["draw_top_view", "draw_rear_view"]
+# ════════════════════════════════════════════════════════════════════
+# Phase B — 3D 적재 시각화 (Plotly 3D + Mesh3d / Scatter3d)
+# ════════════════════════════════════════════════════════════════════
+#
+# [좌표 약속]
+# - x_3d = 트럭 길이 방향. 회차마다 *옆으로 나란히* 배치 (회차 사이 간격 2000 mm)
+# - y_3d = 트럭 폭 방향. 트럭 박스 좌측 끝 = y_3d=0, 우측 끝 = y_3d=truck.max_width
+# - z_3d = 높이 방향. 지면 = z_3d=0, 차량 적재면 = z_3d=vehicle_height_offset
+#
+# [Placement.truck_xyz 와의 변환]
+# - placement.truck_xyz 는 적재함 중심 원점 기준. 화물 *중심* 좌표.
+# - 3D 좌표 = (x_offset + max_length/2 + truck_xyz[0],
+#              max_width/2 + truck_xyz[1],
+#              vehicle_height_offset + truck_xyz[2])
+# ════════════════════════════════════════════════════════════════════
+
+INTER_TRUCK_GAP_MM: float = 3000.0  # 회차 간 좌우 간격 (사용자 결정 — 1m 추가)
+
+_COLOR_MODULE = "#2a7ade"
+_COLOR_FLOOR = "#4CAF50"
+_COLOR_DEP_FLOOR = "#FF9800"
+_COLOR_WALL_PANEL = "#9C27B0"
+_COLOR_WALL_SEG = "#8B4513"
+_COLOR_TRUCK_LINE = "#333"
+
+
+def _cube_mesh(
+    x0: float, y0: float, z0: float,
+    dx: float, dy: float, dz: float,
+    color: str, name: str, opacity: float = 0.6,
+) -> go.Mesh3d:
+    """축 정렬 직육면체 Mesh3d — 8 정점 + 12 삼각형."""
+    xs = [x0,    x0+dx, x0+dx, x0,    x0,    x0+dx, x0+dx, x0]
+    ys = [y0,    y0,    y0+dy, y0+dy, y0,    y0,    y0+dy, y0+dy]
+    zs = [z0,    z0,    z0,    z0,    z0+dz, z0+dz, z0+dz, z0+dz]
+    # 표준 cube mesh — 6 면 × 2 삼각형 = 12 (정점 인덱스)
+    i = [0, 0, 4, 4, 0, 0, 3, 3, 0, 0, 1, 1]
+    j = [1, 2, 5, 6, 1, 5, 2, 6, 3, 7, 2, 6]
+    k = [2, 3, 6, 7, 5, 4, 6, 7, 7, 4, 6, 5]
+    return go.Mesh3d(
+        x=xs, y=ys, z=zs, i=i, j=j, k=k,
+        color=color, opacity=opacity, name=name,
+        flatshading=True, hoverinfo="text", hovertext=name,
+    )
+
+
+def _wireframe_box_3d(
+    x0: float, y0: float, z0: float,
+    dx: float, dy: float, dz: float,
+    color: str, name: str, width: int = 3,
+) -> go.Scatter3d:
+    """직육면체 외곽선 — 12 edge 를 None 으로 구분한 단일 Scatter3d trace."""
+    pts = [
+        (x0,    y0,    z0   ), (x0+dx, y0,    z0   ),
+        (x0+dx, y0+dy, z0   ), (x0,    y0+dy, z0   ),
+        (x0,    y0,    z0+dz), (x0+dx, y0,    z0+dz),
+        (x0+dx, y0+dy, z0+dz), (x0,    y0+dy, z0+dz),
+    ]
+    edges = [
+        (0, 1), (1, 2), (2, 3), (3, 0),   # 바닥
+        (4, 5), (5, 6), (6, 7), (7, 4),   # 천정
+        (0, 4), (1, 5), (2, 6), (3, 7),   # 수직
+    ]
+    xs: list = []
+    ys: list = []
+    zs: list = []
+    for a, b in edges:
+        xs += [pts[a][0], pts[b][0], None]
+        ys += [pts[a][1], pts[b][1], None]
+        zs += [pts[a][2], pts[b][2], None]
+    return go.Scatter3d(
+        x=xs, y=ys, z=zs, mode="lines",
+        line=dict(color=color, width=width),
+        name=name, showlegend=False, hoverinfo="skip",
+    )
+
+
+def _item_dims_3d(item, posture):
+    """화물의 3D 차원 (length, width, height) — 자세 반영.
+
+    Module: 항상 (length, width, height).
+    Panel LYING: (length, width, 점유두께).
+    Panel STANDING: (length, thickness, width) — width 가 위로 솟음.
+    """
+    # 지연 import — packer_safety 에 동일 식 존재
+    from .packer_safety import _item_dims_for_posture
+    L, W, h_occ, _ = _item_dims_for_posture(item, posture)
+    return L, W, h_occ
+
+
+def _add_truck_bed_3d(fig: go.Figure, x_off: float, truck: Truck) -> None:
+    """트럭 적재함 외곽선 + 적재함 바닥 판 + 차체(캐빈·바퀴) + 차종 라벨.
+
+    [Phase D — 2026-05-26 / 2026-05-26 외관 보강]
+    - 적재함 외곽선 (와이어프레임)
+    - 적재함 *바닥 판* (얇은 회색 plate — 화물이 올라가는 면)
+    - 캐빈 (바퀴 위 부터 솟음 — 적재면과 같은 높이에서 시작)
+    - 바퀴 4 쌍 (앞바퀴 1 + 적재함 하단 3) = 8 개 — 캐빈 앞에도 바퀴
+    - A-frame 트럭: 적재함 양옆에 A 자 프레임
+    - 차종 라벨
+
+    각 부분은 *간략한 박스* — 실제 차량 외관까진 아님.
+    """
+    veh_h = truck.vehicle_height_offset
+    bed_dz = truck.max_height - veh_h
+    inner_h = bed_dz  # 적재함 내공 높이
+
+    # ① 적재함 외곽선
+    fig.add_trace(_wireframe_box_3d(
+        x0=x_off, y0=0.0, z0=veh_h,
+        dx=truck.max_length, dy=truck.max_width, dz=inner_h,
+        color=_COLOR_TRUCK_LINE, name=f"{truck.name} 적재함", width=4,
+    ))
+
+    # ②-신규: 적재함 *바닥 판* — 화물이 올라가는 면 (얇은 회색 plate)
+    BED_FLOOR_TH = 80.0  # 바닥 판 두께
+    fig.add_trace(_cube_mesh(
+        x0=x_off, y0=0.0, z0=veh_h - BED_FLOOR_TH,
+        dx=truck.max_length, dy=truck.max_width, dz=BED_FLOOR_TH,
+        color="#555", name=f"{truck.name} 적재 바닥", opacity=0.85,
+    ))
+
+    # 차종별 색상 + 캐빈 사이즈
+    truck_type = truck.truck_type
+    if truck_type == "lowbed":
+        cab_color = "#1976D2"
+        cab_label = "저상"
+    elif truck_type == "extendable":
+        cab_color = "#388E3C"
+        cab_label = "광폭"
+    elif truck_type == "aframe":
+        cab_color = "#E64A19"
+        cab_label = "A-frame"
+    else:
+        cab_color = "#616161"
+        cab_label = truck_type
+    label_text = f"<b>{cab_label} · {truck.name}</b>"
+
+    # ③ 캐빈 — 적재함 앞쪽. 바퀴 위(veh_h) 부터 솟음. 길이 2400, 폭 트럭폭, 높이 2200.
+    cab_len = 2400.0
+    cab_dy = truck.max_width
+    cab_y0 = 0.0
+    cab_dz = 2200.0
+    cab_x0 = x_off - cab_len - 200.0  # 적재함과 200mm 공간
+    cab_z0 = veh_h  # *바퀴 위* 부터 솟음 (수정 — 더 이상 지면 시작 X)
+    fig.add_trace(_cube_mesh(
+        x0=cab_x0, y0=cab_y0, z0=cab_z0,
+        dx=cab_len, dy=cab_dy, dz=cab_dz,
+        color=cab_color, name=f"{cab_label} 캐빈", opacity=0.85,
+    ))
+    fig.add_trace(_wireframe_box_3d(
+        x0=cab_x0, y0=cab_y0, z0=cab_z0,
+        dx=cab_len, dy=cab_dy, dz=cab_dz,
+        color="#222", name=f"{cab_label} 캐빈", width=2,
+    ))
+
+    # ③-b: 캐빈 윈드실드 (앞면) 표시 — 더 진한 라인 — 시각 정체성 강화
+    # (생략 — 추후 보강)
+
+    # ④ 바퀴 — 4 쌍 (앞바퀴 1 + 적재함 하단 3)
+    wheel_dy = 400.0
+    wheel_dz = veh_h  # 바퀴 = 지면 ~ vehicle_height_offset
+    wheel_len = 700.0
+    wheel_color = "#1A1A1A"
+    # 바퀴 x 위치 — 앞바퀴(캐빈 영역 안) + 적재함 앞/중/뒤
+    wheel_xs = [
+        cab_x0 + cab_len * 0.3,                                         # 앞바퀴 (캐빈)
+        x_off + 500.0,                                                  # 적재함 앞
+        x_off + truck.max_length / 2 - wheel_len / 2,                   # 적재함 중간
+        x_off + truck.max_length - 500.0 - wheel_len,                   # 적재함 뒤
+    ]
+    for wx in wheel_xs:
+        # 좌측 바퀴 — 트럭 좌측 살짝 튀어나옴
+        fig.add_trace(_cube_mesh(
+            x0=wx, y0=-wheel_dy * 0.2, z0=0.0,
+            dx=wheel_len, dy=wheel_dy, dz=wheel_dz,
+            color=wheel_color, name="바퀴", opacity=0.95,
+        ))
+        # 우측 바퀴
+        fig.add_trace(_cube_mesh(
+            x0=wx, y0=truck.max_width - wheel_dy * 0.8, z0=0.0,
+            dx=wheel_len, dy=wheel_dy, dz=wheel_dz,
+            color=wheel_color, name="바퀴", opacity=0.95,
+        ))
+
+    # ⑤ A-frame
+    if truck_type == "aframe":
+        frame_h = inner_h + 1500.0
+        frame_thickness = 200.0
+        for which_side in ("left", "right"):
+            fy = 0.0 if which_side == "left" else (truck.max_width - frame_thickness)
+            fig.add_trace(_cube_mesh(
+                x0=x_off + truck.max_length * 0.3,
+                y0=fy,
+                z0=veh_h,
+                dx=truck.max_length * 0.4,
+                dy=frame_thickness,
+                dz=frame_h,
+                color="#E64A19", name=f"A프레임 {which_side}", opacity=0.5,
+            ))
+
+    # ⑥ 차종 라벨
+    fig.add_trace(go.Scatter3d(
+        x=[x_off + truck.max_length / 2],
+        y=[truck.max_width + 300],
+        z=[veh_h + inner_h / 2],
+        text=[label_text],
+        mode="text", textfont=dict(size=12, color=cab_color),
+        showlegend=False, hoverinfo="skip",
+    ))
+
+
+def _placement_color(item) -> Tuple[str, str]:
+    """화물 종류별 색상 + 분류 라벨."""
+    if isinstance(item, Module):
+        return _COLOR_MODULE, "모듈"
+    if isinstance(item, Panel):
+        if item.kind == "wall":
+            return _COLOR_WALL_PANEL, "벽 패널"
+        if item.wall_segments or item.kind == "lshape":
+            return _COLOR_DEP_FLOOR, "종속 floor"
+        return _COLOR_FLOOR, "floor"
+    return "#999", "?"
+
+
+def _add_wall_segment_3d(
+    fig: go.Figure, floor_x0: float, floor_y0: float, floor_top_z: float,
+    panel: Panel, seg: WallSegment,
+) -> None:
+    """wall_segment 직육면체 — floor 좌하단 + 상단 위에서 벽 높이만큼 솟음.
+
+    [좌표 약속] (Phase A 정규화 후의 좌표계)
+    - floor 로컬: x=0~panel.length (길이 방향), y=0~panel.width (폭 방향)
+    - side 0 = 하변 (y=0, x 방향 변, 변길이=panel.length)
+    - side 1 = 우변 (x=panel.length, y 방향 변, 변길이=panel.width)
+    - side 2 = 상변 (y=panel.width, x 방향 변)
+    - side 3 = 좌변 (x=0, y 방향 변)
+    """
+    if seg.side == 0:  # 하변
+        sx = floor_x0 + seg.start_offset_mm
+        sy = floor_y0
+        sdx = seg.length_mm
+        sdy = seg.thickness_mm
+    elif seg.side == 1:  # 우변
+        sx = floor_x0 + panel.length - seg.thickness_mm
+        sy = floor_y0 + seg.start_offset_mm
+        sdx = seg.thickness_mm
+        sdy = seg.length_mm
+    elif seg.side == 2:  # 상변
+        sx = floor_x0 + seg.start_offset_mm
+        sy = floor_y0 + panel.width - seg.thickness_mm
+        sdx = seg.length_mm
+        sdy = seg.thickness_mm
+    else:  # side 3 — 좌변
+        sx = floor_x0
+        sy = floor_y0 + seg.start_offset_mm
+        sdx = seg.thickness_mm
+        sdy = seg.length_mm
+
+    name = f"wall side={seg.side} h={int(seg.height_mm)}mm"
+    fig.add_trace(_cube_mesh(
+        x0=sx, y0=sy, z0=floor_top_z,
+        dx=sdx, dy=sdy, dz=seg.height_mm,
+        color=_COLOR_WALL_SEG, name=name, opacity=0.7,
+    ))
+    fig.add_trace(_wireframe_box_3d(
+        x0=sx, y0=sy, z0=floor_top_z,
+        dx=sdx, dy=sdy, dz=seg.height_mm,
+        color="#5C3317", name=name, width=2,
+    ))
+
+
+def _add_placement_3d(
+    fig: go.Figure, x_off: float, placement, truck: Truck,
+) -> None:
+    """단일 placement 3D 박스 + 라벨 + (종속 floor 면) wall_segments."""
+    # 지연 import — Posture 사용
+    from .packer_types import Posture
+
+    item = placement.item
+    posture = placement.posture
+
+    # 3D 중심 좌표 변환
+    cx = x_off + truck.max_length / 2 + placement.truck_xyz[0]
+    cy = truck.max_width / 2 + placement.truck_xyz[1]
+    cz = truck.vehicle_height_offset + placement.truck_xyz[2]
+
+    L, W, h_occ = _item_dims_3d(item, posture)
+    x0 = cx - L / 2
+    y0 = cy - W / 2
+    z0 = cz  # truck_xyz[2] 는 화물 *하단* z 위치
+
+    color, kind = _placement_color(item)
+    posture_label = "" if posture == Posture.LYING else "·세움"
+    name = f"{getattr(item, 'name', '?')} ({kind}{posture_label})"
+
+    # 본체 + 외곽선
+    fig.add_trace(_cube_mesh(x0, y0, z0, L, W, h_occ, color, name, opacity=0.55))
+    fig.add_trace(_wireframe_box_3d(x0, y0, z0, L, W, h_occ, "#222", name, width=2))
+
+    # 화물 라벨 — 중심 상단
+    fig.add_trace(go.Scatter3d(
+        x=[cx], y=[cy], z=[z0 + h_occ + 50],
+        text=[f"<b>{getattr(item, 'name', '?')}</b>"],
+        mode="text", textfont=dict(size=10),
+        showlegend=False, hoverinfo="skip",
+    ))
+
+    # 종속 floor — wall_segments 위로 솟게 그림 (LYING 자세만)
+    if (
+        isinstance(item, Panel)
+        and item.wall_segments
+        and posture == Posture.LYING
+    ):
+        floor_top_z = z0 + item.thickness  # floor 두께 위
+        for seg in item.wall_segments:
+            _add_wall_segment_3d(fig, x0, y0, floor_top_z, item, seg)
+
+
+def _add_legacy_items_3d(
+    fig: go.Figure, x_off: float, trip: Trip, truck: Truck, sp: SpacingParams,
+) -> None:
+    """역호환 — Trip.placements 가 비어있는 구 패커 결과에서 items 직접 그리기."""
+    edge = sp.truck_edge_clearance_mm
+    gap = sp.panel_gap_mm
+    cursor_x = x_off + edge
+    for item in trip.items:
+        if isinstance(item, Module):
+            L, W, h_occ = item.length, item.width, item.height
+            color = _COLOR_MODULE
+            kind = "모듈"
+        elif isinstance(item, Panel):
+            L, W = item.length, item.width
+            if item.wall_segments:
+                # 종속 — 두께 + 가장 높은 wall_segment
+                max_seg = max(s.height_mm for s in item.wall_segments)
+                h_occ = item.thickness + max_seg
+                color = _COLOR_DEP_FLOOR
+                kind = "종속 floor"
+            elif item.kind == "wall":
+                h_occ = item.thickness
+                color = _COLOR_WALL_PANEL
+                kind = "벽 패널"
+            else:
+                h_occ = item.thickness
+                color = _COLOR_FLOOR
+                kind = "floor"
+        else:
+            continue
+        # 폭 중심 정렬
+        y0 = truck.max_width / 2 - W / 2
+        z0 = truck.vehicle_height_offset
+        name = f"{item.name} ({kind})"
+        fig.add_trace(_cube_mesh(
+            x0=cursor_x, y0=y0, z0=z0,
+            dx=L, dy=W, dz=h_occ,
+            color=color, name=name, opacity=0.55,
+        ))
+        fig.add_trace(_wireframe_box_3d(
+            x0=cursor_x, y0=y0, z0=z0,
+            dx=L, dy=W, dz=h_occ,
+            color="#222", name=name, width=2,
+        ))
+        cursor_x += L + gap
+
+
+def _camera_presets() -> dict:
+    """카메라 프리셋 — Top / Side / Iso. updatemenus 버튼으로 노출.
+
+    Plotly `scene.camera.eye` 는 카메라 위치 (단위 = scene 크기).
+    - Iso: (1.5, -1.5, 1.0) — 일반 3D 입체
+    - Top: (0, 0, 2.5) — 위에서 내려다보기
+    - Side: (0, -2.5, 0) — 옆에서 (트럭 측면)
+    """
+    return {
+        "iso":  dict(eye=dict(x=1.5,  y=-1.5, z=1.0), up=dict(x=0, y=0, z=1)),
+        "top":  dict(eye=dict(x=0,    y=0,    z=2.5), up=dict(x=0, y=1, z=0)),
+        "side": dict(eye=dict(x=0,    y=-2.5, z=0.3), up=dict(x=0, y=0, z=1)),
+    }
+
+
+def _trip_overlay_text(trip: Trip, cost_krw: Optional[float] = None) -> str:
+    """회차 오버레이 라벨 — 트럭 위 표시. 트럭명·총중량·적재율·비용."""
+    parts = [f"<b>#{trip.trip_no} · {trip.truck.name}</b>"]
+    parts.append(f"화물 {trip.cargo_weight:.0f} kg")
+    util = trip.utilization
+    parts.append(f"적재율 {util:.0f}%")
+    if cost_krw is not None:
+        parts.append(f"₩{cost_krw:,.0f}")
+    return "<br>".join(parts)
+
+
+def draw_loaded_3d_view(
+    trips: List[Trip],
+    sp: Optional[SpacingParams] = None,
+    highlight_trip_no: Optional[int] = None,
+    trip_costs: Optional[dict] = None,
+) -> go.Figure:
+    """모든 회차를 한 Plotly 3D Figure 에 *옆으로 나란히* 배치.
+
+    Phase B — 트럭 적재함 외곽선 + 화물 (모듈·floor·wall·종속 floor) 실제 형상.
+    Phase D — 트럭 차체(캐빈·바퀴) + 차종 라벨.
+    Phase E — 카메라 프리셋(Top/Side/Iso) 버튼 + 회차 강조 + 오버레이 (트럭명·총중량·적재율·비용).
+
+    Args:
+        trips: 회차 목록
+        sp: 간격 파라미터
+        highlight_trip_no: 강조할 회차 번호 — 해당 트럭 외곽선이 빨간 굵은 선으로
+            덧그려짐. None 이면 강조 없음.
+        trip_costs: {trip_no: cost_krw} 매핑 — 오버레이 텍스트에 비용 추가.
+            None 이면 비용 표시 생략.
+
+    Returns:
+        Plotly Figure
+    """
+    if sp is None:
+        sp = SpacingParams()
+    fig = go.Figure()
+
+    if not trips:
+        fig.add_annotation(
+            text="(회차 없음 — 운송 계산을 실행해주세요)",
+            x=0.5, y=0.5, xref="paper", yref="paper",
+            showarrow=False, font=dict(size=14, color="gray"),
+        )
+        fig.update_layout(
+            scene=dict(
+                xaxis_title="길이 (mm)",
+                yaxis_title="폭 (mm)",
+                zaxis_title="높이 (mm)",
+            ),
+            margin=dict(l=0, r=0, t=30, b=0),
+            showlegend=False,
+            title="적재 3D 도식 — 회차 없음",
+        )
+        return fig
+
+    trip_costs = trip_costs or {}
+    x_off = 0.0
+    for trip in trips:
+        truck = trip.truck
+        # 트럭 적재함 외곽선 + 차체
+        _add_truck_bed_3d(fig, x_off, truck)
+        # 화물
+        if trip.placements:
+            for placement in trip.placements:
+                _add_placement_3d(fig, x_off, placement, truck)
+        else:
+            _add_legacy_items_3d(fig, x_off, trip, truck, sp)
+        # 회차 오버레이 텍스트 — 트럭 위쪽
+        overlay = _trip_overlay_text(trip, trip_costs.get(trip.trip_no))
+        fig.add_trace(go.Scatter3d(
+            x=[x_off + truck.max_length / 2],
+            y=[truck.max_width / 2],
+            z=[truck.max_height + 700],
+            text=[overlay],
+            mode="text", textfont=dict(size=11, color="#222"),
+            showlegend=False, hoverinfo="skip",
+        ))
+        # 강조 — highlight_trip_no 일치 시 빨간 굵은 외곽선 덧그림
+        if highlight_trip_no is not None and trip.trip_no == highlight_trip_no:
+            fig.add_trace(_wireframe_box_3d(
+                x0=x_off, y0=0.0, z0=truck.vehicle_height_offset,
+                dx=truck.max_length, dy=truck.max_width,
+                dz=truck.max_height - truck.vehicle_height_offset,
+                color="#cc0000", name=f"강조 #{trip.trip_no}", width=7,
+            ))
+        x_off += truck.max_length + INTER_TRUCK_GAP_MM
+
+    # 카메라 프리셋 버튼 — Plotly updatemenus
+    presets = _camera_presets()
+    # [사용자 결정 — 그리드 제거] 모든 축의 grid·zeroline·배경 면 숨김 + 축 자체도 숨김
+    _axis_no_grid = dict(
+        showgrid=False, zeroline=False, showline=False,
+        showticklabels=False, showbackground=False,
+        title="",
+    )
+    fig.update_layout(
+        scene=dict(
+            xaxis=_axis_no_grid,
+            yaxis=_axis_no_grid,
+            zaxis=_axis_no_grid,
+            aspectmode="data",
+            camera=presets["iso"],
+            # [Phase E 핫픽스 — 2026-05-26] uirevision 유지 — 같은 값일 때
+            # Plotly 가 카메라 state 보존 시도. WebEngineView 재로드 시 효과
+            # 제한적이라 완전 보존은 JS API 필요 (큰 결정 — 사용자 확인 중).
+            uirevision="loaded_3d",
+        ),
+        margin=dict(l=0, r=0, t=60, b=0),
+        showlegend=False,
+        title=f"적재 3D 도식 — {len(trips)} 회차",
+        updatemenus=[
+            dict(
+                type="buttons", direction="right", showactive=True,
+                x=0.02, y=1.10, xanchor="left", yanchor="top",
+                buttons=[
+                    dict(label="🔄 Iso",
+                         method="relayout",
+                         args=[{"scene.camera": presets["iso"]}]),
+                    dict(label="⬇ Top",
+                         method="relayout",
+                         args=[{"scene.camera": presets["top"]}]),
+                    dict(label="➡ Side",
+                         method="relayout",
+                         args=[{"scene.camera": presets["side"]}]),
+                ],
+            ),
+        ],
+    )
+    return fig
+
+
+__all__ = ["draw_top_view", "draw_rear_view", "draw_loaded_3d_view"]

@@ -26,13 +26,17 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 # [Phase 9] 운송 데이터 파일 번들 — collect_submodules 는 .py 만 잡으므로
 #   JSON/마크다운 데이터는 명시 포함해야 동결 빌드에서 카탈로그 로드 성공.
-#   대상: 트럭/도로 카탈로그 JSON, 참고자료 references/*, 자재비 단가 JSON.
+#   대상: 트럭 카탈로그 JSON, 참고자료 references/*, 자재비 단가 JSON.
+#   (도로 카탈로그 road_limits.json 은 2026-05-26 폐지 — 현장 제한으로 대체.)
 datas += [
     ('modular_3d/transport/data/trucks.json', 'modular_3d/transport/data'),
-    ('modular_3d/transport/data/road_limits.json', 'modular_3d/transport/data'),
     ('modular_3d/transport/data/README.md', 'modular_3d/transport/data'),
     ('modular_3d/transport/references', 'modular_3d/transport/references'),
     ('modular_3d/카탈로그/material_prices.json', 'modular_3d/카탈로그'),
+    # [2026-05-27 평가 탭 Phase R] 공정표 HTML + refs PNG 동결 빌드 포함.
+    # QWebEngineView 가 QUrl.fromLocalFile 로 HTML 로드 → 옆 refs/ 의 PNG·index.json 도 필요.
+    ('modular_3d/schedule/모듈러주택_공정표.html', 'modular_3d/schedule'),
+    ('modular_3d/schedule/refs', 'modular_3d/schedule/refs'),
 ]
 
 

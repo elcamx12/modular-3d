@@ -22,9 +22,9 @@ from modular_3d.transport.cache import (
     TransportCache, compute_scene_fp, compute_classify_fp,
     compute_trucks_fp, compute_pack_fp,
 )
-from modular_3d.transport.catalog_io import load_all_trucks, load_all_roads
+from modular_3d.transport.catalog_io import load_all_trucks
 from modular_3d.transport.economics import EconomicsOptions
-from modular_3d.transport.models import SpacingParams
+from modular_3d.transport.models import SiteLimit, SpacingParams
 from modular_3d.transport.wall_classifier import ClassifierOptions
 from modular_3d.transport.tests.test_adapter import (
     _StubAM, _StubDR, _attach_module_to_model,
@@ -44,8 +44,9 @@ def _make_scene_and_design():
 
 def _make_inputs():
     trucks = load_all_trucks(active_only=True)
-    road = next(r for r in load_all_roads() if "광로" in r.name)
-    return trucks, road, SpacingParams()
+    # 현장 제한: 광로급(폭·높이 비제약), 무게는 해당없음(트럭 한도로만).
+    site = SiteLimit(max_gvw_kg=None, max_width_mm=3500, max_height_mm=4500)
+    return trucks, site, SpacingParams()
 
 
 # ── 1. 첫 호출 — 전부 miss ──────────────────────────────

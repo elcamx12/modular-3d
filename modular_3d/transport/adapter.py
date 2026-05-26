@@ -20,10 +20,11 @@
 - B-11 모듈 weight 식은 Phase 1 에서 정정됨 → 어댑터는 정답 프레임 무게를
   운송 측 자동 합산에 위임 (extra_weight 에 프레임 가산 안 함).
 
-[A-2 캔틸 합체]
-options.cantilever_packing_mode='embedded' (기본): 부모 모듈의 extra_weight 에
-캔틸 자중 가산. 운송 packer 에는 별도 Panel 안 보냄.
-options.cantilever_packing_mode='separate': 별도 Panel(kind='floor') 로 보냄.
+[A-2 캔틸 합체 — Phase 1 재설계 2026-05-27]
+캔틸레버 보·슬래브는 부모 화물(모듈 또는 종속 floor)에 *기하학적으로* 종속된 상태로
+같은 회차에 함께 운송된다. cantilever_packing_mode 옵션(embedded/separate) 폐지.
+- 자중: 부모 모듈/패널의 extra_weight 에 가산 (기존 그대로)
+- 형상: 부모의 attached_parts 에 AttachedPart 로 첨부 — 안전 검사·시각화가 이를 반영
 
 [A-1 다면 종속]
 FloorPanel.merged_wall_ids 의 개수에 따라 wall_segments 1/2/3/4 개 채워서
@@ -41,6 +42,8 @@ from ..model.core import (
     Component, ComponentType, Scene,
     Module as SceneModule, FloorPanel, StructWall, Vertical3Module,
     Core, CoreSlab, CantileverBeam, CantileverSlab, MidBeam, MidColumn,
+    BeamData, ColumnData, SlabData, WallPanelData,
+    _rotate_point, _rotate_local_to_world,
     TYPE_NAMES,
 )
 from ..카탈로그.geometry import (
@@ -50,7 +53,7 @@ from ..카탈로그.materials import CONCRETE_DENSITY_KG_M3
 from ..카탈로그.steel_sections import SHSSection
 from .models import (
     Section as TSection, Module as TModule, Panel as TPanel,
-    WallSegment, SectionType,
+    WallSegment, AttachedPart, BodyPart, SectionType,
 )
 from .wall_classifier import (
     ClassifierOptions, FaceClass, FACE_NAMES,
@@ -63,9 +66,9 @@ from .wall_classifier import (
 @dataclass
 class TransportOptions:
     """운송탭 UI 옵션. 분석 ⑥ 결정 반영."""
-    # 캔틸 처리
+    # 캔틸 처리 — Phase 1 (2026-05-27) 이후 캔틸레버는 *항상* 부모에 기하학적 종속.
+    # cantilever_packing_mode 옵션 폐지. include_cantilever 만 유지(자중 합산 토글).
     include_cantilever: bool = True
-    cantilever_packing_mode: str = "embedded"   # 'embedded' | 'separate'
 
     # 비내력벽 자동판별
     wall_classifier_enabled: bool = True
@@ -115,15 +118,34 @@ class TransportError(Exception):
 
 
 # ── 단면 변환 ──────────────────────────────────────────────
-def to_transport_section(shs: SHSSection) -> TSection:
-    """우리 SHSSection → 운송 Section."""
+def to_transport_section(sec) -> TSection:
+    """디자인 단면 → 운송 Section. 각형강관(SHSSection)·H형강(HSection) 모두 처리.
+
+    [2026-05-26 일반화] 종전엔 각형강관(w/h/t)만 가정해, 디자인에서 보를
+    H형강으로 설계하면 운송 변환이 깨졌다. H형강(H/B/t1/t2)도 받도록 분기한다.
+    무게는 둘 다 weight_per_m_kg(단위중량)로 계산되므로 정확하다.
+    - 각형강관: width=w, height=h, thickness=t, flange=0, type="SHS"
+    - H형강:   width=B(플랜지폭), height=H(전체높이), thickness=t1(웨브),
+               flange_thickness=t2(플랜지), type="H"
+    """
+    if hasattr(sec, "t1"):  # H형강 — HSection(H,B,t1,t2,...)
+        return TSection(
+            name=sec.name,
+            section_type="H",
+            width=float(sec.B),
+            height=float(sec.H),
+            thickness=float(sec.t1),
+            weight_per_m=float(sec.weight_per_m_kg),
+            flange_thickness=float(sec.t2),
+        )
+    # 각형강관 — SHSSection(w,h,t)
     return TSection(
-        name=shs.name,
+        name=sec.name,
         section_type="SHS",
-        width=float(shs.w),
-        height=float(shs.h),
-        thickness=float(shs.t),
-        weight_per_m=float(shs.weight_per_m_kg),
+        width=float(sec.w),
+        height=float(sec.h),
+        thickness=float(sec.t),
+        weight_per_m=float(sec.weight_per_m_kg),
         flange_thickness=0.0,
     )
 
@@ -327,8 +349,13 @@ def _sum_mid_member_weight_in_module(
 def _sum_cantilever_weight_attached_to(
     parent_cid: int, scene: Scene, model, design_result, options: TransportOptions,
 ) -> float:
-    """부모 cid 에 매달린 캔틸 부재(보 + 슬래브) 자중."""
-    if options.cantilever_packing_mode != "embedded":
+    """부모 cid 에 매달린 캔틸 부재(보 + 슬래브) 자중.
+
+    Phase 1 (2026-05-27): cantilever_packing_mode 폐지. 캔틸은 항상 부모에
+    기하 종속이므로 자중은 항상 부모 extra_weight 에 합산한다.
+    include_cantilever=False 면 합산 생략(자중 무시 토글).
+    """
+    if not options.include_cantilever:
         return 0.0
     total = 0.0
     for cid, comp in scene.components.items():
@@ -356,6 +383,506 @@ def _sum_cantilever_weight_attached_to(
             d_m = comp.dimensions["depth"] / 1000.0
             total += _slab_self_weight_kg(w_m * d_m, options)
     return total
+
+
+# ── Phase 3-fix — 부재 위치 실측 헬퍼 ─────────────────────
+# [매핑 규칙] 운송 nominal 좌표계
+#   운송 X (length 축) = 배치 nominal Y (depth 축)
+#   운송 Y (width 축)  = 배치 nominal X (width 축)
+#   운송 Z (height 축) = 배치 nominal Z
+# (어댑터에서 TModule(width=dimensions['width'], length=dimensions['depth']) 정의
+#  와 일관됨. 부재 좌표도 동일하게 X-Y 교환해 nominal 으로 변환.)
+def _section_name_for_comp(cid: int, model, design_result) -> str:
+    """부재 cid 의 *대표* 단면명 (시각화 라벨용). 없으면 빈 문자열."""
+    for mid in model.comp_to_members.get(cid, []):
+        sec = lookup_section_for_member(mid, design_result)
+        if sec is not None:
+            return getattr(sec, "name", "")
+    return ""
+
+
+def _world_to_parent_nominal(
+    world_pt: np.ndarray, parent_comp: Component,
+) -> Tuple[float, float, float]:
+    """월드 좌표 → 부모 컴포넌트의 *회전·앵커 풀린* nominal 좌표 (mm).
+
+    [수식 — core.py 의 to_world 역변환]
+      to_world(lx, ly, lz) = rotate(lx - ax, ly - ay, rot) + pos
+    역:
+      lx - ax = unrotate(world - pos).x
+      lx = unrotate(world - pos).x + ax
+
+    여기서 nominal 좌표 (lx, ly) ∈ [0, W] × [0, D] 는 부모의 *원래 차원* 좌표계.
+    회전·앵커가 어떻게 바뀌든 항상 같은 좌표를 반환 — 사용자가 r/v/m/c 로
+    회전·반전해도 부재 위치가 어긋나지 않는 핵심.
+    """
+    W = float(parent_comp.dimensions.get("width", 0.0))
+    D = float(parent_comp.dimensions.get("depth", 0.0))
+    ax, ay = parent_comp._anchor_offset(W, D)
+    rel = np.asarray(world_pt, dtype=np.float64) - parent_comp.position
+    inv_rot = (-int(parent_comp.rotation)) % 360
+    lx_off, ly_off = _rotate_point(float(rel[0]), float(rel[1]), inv_rot)
+    return (lx_off + ax, ly_off + ay, float(rel[2]))
+
+
+def _nominal_aabb_of_points(
+    world_points, parent_comp: Component,
+) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+    """월드 좌표 점들을 모두 parent nominal 로 변환 + AABB."""
+    nps = [_world_to_parent_nominal(p, parent_comp) for p in world_points]
+    xs = [p[0] for p in nps]; ys = [p[1] for p in nps]; zs = [p[2] for p in nps]
+    return (min(xs), min(ys), min(zs)), (max(xs), max(ys), max(zs))
+
+
+def _nominal_aabb_beam(
+    b: BeamData, parent_comp: Component,
+) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+    """보의 nominal AABB — 시작/끝 + 단면 두께 반영."""
+    s_n = _world_to_parent_nominal(b.start, parent_comp)
+    e_n = _world_to_parent_nominal(b.end, parent_comp)
+    sw, sh = float(b.section_w), float(b.section_h)
+    dx = abs(e_n[0] - s_n[0]); dy = abs(e_n[1] - s_n[1])
+    if dx >= dy:
+        # X 방향 보 (nominal)
+        x_min, x_max = min(s_n[0], e_n[0]), max(s_n[0], e_n[0])
+        y_min, y_max = s_n[1] - sw / 2, s_n[1] + sw / 2
+        z_min, z_max = s_n[2] - sh / 2, s_n[2] + sh / 2
+    else:
+        # Y 방향 보
+        x_min, x_max = s_n[0] - sw / 2, s_n[0] + sw / 2
+        y_min, y_max = min(s_n[1], e_n[1]), max(s_n[1], e_n[1])
+        z_min, z_max = s_n[2] - sh / 2, s_n[2] + sh / 2
+    return (x_min, y_min, z_min), (x_max, y_max, z_max)
+
+
+def _nominal_aabb_column(
+    c: ColumnData, parent_comp: Component,
+) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+    """기둥의 nominal AABB — base/top + 단면 폭/깊이."""
+    b_n = _world_to_parent_nominal(c.base, parent_comp)
+    t_n = _world_to_parent_nominal(c.top, parent_comp)
+    sw, sh = float(c.section_w), float(c.section_h)
+    x_min, x_max = b_n[0] - sw / 2, b_n[0] + sw / 2
+    y_min, y_max = b_n[1] - sh / 2, b_n[1] + sh / 2
+    z_min, z_max = min(b_n[2], t_n[2]), max(b_n[2], t_n[2])
+    return (x_min, y_min, z_min), (x_max, y_max, z_max)
+
+
+def _nominal_aabb_slab(
+    s: SlabData, parent_comp: Component,
+) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+    """슬래브의 nominal AABB — 4 코너 (z = 하면) + thickness (z 방향)."""
+    (xmin, ymin, zmin), (xmax, ymax, _zmax) = _nominal_aabb_of_points(
+        s.corners, parent_comp,
+    )
+    return (xmin, ymin, zmin), (xmax, ymax, zmin + float(s.thickness))
+
+
+def _nominal_aabb_wallpanel(
+    w: WallPanelData, parent_comp: Component,
+) -> Optional[Tuple[Tuple[float, float, float], Tuple[float, float, float]]]:
+    """벽 채움의 nominal AABB — 평면 4 코너 + thickness 방향 확장.
+
+    평면 판별: 4 코너의 nominal x 또는 y 중 *분산이 작은 축* 이 두께 방향.
+    회전 0/90/180/270 만 다루므로 항상 axis-aligned 평면.
+    """
+    nps = [_world_to_parent_nominal(p, parent_comp) for p in w.corners]
+    xs = [p[0] for p in nps]; ys = [p[1] for p in nps]; zs = [p[2] for p in nps]
+    t = float(w.thickness)
+    dx = max(xs) - min(xs); dy = max(ys) - min(ys)
+    if dx < 1.0:
+        # X 평면 (좌·우 벽) — 두께 = X 방향
+        cx = (max(xs) + min(xs)) / 2
+        return ((cx - t / 2, min(ys), min(zs)),
+                (cx + t / 2, max(ys), max(zs)))
+    if dy < 1.0:
+        # Y 평면 (전·후 벽) — 두께 = Y 방향
+        cy = (max(ys) + min(ys)) / 2
+        return ((min(xs), cy - t / 2, min(zs)),
+                (max(xs), cy + t / 2, max(zs)))
+    # 둘 다 분산 큼 — 평면이 아님 (이론상 없음)
+    return ((min(xs), min(ys), min(zs)), (max(xs), max(ys), max(zs)))
+
+
+def _nominal_to_transport_box(
+    nominal_aabb: Tuple[Tuple[float, float, float], Tuple[float, float, float]],
+) -> Tuple[float, float, float, float, float, float]:
+    """*nominal AABB → 운송 좌표계 박스* (x, y, z, L, W, H).
+
+    매핑: 운송 x = nominal y, 운송 y = nominal x, 운송 z = nominal z.
+    (운송 length 축 = 배치 depth, 운송 width 축 = 배치 width.)
+    """
+    (nx_min, ny_min, nz_min), (nx_max, ny_max, nz_max) = nominal_aabb
+    return (
+        ny_min, nx_min, nz_min,
+        ny_max - ny_min, nx_max - nx_min, nz_max - nz_min,
+    )
+
+
+def _make_body_part(
+    kind: str, nominal_aabb, subkind: str = "",
+) -> Optional[BodyPart]:
+    """nominal AABB → BodyPart (운송 좌표계 변환 후 생성). 영부피면 None."""
+    x, y, z, L, W, H = _nominal_to_transport_box(nominal_aabb)
+    if L <= 1e-3 or W <= 1e-3 or H <= 1e-3:
+        return None
+    return BodyPart(
+        kind=kind, subkind=subkind,
+        x_mm=float(x), y_mm=float(y), z_mm=float(z),
+        length_mm=float(L), width_mm=float(W), height_mm=float(H),
+    )
+
+
+def _make_attached_part(
+    kind: str, source_kind: str, nominal_aabb, subkind: str = "",
+    section_name: str = "",
+) -> Optional[AttachedPart]:
+    """nominal AABB → AttachedPart (운송 좌표계 변환 후 생성). 영부피면 None."""
+    x, y, z, L, W, H = _nominal_to_transport_box(nominal_aabb)
+    if L <= 1e-3 or W <= 1e-3 or H <= 1e-3:
+        return None
+    return AttachedPart(
+        kind=kind, source_kind=source_kind, subkind=subkind,
+        x_mm=float(x), y_mm=float(y), z_mm=float(z),
+        length_mm=float(L), width_mm=float(W), height_mm=float(H),
+        section_name=section_name,
+    )
+
+
+def _collect_module_body_parts(
+    comp: SceneModule,
+) -> Tuple[BodyPart, ...]:
+    """단층 모듈 — 기둥 4 + 하부보 4 + 상부보 4 + 슬래브 1 + 비내력벽 4."""
+    parts: List[BodyPart] = []
+    for c in comp.columns:
+        bp = _make_body_part("column", _nominal_aabb_column(c, comp))
+        if bp is not None: parts.append(bp)
+    for b in comp.bottom_beams:
+        bp = _make_body_part("beam", _nominal_aabb_beam(b, comp), subkind="bottom")
+        if bp is not None: parts.append(bp)
+    for b in comp.top_beams:
+        bp = _make_body_part("beam", _nominal_aabb_beam(b, comp), subkind="top")
+        if bp is not None: parts.append(bp)
+    if comp.slab is not None:
+        bp = _make_body_part("slab", _nominal_aabb_slab(comp.slab, comp))
+        if bp is not None: parts.append(bp)
+    for w in comp.wall_fills:
+        nab = _nominal_aabb_wallpanel(w, comp)
+        if nab is not None:
+            bp = _make_body_part("wall_fill", nab)
+            if bp is not None: parts.append(bp)
+    return tuple(parts)
+
+
+def _collect_floor_body_parts(
+    comp: FloorPanel,
+) -> Tuple[BodyPart, ...]:
+    """바닥패널 — 둘레 보 4 + 슬래브 1."""
+    parts: List[BodyPart] = []
+    for b in comp.edge_beams:
+        bp = _make_body_part("beam", _nominal_aabb_beam(b, comp), subkind="perim")
+        if bp is not None: parts.append(bp)
+    if comp.slab is not None:
+        bp = _make_body_part("slab", _nominal_aabb_slab(comp.slab, comp))
+        if bp is not None: parts.append(bp)
+    return tuple(parts)
+
+
+def _collect_wall_body_parts(
+    comp: StructWall,
+) -> Tuple[BodyPart, ...]:
+    """구조벽 — 양쪽 기둥 2 + 상·하 런너 2 + 채움 1."""
+    parts: List[BodyPart] = []
+    for c in comp.columns:
+        bp = _make_body_part("column", _nominal_aabb_column(c, comp))
+        if bp is not None: parts.append(bp)
+    if comp.bottom_runner is not None:
+        bp = _make_body_part("beam", _nominal_aabb_beam(comp.bottom_runner, comp), subkind="runner")
+        if bp is not None: parts.append(bp)
+    if comp.top_runner is not None:
+        bp = _make_body_part("beam", _nominal_aabb_beam(comp.top_runner, comp), subkind="runner")
+        if bp is not None: parts.append(bp)
+    if comp.wall_fill is not None:
+        nab = _nominal_aabb_wallpanel(comp.wall_fill, comp)
+        if nab is not None:
+            bp = _make_body_part("wall_fill", nab)
+            if bp is not None: parts.append(bp)
+    return tuple(parts)
+
+
+def _collect_v3_body_parts(
+    comp: Vertical3Module,
+) -> Tuple[BodyPart, ...]:
+    """수직3모듈 — 4 통기둥 + 층별 슬래브 받침보 4×3 + 옥상 보 4 + 슬래브 3.
+
+    [주의] V3 lying 의 경우 운송 nominal 매핑이 추가 회전됨 (어댑터 측에서
+    별도 처리). 여기서는 원래 배치 좌표 nominal AABB 반환 — 운송 매핑은
+    convert_vertical3_lying 가 추가 회전 후 BodyPart 생성에 _v3_lying_remap 사용.
+    """
+    parts: List[BodyPart] = []
+    for c in comp.columns:
+        bp = _make_body_part("column", _nominal_aabb_column(c, comp))
+        if bp is not None: parts.append(bp)
+    for fb in comp.bottom_beams:
+        for b in fb:
+            bp = _make_body_part("beam", _nominal_aabb_beam(b, comp), subkind="bottom")
+            if bp is not None: parts.append(bp)
+    for b in comp.top_beams:
+        bp = _make_body_part("beam", _nominal_aabb_beam(b, comp), subkind="top")
+        if bp is not None: parts.append(bp)
+    for s in comp.slabs:
+        bp = _make_body_part("slab", _nominal_aabb_slab(s, comp))
+        if bp is not None: parts.append(bp)
+    return tuple(parts)
+
+
+def _attached_part_kind(comp: Component) -> Optional[str]:
+    if isinstance(comp, MidBeam): return "midbeam"
+    if isinstance(comp, MidColumn): return "midcolumn"
+    if isinstance(comp, CantileverBeam): return "cantilever_beam"
+    if isinstance(comp, CantileverSlab): return "cantilever_slab"
+    return None
+
+
+# ── 종속 부재 → 부재 단위 AttachedPart 다중 생성 ─────────────
+# 핵심: CantileverSlab 의 3 변 보 + 슬래브 = 4 부재를 *각각* 별도 AttachedPart
+# 로 첨부. 종전 한 덩어리 AABB 묶음에서 보 정보가 사라지던 문제 해결.
+def _collect_child_parts(
+    child: Component, parent_comp: Component, child_cid: int,
+    model, design_result,
+) -> List[AttachedPart]:
+    out: List[AttachedPart] = []
+    sec_name = _section_name_for_comp(child_cid, model, design_result)
+    if isinstance(child, MidBeam) and child.beam is not None:
+        ap = _make_attached_part(
+            "beam", "midbeam", _nominal_aabb_beam(child.beam, parent_comp),
+            section_name=sec_name,
+        )
+        if ap is not None: out.append(ap)
+    elif isinstance(child, MidColumn) and child.column is not None:
+        ap = _make_attached_part(
+            "column", "midcolumn", _nominal_aabb_column(child.column, parent_comp),
+            section_name=sec_name,
+        )
+        if ap is not None: out.append(ap)
+    elif isinstance(child, CantileverBeam) and child.beam is not None:
+        ap = _make_attached_part(
+            "beam", "cantilever_beam",
+            _nominal_aabb_beam(child.beam, parent_comp),
+            section_name=sec_name,
+        )
+        if ap is not None: out.append(ap)
+    elif isinstance(child, CantileverSlab):
+        for b in child.beams:
+            ap = _make_attached_part(
+                "beam", "cantilever_slab",
+                _nominal_aabb_beam(b, parent_comp),
+                subkind="perim", section_name=sec_name,
+            )
+            if ap is not None: out.append(ap)
+        if child.slab is not None:
+            ap = _make_attached_part(
+                "slab", "cantilever_slab",
+                _nominal_aabb_slab(child.slab, parent_comp),
+                section_name=sec_name,
+            )
+            if ap is not None: out.append(ap)
+    return out
+
+
+def _attached_part_nominal_aabb_OLD(
+    child: Component, parent_comp: Component,
+) -> Optional[Tuple[Tuple[float, float, float], Tuple[float, float, float]]]:
+    """종속 부재의 nominal AABB (부모 좌표계 기준).
+
+    각 종속 부재가 자신의 generate_sub_components 로 만든 *실제 부재 좌표*
+    (BeamData / ColumnData / SlabData) 를 직접 사용해서 nominal AABB 산출.
+    부재 자체 회전·앵커는 월드 좌표에 이미 반영됐고, 부모 회전·앵커는
+    _world_to_parent_nominal 이 풀어준다. → 부모/자식 회전 무관 정합.
+    """
+    points: List[np.ndarray] = []
+    extra_z_thickness = 0.0
+    extra_xy_sect = 0.0
+    if isinstance(child, MidBeam) and child.beam is not None:
+        points = [child.beam.start, child.beam.end]
+        extra_xy_sect = max(float(child.beam.section_w), float(child.beam.section_h))
+    elif isinstance(child, MidColumn) and child.column is not None:
+        points = [child.column.base, child.column.top]
+        extra_xy_sect = max(float(child.column.section_w), float(child.column.section_h))
+    elif isinstance(child, CantileverBeam) and child.beam is not None:
+        points = [child.beam.start, child.beam.end]
+        extra_xy_sect = max(float(child.beam.section_w), float(child.beam.section_h))
+    elif isinstance(child, CantileverSlab):
+        # 슬래브가 가장 큰 외곽 → corners 만 사용
+        if child.slab is not None:
+            (xmin, ymin, zmin), (xmax, ymax, _zmax) = _nominal_aabb_of_points(
+                child.slab.corners, parent_comp,
+            )
+            return ((xmin, ymin, zmin), (xmax, ymax, zmin + float(child.slab.thickness)))
+        # fallback — 보로만 처리
+        for b in child.beams:
+            points.append(b.start); points.append(b.end)
+    if not points:
+        return None
+    nps = [_world_to_parent_nominal(p, parent_comp) for p in points]
+    xs = [p[0] for p in nps]; ys = [p[1] for p in nps]; zs = [p[2] for p in nps]
+    half = extra_xy_sect / 2
+    return (
+        (min(xs) - half, min(ys) - half, min(zs) - half),
+        (max(xs) + half, max(ys) + half, max(zs) + half),
+    )
+
+
+def _remap_part_v3_lying(bp: BodyPart) -> BodyPart:
+    """V3 lying 추가 회전 — 운송 좌표 재매핑.
+
+    _nominal_to_transport_box 가 (운송 x = nominal y, 운송 y = nominal x) 매핑.
+    V3 lying 은 운송 x = nominal z, 운송 y = nominal x, 운송 z = nominal y 라야
+    하므로, 이미 만들어진 BodyPart 의 (x_t, y_t, z_t, L_t, W_t, H_t) →
+    재매핑: (z_t, y_t, x_t, H_t, W_t, L_t) 로 변환.
+
+    [도출]
+    normal: x_t = ny, y_t = nx, z_t = nz, L_t = ny_size, W_t = nx_size, H_t = nz_size
+    v3:     x_t = nz, y_t = nx, z_t = ny, L_t = nz_size, W_t = nx_size, H_t = ny_size
+    -> v3.x_t = normal.z_t, v3.y_t = normal.y_t, v3.z_t = normal.x_t를 잘못
+    -- 다시: v3.x_t = nz = normal.H? 음 normal.H_t = nz_size 이고 v3.x_t = nz_min.
+    nz_min 는 normal 박스의 z_min = normal.z_t. 그래서 v3.x_t = normal.z_t.
+    v3.y_t = nx_min = normal.y_t. v3.z_t = ny_min = normal.x_t.
+    v3.L_t = nz_size = normal.H_t. v3.W_t = nx_size = normal.W_t. v3.H_t = ny_size = normal.L_t.
+    """
+    return BodyPart(
+        kind=bp.kind, subkind=bp.subkind,
+        x_mm=bp.z_mm, y_mm=bp.y_mm, z_mm=bp.x_mm,
+        length_mm=bp.height_mm, width_mm=bp.width_mm, height_mm=bp.length_mm,
+    )
+
+
+def _remap_attached_v3_lying(ap: AttachedPart) -> AttachedPart:
+    return AttachedPart(
+        kind=ap.kind, source_kind=ap.source_kind, subkind=ap.subkind,
+        x_mm=ap.z_mm, y_mm=ap.y_mm, z_mm=ap.x_mm,
+        length_mm=ap.height_mm, width_mm=ap.width_mm, height_mm=ap.length_mm,
+        section_name=ap.section_name,
+    )
+
+
+def _remap_part_wall_lying(bp: BodyPart) -> BodyPart:
+    """독립 wall 패널의 *눕히기* 매핑 재적용.
+
+    normal 매핑(운송 X = nominal Y, Y = nominal X) 으로 만든 BodyPart 를
+    wall-lying 매핑(운송 X = nominal X[벽 길이], Y = nominal Z[높이],
+    Z = nominal Y[두께]) 으로 재매핑.
+
+    [도출]
+    normal: x_t = ny_min, y_t = nx_min, z_t = nz_min
+            L_t = ny_size, W_t = nx_size, H_t = nz_size
+    wall:   x_t = nx_min = normal.y_t
+            y_t = nz_min = normal.z_t
+            z_t = ny_min = normal.x_t
+            L_t = nx_size = normal.W_t
+            W_t = nz_size = normal.H_t
+            H_t = ny_size = normal.L_t
+    """
+    return BodyPart(
+        kind=bp.kind, subkind=bp.subkind,
+        x_mm=bp.y_mm, y_mm=bp.z_mm, z_mm=bp.x_mm,
+        length_mm=bp.width_mm, width_mm=bp.height_mm, height_mm=bp.length_mm,
+    )
+
+
+def _collect_attached_parts(
+    parent_comp: Component, scene: Scene, model, design_result,
+    options: TransportOptions,
+    *, include_mid: bool, include_cantilever: bool,
+) -> Tuple[AttachedPart, ...]:
+    """부모에 매달린 종속 부재(중간보·중간기둥·캔틸 보·캔틸 슬래브) 수집.
+
+    부모 회전·앵커가 어떻게 변해도 nominal 좌표로 변환해서 첨부 → 종속
+    위치 어긋남 없음.
+    """
+    parts: List[AttachedPart] = []
+    parent_cid = parent_comp.id
+    for cid, comp in scene.components.items():
+        if getattr(comp, "parent_id", 0) != parent_cid:
+            continue
+        is_mid = isinstance(comp, (MidBeam, MidColumn))
+        is_cant = isinstance(comp, (CantileverBeam, CantileverSlab))
+        if not (is_mid or is_cant):
+            continue
+        if is_mid and not include_mid:
+            continue
+        if is_cant and not include_cantilever:
+            continue
+        # 자식 컴포넌트의 *모든 부재* 를 풀어 AttachedPart 다중 생성
+        parts.extend(_collect_child_parts(comp, parent_comp, cid, model, design_result))
+    return tuple(parts)
+
+
+# ── 3축 정규화 — 모든 부재 좌표 최소점이 0 이 되도록 평행이동 ───
+# [근거]
+# 배치 모델은 기둥 base z = -half_s(=-100mm), x/y 도 캔틸 돌출 시 음수 가능.
+# 운송 시 컴포넌트 좌하단이 *정확히 (0,0,0)* 이어야 packer 의 _compute_xyz 가
+# 정확한 트럭 좌표를 산출. 그렇지 않으면 캔틸이 트럭 적재함 밖으로 튀어나감.
+def _z_normalize_parts(
+    body: Tuple[BodyPart, ...], attached: Tuple[AttachedPart, ...],
+) -> Tuple[Tuple[BodyPart, ...], Tuple[AttachedPart, ...]]:
+    """모든 부재의 x/y/z 최저점이 0 이 되도록 *3 축* 평행이동.
+
+    [중요] 함수명이 _z_ 지만 실제로는 *3 축 모두* 정규화. 기존 호출처와의
+    호환을 위해 이름은 유지. v3-lying / 캔틸 돌출로 인한 x/y 음수도 처리.
+    """
+    all_x: List[float] = []
+    all_y: List[float] = []
+    all_z: List[float] = []
+    for bp in body:
+        all_x.append(bp.x_mm); all_y.append(bp.y_mm); all_z.append(bp.z_mm)
+    for ap in attached:
+        all_x.append(ap.x_mm); all_y.append(ap.y_mm); all_z.append(ap.z_mm)
+    if not all_x:
+        return body, attached
+    x_min = min(all_x); y_min = min(all_y); z_min = min(all_z)
+    sx = -x_min if x_min < -1e-3 else 0.0
+    sy = -y_min if y_min < -1e-3 else 0.0
+    sz = -z_min if z_min < -1e-3 else 0.0
+    if sx == 0.0 and sy == 0.0 and sz == 0.0:
+        return body, attached
+    new_body = tuple(
+        BodyPart(kind=bp.kind, subkind=bp.subkind,
+                 x_mm=bp.x_mm + sx, y_mm=bp.y_mm + sy, z_mm=bp.z_mm + sz,
+                 length_mm=bp.length_mm, width_mm=bp.width_mm,
+                 height_mm=bp.height_mm)
+        for bp in body
+    )
+    new_attached = tuple(
+        AttachedPart(kind=ap.kind, source_kind=ap.source_kind, subkind=ap.subkind,
+                     x_mm=ap.x_mm + sx, y_mm=ap.y_mm + sy, z_mm=ap.z_mm + sz,
+                     length_mm=ap.length_mm, width_mm=ap.width_mm,
+                     height_mm=ap.height_mm,
+                     section_name=ap.section_name)
+        for ap in attached
+    )
+    return new_body, new_attached
+
+
+def _outer_xy_dims(
+    body: Tuple[BodyPart, ...], attached: Tuple[AttachedPart, ...],
+) -> Tuple[float, float]:
+    """모든 부재의 외곽 길이/폭 (x 방향 최대, y 방향 최대).
+
+    *_z_normalize_parts 호출 후* 에 사용 — 모든 부재 x/y 최소가 0 이므로
+    외곽 차원 = 최대값 그대로.
+
+    [용도] 컴포넌트 nominal length/width 를 *부모 nominal* 대신 *부모+종속
+    외곽* 으로 확장. _compute_xyz 가 외곽 차원 기준으로 자리 잡음.
+    """
+    max_x = 0.0; max_y = 0.0
+    for bp in body:
+        max_x = max(max_x, bp.x_mm + bp.length_mm)
+        max_y = max(max_y, bp.y_mm + bp.width_mm)
+    for ap in attached:
+        max_x = max(max_x, ap.x_mm + ap.length_mm)
+        max_y = max(max_y, ap.y_mm + ap.width_mm)
+    return max_x, max_y
 
 
 # ── 변환 — Module ─────────────────────────────────────────
@@ -405,12 +932,27 @@ def convert_module(
     extra += _sum_mid_member_weight_in_module(cid, scene, model, design_result)
     extra += _sum_cantilever_weight_attached_to(cid, scene, model, design_result, options)
 
+    # Phase 3-fix + 캔틸 돌출 보정 — 실측 부재 + 3축 정규화 + 외곽 차원 확장
+    body = _collect_module_body_parts(comp)
+    attached = _collect_attached_parts(
+        comp, scene, model, design_result, options,
+        include_mid=True, include_cantilever=options.include_cantilever,
+    )
+    body, attached = _z_normalize_parts(body, attached)
+    # 컴포넌트 nominal length/width 를 *부모+종속 외곽* 으로 확장
+    # (캔틸이 부모 밖으로 돌출하는 경우 외곽이 부모 nominal 보다 큼)
+    outer_L, outer_W = _outer_xy_dims(body, attached)
+    final_length = max(d, outer_L)
+    final_width = max(w, outer_W)
+
     return TModule(
         name=label,
-        width=w, length=d, height=h,
+        width=final_width, length=final_length, height=h,
         column_section=to_transport_section(col_pick),
         beam_section=to_transport_section(beam_pick),
         extra_weight_kg=extra,
+        attached_parts=attached,
+        body_parts=body,
     )
 
 
@@ -468,22 +1010,38 @@ def convert_vertical3_lying(
     extra += _sum_mid_member_weight_in_module(cid, scene, model, design_result)
     extra += _sum_cantilever_weight_attached_to(cid, scene, model, design_result, options)
 
+    # Phase 3-fix — 실측 부재 수집 + v3-lying 매핑 추가 회전
+    body_raw = _collect_v3_body_parts(comp)
+    attached = _collect_attached_parts(
+        comp, scene, model, design_result, options,
+        include_mid=True, include_cantilever=options.include_cantilever,
+    )
+
     if options.treat_v3_module_as_lying:
-        # 회전 매핑: length=height, width=width, height=depth
+        body = tuple(_remap_part_v3_lying(bp) for bp in body_raw if bp is not None)
+        attached = tuple(_remap_attached_v3_lying(ap) for ap in attached if ap is not None)
+        body, attached = _z_normalize_parts(body, attached)
+        outer_L, outer_W = _outer_xy_dims(body, attached)
         return TModule(
             name=label + "(눕힘)",
-            width=w, length=h, height=d,
+            width=max(w, outer_W), length=max(h, outer_L), height=d,
             column_section=to_transport_section(col_pick),
             beam_section=to_transport_section(beam_pick),
             extra_weight_kg=extra,
+            attached_parts=attached,
+            body_parts=body,
         )
     else:
+        body, attached = _z_normalize_parts(body_raw, attached)
+        outer_L, outer_W = _outer_xy_dims(body, attached)
         return TModule(
             name=label,
-            width=w, length=d, height=h,
+            width=max(w, outer_W), length=max(d, outer_L), height=h,
             column_section=to_transport_section(col_pick),
             beam_section=to_transport_section(beam_pick),
             extra_weight_kg=extra,
+            attached_parts=attached,
+            body_parts=body,
         )
 
 
@@ -540,7 +1098,7 @@ def _inject_wall_sections(wall: StructWall, model, design_result) -> None:
 
 
 def convert_floor_panel_pure(
-    fp: FloorPanel, cid: int, model, design_result,
+    fp: FloorPanel, cid: int, scene: Scene, model, design_result,
     options: TransportOptions, diag: Diagnostics, label: str,
 ) -> Optional[TPanel]:
     """순수 floor (merged_wall_ids 빈 경우) → Panel(kind='floor', wall_segments=())."""
@@ -561,11 +1119,23 @@ def convert_floor_panel_pure(
         return None
     area_m2 = (w / 1000.0) * (d / 1000.0)
     extra = _slab_self_weight_kg(area_m2, options)
+    # Phase 3-fix + 캔틸 보정 — 실측 부재 + 3축 정규화 + 외곽 차원 확장
+    body = _collect_floor_body_parts(fp)
+    attached = _collect_attached_parts(
+        fp, scene, model, design_result, options,
+        include_mid=False, include_cantilever=options.include_cantilever,
+    )
+    body, attached = _z_normalize_parts(body, attached)
+    outer_L, outer_W = _outer_xy_dims(body, attached)
+    extra += _sum_cantilever_weight_attached_to(cid, scene, model, design_result, options)
     return TPanel(
         name=label, kind="floor",
-        width=w, length=d, thickness=options.floor_slab_thickness_mm,
+        width=max(w, outer_W), length=max(d, outer_L),
+        thickness=options.floor_slab_thickness_mm,
         beam_section=to_transport_section(beam_pick),
         extra_weight_kg=extra,
+        attached_parts=attached,
+        body_parts=body,
     )
 
 
@@ -627,13 +1197,25 @@ def convert_floor_panel_dependent(
         nb_extra += avg_unit * wall_w_m * wall_h_m
 
     extra = _slab_self_weight_kg((w / 1000.0) * (d / 1000.0), options) + nb_extra
+    # Phase 3-fix — 실측 부재 + 종속 캔틸 첨부
+    body = _collect_floor_body_parts(fp)
+    attached = _collect_attached_parts(
+        fp, scene, model, design_result, options,
+        include_mid=False, include_cantilever=options.include_cantilever,
+    )
+    body, attached = _z_normalize_parts(body, attached)
+    outer_L, outer_W = _outer_xy_dims(body, attached)
+    extra += _sum_cantilever_weight_attached_to(cid, scene, model, design_result, options)
 
     return TPanel(
         name=label, kind="floor",
-        width=w, length=d, thickness=options.floor_slab_thickness_mm,
+        width=max(w, outer_W), length=max(d, outer_L),
+        thickness=options.floor_slab_thickness_mm,
         beam_section=to_transport_section(beam_pick),
         extra_weight_kg=extra,
         wall_segments=tuple(segments),
+        attached_parts=attached,
+        body_parts=body,
     )
 
 
@@ -685,9 +1267,11 @@ def convert_independent_wall_panel(
     avg_unit = 0.5 * (front_unit + back_unit)
     extra = avg_unit * (w / 1000.0) * (h / 1000.0)
 
-    # 운송 측 Panel(kind='wall') 매핑: width=벽 길이(=length 방향), length=벽 길이?
-    # 분석 ① C: width=층고, length=벽 길이. 여기서는 단순화로 width=w, length=w (보 식 단순화)
-    # 더 정확히 분석 ① 결정대로 width=h(층고), length=w(벽 길이) 매핑.
+    # 운송 매핑: width=h(층고), length=w(벽 길이), thickness=d
+    # body_parts 는 normal 매핑으로 만든 뒤 wall-lying 회전 재매핑.
+    body_raw = _collect_wall_body_parts(wall)
+    body = tuple(_remap_part_wall_lying(bp) for bp in body_raw)
+    body, _ = _z_normalize_parts(body, ())
     return TPanel(
         name=label, kind="wall",
         width=h, length=w, thickness=d,
@@ -695,6 +1279,7 @@ def convert_independent_wall_panel(
         column_section=to_transport_section(col_pick),
         wall_height=h,
         extra_weight_kg=extra,
+        body_parts=body,
     )
 
 
@@ -756,31 +1341,11 @@ def build_transport_input(
                                             reason="부모 모듈에 흡수"))
             continue
 
-        # 캔틸 — embedded 면 부모에 흡수, separate 면 별도 panel
+        # 캔틸레버 — Phase 1 이후 항상 부모 화물에 기하학적 종속.
+        # 별도 회차로 빠지지 않으며, 자중·형상은 부모 변환 시 흡수됨.
         if isinstance(comp, (CantileverBeam, CantileverSlab)):
-            if options.cantilever_packing_mode == "embedded":
-                ti.excluded.append(ExcludedItem(cid=cid, type_name="캔틸레버",
-                                                reason="embedded — 부모 모듈에 흡수"))
-            else:
-                # separate 모드 — Phase 3 1차 구현에서는 단순 floor panel 로 보냄
-                if isinstance(comp, CantileverSlab):
-                    w = float(comp.dimensions["width"])
-                    d = float(comp.dimensions["depth"])
-                    beam_secs = []
-                    for mid in model.comp_to_members.get(cid, []):
-                        sec = lookup_section_for_member(mid, design_result)
-                        if sec is not None:
-                            beam_secs.append(sec)
-                    beam_pick = _pick_heaviest(beam_secs)
-                    if beam_pick is not None:
-                        extra = _slab_self_weight_kg((w / 1000.0) * (d / 1000.0), options)
-                        ti.panels.append(TPanel(
-                            name=label + "(캔틸)", kind="floor",
-                            width=w, length=d, thickness=options.floor_slab_thickness_mm,
-                            beam_section=to_transport_section(beam_pick),
-                            extra_weight_kg=extra,
-                        ))
-                        ti.source_index.setdefault(label + "(캔틸)", []).append(cid)
+            ti.excluded.append(ExcludedItem(cid=cid, type_name="캔틸레버",
+                                            reason="부모 화물에 기하 종속(같은 회차 운송)"))
             continue
 
         if isinstance(comp, Vertical3Module):
@@ -807,7 +1372,7 @@ def build_transport_input(
                 tp = convert_floor_panel_dependent(
                     comp, cid, walls, scene, model, design_result, options, diag, label)
             else:
-                tp = convert_floor_panel_pure(comp, cid, model, design_result,
+                tp = convert_floor_panel_pure(comp, cid, scene, model, design_result,
                                                options, diag, label)
             if tp is not None:
                 ti.panels.append(tp)
@@ -827,8 +1392,82 @@ def build_transport_input(
         # 미지의 타입 — 경고
         diag.warnings.append(f"{label}: 알 수 없는 컴포넌트 타입 {type(comp).__name__}")
 
+    # [Phase A — 2026-05-26] 좌표 자동 정렬 — 입력 length 가 width 보다 짧으면 swap.
+    # 모듈 / 순수 floor / 종속 floor 적용. 단순 wall (kind="wall") 은 *벽 길이/높이*
+    # 물리 의미 보존 위해 제외.
+    ti.modules = [_normalize_dims_for_transport(m) for m in ti.modules]
+    ti.panels = [_normalize_dims_for_transport(p) for p in ti.panels]
+
     ti.diagnostics = diag
     return ti
+
+
+# ── Phase A — 좌표 자동 정렬 헬퍼 ─────────────────────────────────
+def _normalize_dims_for_transport(
+    item: Union[TModule, TPanel],
+) -> Union[TModule, TPanel]:
+    """모듈/패널의 length 가 width 보다 작은 경우 swap (긴 쪽 = length 정규화).
+
+    [정책 — 운송 3D 도식 개편 계획서 § 1 Q1~Q4]
+    - 모듈 / 순수 floor / 종속 floor: swap 적용
+    - 단순 wall (kind="wall"): swap 제외 (length=벽 길이, width=벽 높이 물리 의미 보존)
+    - 종속 floor 의 wall_segments.side 인덱스: swap 발생 시 +1 (mod 4) 회전 매핑.
+      세그먼트 자체 치수 (length_mm, start_offset_mm, height_mm, thickness_mm) 는
+      절대값이므로 그대로 유지.
+    - 이미 정규화된 경우 (length ≥ width) 변화 없음 (idempotent).
+
+    [side 회전 매핑 유도]
+    원본 좌표 (x=length 방향, y=width 방향) 가 swap 후 (x'=새 length=old width 방향,
+    y'=새 width=old length 방향) 로 반시계 90° 회전:
+      0 (하변, y=0)        → 1 (우변, x=새 length)
+      1 (우변, x=length)   → 2 (상변, y=새 width)
+      2 (상변, y=width)    → 3 (좌변, x=0)
+      3 (좌변, x=0)        → 0 (하변, y=0)
+    side_new = (side_old + 1) % 4.
+    """
+    # 단순 wall 은 제외 — width=벽 높이 의미 보존
+    if isinstance(item, TPanel) and item.kind == "wall":
+        return item
+
+    if item.length + 1e-6 >= item.width:
+        return item  # 이미 정규화됨
+
+    if isinstance(item, TModule):
+        return TModule(
+            name=item.name,
+            width=item.length,   # 새 width = 원래 length (짧은 쪽)
+            length=item.width,   # 새 length = 원래 width (긴 쪽)
+            height=item.height,
+            column_section=item.column_section,
+            beam_section=item.beam_section,
+            extra_weight_kg=item.extra_weight_kg,
+        )
+
+    # TPanel — 종속 floor 의 wall_segments side 회전 매핑 포함
+    new_segments = tuple(
+        WallSegment(
+            side=(seg.side + 1) % 4,
+            start_offset_mm=seg.start_offset_mm,
+            length_mm=seg.length_mm,
+            height_mm=seg.height_mm,
+            thickness_mm=seg.thickness_mm,
+            column_section=seg.column_section,
+            beam_section=seg.beam_section,
+        )
+        for seg in item.wall_segments
+    )
+    return TPanel(
+        name=item.name,
+        kind=item.kind,
+        width=item.length,
+        length=item.width,
+        thickness=item.thickness,
+        beam_section=item.beam_section,
+        column_section=item.column_section,
+        wall_height=item.wall_height,
+        extra_weight_kg=item.extra_weight_kg,
+        wall_segments=new_segments,
+    )
 
 
 __all__ = [
@@ -839,4 +1478,5 @@ __all__ = [
     "convert_module", "convert_vertical3_lying",
     "convert_floor_panel_pure", "convert_floor_panel_dependent",
     "convert_independent_wall_panel",
+    "_normalize_dims_for_transport",  # Phase A — 테스트용 export
 ]

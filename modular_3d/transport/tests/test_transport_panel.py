@@ -76,16 +76,10 @@ def test_transport_tab_phase7_9_methods():
         "_open_catalog_dialog", "open_catalog_dialog", "_reload_catalog",
         "set_project_root", "_apply_overrides", "_render_override_table",
         "_on_override_changed", "_clear_overrides",
-        "_on_trip_table_context_menu", "_prompt_truck_change_for_trip",
-        # Phase 8 — 수동 시뮬레이션·참고자료
-        "_build_area_manual_sim", "_build_custom_truck_form",
-        "_build_sim_result_area", "_build_area_references",
-        "_sync_sim_combos", "_sync_sim_cargo_list", "_on_sim_add_cargo",
-        "_add_cargo_from_temp_dialog", "_add_cargo_from_scene_items",
-        "_add_cargo_from_auto_result", "_sim_selected_truck",
-        "_register_session_truck", "_sim_selected_road", "_sim_spacing",
-        "_run_manual_sim", "_render_sim_result", "_open_references_dialog",
-        # Phase 8 공유 헬퍼 / Phase 9 진단
+        # (회차표 우클릭 메뉴는 2026-05-26 제거됨)
+        # 참고자료 / 공유 헬퍼 / 진단
+        # (수동 시뮬레이션 관련 메서드는 2026-05-26 제거됨)
+        "_build_area_references", "_open_references_dialog",
         "_render_trip_pair", "_diag_append",
     ]
     for name in required:
@@ -107,13 +101,12 @@ def test_on_option_changed_takes_step():
     assert "step" in sig.parameters
 
 
-# ── Phase 7~8 신규 다이얼로그 모듈 ──────────────────────
-def test_phase7_8_dialog_modules_import():
+# ── 다이얼로그 모듈 임포트 ──────────────────────────────
+def test_dialog_modules_import():
+    # (transport_temp_cargo_dialog 는 2026-05-26 수동 시뮬레이션 제거와 함께 삭제)
     from modular_3d.ui.transport_catalog_dialog import TransportCatalogDialog
-    from modular_3d.ui.transport_temp_cargo_dialog import TempCargoDialog
     from modular_3d.ui.transport_references_dialog import TransportReferencesDialog
     assert TransportCatalogDialog is not None
-    assert TempCargoDialog is not None
     assert TransportReferencesDialog is not None
 
 

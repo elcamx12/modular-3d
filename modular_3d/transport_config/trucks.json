@@ -1,0 +1,14 @@
+[
+  {
+    "name": "테스트용",
+    "truck_type": "lowbed",
+    "max_length": 9000.0,
+    "max_width": 3000.0,
+    "max_height": 4500.0,
+    "max_weight": 25000.0,
+    "vehicle_height_offset": 700.0,
+    "curb_weight_kg": 9000.0,
+    "active": true,
+    "note": "2축 소형. 차체중량은 추정 디폴트."
+  }
+]

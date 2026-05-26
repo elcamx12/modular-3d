@@ -1,32 +1,25 @@
-"""도로 + 트럭 + 적재 아이템 4 조건 검사기.
+"""현장 제한 + 트럭 + 적재 아이템 운송 가능성 검사기.
 
-운송프로그램 원본(`src/limits.py`, Song-Jung-Hun/-3-) 이식 + B-1·B-12 정밀화.
+[검사 정책 — 2026-05-26 도로 등급 폐지 개편]
+명명된 도로 등급(광로/일반/이면) 대신 사용자가 직접 넣는 SiteLimit(현장
+운송 제한: 총중량 GVW · 폭 · 높이)로 검사한다. 각 항목은 트럭 자체 한도와
+함께(둘 중 더 빡빡한 쪽) 본다.
+- 길이: 화물 길이 ≤ 트럭 적재함 길이 (현장 길이 제한 없음).
+- 폭  : 화물 폭 ≤ 트럭 폭, 그리고 현장 폭 제한(있으면)도.
+- 높이: 차량 적재면 + 화물 외측 높이 ≤ 트럭 높이, 그리고 현장 높이 제한(있으면)도.
+- 무게: 화물 ≤ 트럭 적재능력(Truck.max_weight), 그리고 현장 GVW 제한(있으면)이
+  차체(curb) + 화물 총중량 이상이어야 한다.
+SiteLimit 각 항목이 None 이면 그 항목은 "해당없음"으로 검사하지 않는다.
 
-[원본과의 차이 — Phase 2 변경점]
-- **B-1 정밀화 (옵션화)**: 원본은 "중량은 차량 자체 무게는 별도이므로 화물 ≤
-  truck.max_weight 만 본다" 는 명시적 단순화. 우리는 그 단순화를 유지하되
-  `strict_weight=True` 옵션을 켜면 GVW(=truck.curb_weight_kg + 화물) 가
-  `min(truck.max_weight + curb_weight, road.max_weight)` 한도를 넘는지 검사.
-  - 도로 한도 = GVW 기준 (총중량). 트럭 한도 = 화물(=적재량) 기준.
-- **B-12 정밀화 (옵션화)**: 원본은 화물 길이만 도로 한도와 비교. 우리는
-  `strict_length=True` 옵션을 켜면 화물 length + trailer_length_mm 합산을
-  도로 한도와 비교.
-- **B-6 단순화 유지 (옵션화)**: 원본은 화물 폭/높이만 검사 (트럭 자체 폭/
-  높이 무시). 우리는 이 단순화를 유지하되 외측 높이는 원본대로 vehicle_
-  height_offset 가산. `strict_width` 등 추가 옵션은 두지 않음 (충분히 정확).
-- **A-1 일반화**: Panel.kind=lshape 분기 대신 Panel.wall_segments 가 있으면
-  가장 높은 세그먼트 높이를 화물 높이로 사용 (B-14 정밀도 향상).
-
-[버그 아님 — 원본의 의도된 단순화]
-원본 정책 그대로 동작하는 것이 기본값(strict_*=False). 사용자가 GVW 정밀화를
-원하면 옵션을 켠다 (가드 단락 — B-1·B-6·B-12 단순화 정책 재단정 금지).
+[A-1 일반화] Panel.wall_segments 가 있으면 가장 높은 세그먼트 높이를 화물
+높이로 사용. (원본 lshape 의 wall_height 흡수.)
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Union
 
-from .models import Module, Panel, Truck, RoadClass
+from .models import Module, Panel, Truck, SiteLimit
 
 
 Item = Union[Module, Panel]
@@ -34,16 +27,10 @@ Item = Union[Module, Panel]
 
 @dataclass(frozen=True)
 class CarryResult:
-    """can_carry 결과. ok=False여도 reasons 누적, wide_check 는 광폭 검토 플래그.
-
-    [원본과의 차이]
-    - notes: 단순화 정책으로 인해 검사 생략된 항목을 사람에게 알려주는 메모.
-    """
+    """can_carry 결과. ok=False 여도 reasons 에 모든 위반 사유 누적."""
 
     ok: bool
     reasons: tuple[str, ...] = ()
-    wide_check: bool = False
-    notes: tuple[str, ...] = ()
 
     def __bool__(self) -> bool:
         return self.ok
@@ -68,98 +55,67 @@ def _item_dims(item: Item) -> tuple[float, float, float, float]:
     return item.length, item.width, item.thickness, item.weight
 
 
-def can_carry(
-    item: Item,
-    truck: Truck,
-    road: RoadClass,
-    strict_weight: bool = False,
-    strict_length: bool = False,
-) -> CarryResult:
-    """단일 아이템 1개를 단일 트럭으로 단일 도로에서 운송 가능한가?
+def can_carry(item: Item, truck: Truck, site: SiteLimit,
+              side_overhang_mm: float = 200.0) -> CarryResult:
+    """단일 아이템 1개를 단일 트럭으로 현장 제한 아래 운송 가능한가?
 
-    [엄격 모드 옵션]
-    - strict_weight: GVW(차체+화물) 정밀화. 도로 한도 = GVW, 트럭 한도 = 적재량.
-    - strict_length: 트레일러 자체 길이 가산. 도로 한도 = 화물 + trailer_length.
-
-    [기본 모드 — 원본 단순화 정책 유지]
-    - 화물 단독으로 도로/트럭 한도 비교.
+    트럭 자체 한도와 현장 제한(SiteLimit)을 동시에 본다. 현장 제한 각 항목이
+    None 이면 그 항목은 검사하지 않는다(해당없음).
+    - 길이: 화물 길이 ≤ 트럭 적재함 길이 (현장 길이 제한 없음).
+    - 폭  : 화물 폭 ≤ 트럭 폭 + 양쪽 여유(side_overhang_mm), 그리고 현장 폭 제한.
+    - 높이: 차량 적재면 + 화물 외측 높이 ≤ 트럭 높이, 그리고 현장 높이 제한.
+    - 무게: 화물 ≤ 트럭 적재능력, 그리고 차체+화물(GVW) ≤ 현장 총중량 제한.
     """
     length, width, height, weight = _item_dims(item)
     reasons: list[str] = []
-    notes: list[str] = []
 
-    # 1) 길이
-    if strict_length and truck.trailer_length_mm > 0:
-        total_len = length + truck.trailer_length_mm
-        # 트럭 자체 길이는 의미 없음(트럭 max_length 는 적재가능 길이) → 도로만 비교
-        if total_len > road.max_length:
-            reasons.append(
-                f"전장 초과(엄격): 화물 {length:.0f} + 트레일러 {truck.trailer_length_mm:.0f} = "
-                f"{total_len:.0f}mm > 도로 {road.max_length:.0f}mm"
-            )
-        if length > truck.max_length:
-            reasons.append(
-                f"적재 길이 초과: {length:.0f}mm > 트럭 {truck.max_length:.0f}mm"
-            )
-    else:
-        length_lim = min(truck.max_length, road.max_length)
-        if length > length_lim:
-            reasons.append(
-                f"길이 초과: {length:.0f}mm > {length_lim:.0f}mm "
-                f"(트럭 {truck.max_length:.0f} / 도로 {road.max_length:.0f})"
-            )
-        if not strict_length:
-            notes.append("화물 길이만 비교 (트레일러 길이 미포함 — 단순화)")
-
-    # 2) 폭
-    width_lim = min(truck.max_width, road.max_width)
-    if width > width_lim:
+    # 1) 길이 — 트럭 적재함만 (현장 길이 제한 없음)
+    if length > truck.max_length:
         reasons.append(
-            f"폭 초과: {width:.0f}mm > {width_lim:.0f}mm "
-            f"(트럭 {truck.max_width:.0f} / 도로 {road.max_width:.0f})"
+            f"적재 길이 초과: {length:.0f}mm > 트럭 {truck.max_length:.0f}mm"
         )
 
-    # 3) 높이 (차량 + 화물 외측 높이)
+    # 2) 폭 — 트럭 폭 + 양쪽 여유 / 현장
+    eff_truck_width = truck.max_width + 2.0 * side_overhang_mm
+    if width > eff_truck_width:
+        reasons.append(
+            f"폭 초과: {width:.0f}mm > 트럭폭+여유 {eff_truck_width:.0f}mm "
+            f"(트럭 {truck.max_width:.0f} + 양쪽 {side_overhang_mm:.0f})"
+        )
+    if site.max_width_mm is not None and width > site.max_width_mm:
+        reasons.append(
+            f"폭 초과(현장): {width:.0f}mm > 현장 한도 {site.max_width_mm:.0f}mm"
+        )
+
+    # 3) 높이 — 차량 적재면 + 화물 외측 높이
     outer_height = height + truck.vehicle_height_offset
-    height_lim = min(truck.max_height, road.max_height)
-    if outer_height > height_lim:
+    if outer_height > truck.max_height:
         reasons.append(
             f"외측높이 초과: {outer_height:.0f}mm "
             f"(차량 {truck.vehicle_height_offset:.0f} + 화물 {height:.0f}) "
-            f"> {height_lim:.0f}mm"
+            f"> 트럭 {truck.max_height:.0f}mm"
+        )
+    if site.max_height_mm is not None and outer_height > site.max_height_mm:
+        reasons.append(
+            f"외측높이 초과(현장): {outer_height:.0f}mm "
+            f"(차량 {truck.vehicle_height_offset:.0f} + 화물 {height:.0f}) "
+            f"> 현장 한도 {site.max_height_mm:.0f}mm"
         )
 
-    # 4) 중량
-    if strict_weight and truck.curb_weight_kg > 0:
-        # 트럭 적재 한도: 화물 무게 vs truck.max_weight
-        if weight > truck.max_weight:
-            reasons.append(
-                f"적재 중량 초과: {weight:.0f}kg > 트럭 {truck.max_weight:.0f}kg"
-            )
-        # 도로 한도: GVW (차체+화물) vs road.max_weight
+    # 4) 무게 — 트럭 적재능력(화물) + 현장 총중량(차체+화물)
+    if weight > truck.max_weight:
+        reasons.append(
+            f"적재 중량 초과: {weight:.0f}kg > 트럭 적재한도 {truck.max_weight:.0f}kg"
+        )
+    if site.max_gvw_kg is not None:
         gvw = truck.curb_weight_kg + weight
-        if gvw > road.max_weight:
+        if gvw > site.max_gvw_kg:
             reasons.append(
-                f"GVW 초과(엄격): 차체 {truck.curb_weight_kg:.0f} + 화물 {weight:.0f} = "
-                f"{gvw:.0f}kg > 도로 {road.max_weight:.0f}kg"
+                f"총중량 초과(현장): 차체 {truck.curb_weight_kg:.0f} + 화물 {weight:.0f} = "
+                f"{gvw:.0f}kg > 현장 한도 {site.max_gvw_kg:.0f}kg"
             )
-    else:
-        weight_lim = min(truck.max_weight, road.max_weight)
-        if weight > weight_lim:
-            reasons.append(
-                f"중량 초과: {weight:.0f}kg > {weight_lim:.0f}kg "
-                f"(트럭 {truck.max_weight:.0f} / 도로 {road.max_weight:.0f})"
-            )
-        if not strict_weight:
-            notes.append("화물 중량만 비교 (트럭 자체 중량 미포함 — 단순화)")
 
-    wide_check = isinstance(item, Module) and item.is_wide()
-    return CarryResult(
-        ok=not reasons,
-        reasons=tuple(reasons),
-        wide_check=wide_check,
-        notes=tuple(notes),
-    )
+    return CarryResult(ok=not reasons, reasons=tuple(reasons))
 
 
 __all__ = ["Item", "CarryResult", "can_carry"]

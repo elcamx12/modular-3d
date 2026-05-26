@@ -13,12 +13,11 @@
    `@dataclass(frozen=True)` 의 typing.Literal 은 정적 힌트라 JSON 로드시
    값 검증을 하지 않는다 → `__post_init__` 에서 명시 검증.
    PanelKind, SectionType 도 동일 처리.
-3. **B-1·B-12 정밀화 필드 추가**:
-   - `Truck.curb_weight_kg`: 차체 자체 중량 (kg).
-     도로 한도(중량) 검사 시 화물에 합산해 GVW 산출 (Phase 2 limits.py).
-   - `Truck.trailer_length_mm`: 트레일러 자체 길이 (mm).
-     도로 한도(길이) 검사 시 화물 length 에 합산해 전장 산출.
+3. **정밀화 필드**:
+   - `Truck.curb_weight_kg`: 차체 자체 중량 (kg). 현장 총중량(GVW) 검사 시
+     화물에 합산 (limits.can_carry).
    - `Truck.active`: 패킹 후보 포함 여부 (B-4 A-frame 데드데이터 보존 정책).
+   - (트레일러 길이 trailer_length_mm 는 2026-05-26 도로 등급 폐지와 함께 제거.)
 4. **A-1 데이터모델 확장** (다면 종속 패널 일반화):
    원본 `Panel.kind ∈ {floor, wall, lshape}` 의 `lshape` 단일면 한계를
    극복하기 위해 `Panel.wall_segments: tuple[WallSegment, ...]` 신설.
@@ -47,7 +46,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Tuple
+from typing import Literal, Optional, Tuple
 
 
 # ── Literal 별칭 + 런타임 검증용 화이트리스트 ─────────────────
@@ -91,6 +90,111 @@ class Section:
             )
         if self.weight_per_m <= 0:
             raise ValueError(f"Section '{self.name}': weight_per_m 양수 필요.")
+
+
+# 부재 종류 — 모든 Part 가 공유하는 화이트리스트
+_PART_KINDS: frozenset[str] = frozenset({
+    "column", "beam", "slab", "wall_fill", "core_wall",
+})
+
+# Part subkind — 시각화 라벨 + 색상 분기용 (선택 필드)
+_PART_SUBKINDS: frozenset[str] = frozenset({
+    "bottom", "top", "perim", "runner", "wall_seg_col", "wall_seg_beam", "",
+})
+
+# AttachedPart.source_kind — 어느 *종속 컴포넌트* 에서 온 부재인지
+_SOURCE_KINDS: frozenset[str] = frozenset({
+    "own",                     # 부모 자체 부재 (BodyPart 의미)
+    "midbeam", "midcolumn",
+    "cantilever_beam", "cantilever_slab",
+})
+
+
+@dataclass(frozen=True)
+class BodyPart:
+    """부모 화물(모듈·바닥패널·벽패널·수직3모듈) *자체* 부재 한 개의 박스.
+
+    [데이터 흐름]
+      배치 모델의 BeamData/ColumnData/SlabData/WallPanelData (월드 좌표)
+        → 어댑터의 _nominal_aabb_*() 가 부모 nominal 좌표계 박스로 변환
+        → 운송 X-Y 교환 매핑으로 운송 좌표계 박스로 변환
+        → 본 BodyPart 1 개 생성
+    부재 1 개 = Part 1 개. CantileverSlab 의 3 변 보 + 슬래브는 4 개의
+    Part 로 풀어 첨부한다 (한 덩어리 AABB 로 묶지 않음 — 보가 사라짐 방지).
+    """
+
+    kind: str           # "column"|"beam"|"slab"|"wall_fill"|"core_wall"
+    x_mm: float
+    y_mm: float
+    z_mm: float
+    length_mm: float
+    width_mm: float
+    height_mm: float
+    subkind: str = ""   # 시각화 라벨용 — "bottom"/"top"/"perim"/"runner"/...
+
+    def __post_init__(self) -> None:
+        if self.kind not in _PART_KINDS:
+            raise ValueError(
+                f"BodyPart.kind '{self.kind}' 은 허용 목록 "
+                f"{sorted(_PART_KINDS)} 에 없음."
+            )
+        if self.subkind not in _PART_SUBKINDS:
+            raise ValueError(
+                f"BodyPart.subkind '{self.subkind}' 은 허용 목록 "
+                f"{sorted(_PART_SUBKINDS)} 에 없음."
+            )
+        if self.length_mm <= 0 or self.width_mm <= 0 or self.height_mm <= 0:
+            raise ValueError(
+                f"BodyPart({self.kind}): length/width/height 는 양수여야 함."
+            )
+
+
+@dataclass(frozen=True)
+class AttachedPart:
+    """부모 화물에 종속된 *자식 컴포넌트의 부재 한 개* 박스.
+
+    [데이터 흐름]
+      자식(CantileverBeam/CantileverSlab/MidBeam/MidColumn) 의 부재 데이터
+      (BeamData/ColumnData/SlabData) — 월드 좌표
+        → 어댑터의 _nominal_aabb_*() 가 부모 nominal 좌표계로 변환
+        → 운송 좌표계 매핑
+        → 본 AttachedPart 1 개 생성
+    CantileverSlab 은 3 변 보 + 슬래브 = 4 개의 AttachedPart 로 풀어 첨부.
+
+    [좌표계] 부모 nominal 좌표계 (운송 X-Y 교환 적용 후) 의 박스.
+    부모가 회전·앵커 변해도 nominal 변환이 풀어주므로 위치 불변.
+    """
+
+    kind: str            # _PART_KINDS — "column"|"beam"|"slab"|"wall_fill"
+    source_kind: str     # _SOURCE_KINDS — 어느 자식 종류에서 왔는지
+    x_mm: float
+    y_mm: float
+    z_mm: float
+    length_mm: float
+    width_mm: float
+    height_mm: float
+    subkind: str = ""
+    section_name: str = ""
+
+    def __post_init__(self) -> None:
+        if self.kind not in _PART_KINDS:
+            raise ValueError(
+                f"AttachedPart.kind '{self.kind}' 은 허용 목록 "
+                f"{sorted(_PART_KINDS)} 에 없음."
+            )
+        if self.source_kind not in _SOURCE_KINDS:
+            raise ValueError(
+                f"AttachedPart.source_kind '{self.source_kind}' 은 허용 목록 "
+                f"{sorted(_SOURCE_KINDS)} 에 없음."
+            )
+        if self.subkind not in _PART_SUBKINDS:
+            raise ValueError(
+                f"AttachedPart.subkind '{self.subkind}'."
+            )
+        if self.length_mm <= 0 or self.width_mm <= 0 or self.height_mm <= 0:
+            raise ValueError(
+                f"AttachedPart({self.kind}): length/width/height 는 양수여야 함."
+            )
 
 
 @dataclass(frozen=True)
@@ -138,6 +242,10 @@ class Module:
     column_section: Section         # 4 모서리 기둥
     beam_section: Section           # 천장·바닥보 공통 단면 가정
     extra_weight_kg: float = 0.0    # 슬래브 + 비내력벽 + Mid부재 합산
+    # Phase 1 — 종속 부재(중간보·중간기둥·캔틸레버) 형상 첨부
+    attached_parts: Tuple["AttachedPart", ...] = field(default_factory=tuple)
+    # Phase 3 — 부모 자체 부재(기둥·보·슬래브·채움) 의 실제 월드 AABB 데이터
+    body_parts: Tuple["BodyPart", ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         if self.width <= 0 or self.length <= 0 or self.height <= 0:
@@ -156,10 +264,6 @@ class Module:
             + beam_total_m * self.beam_section.weight_per_m
         )
         return frame_w + self.extra_weight_kg
-
-    def is_wide(self) -> bool:
-        """광폭 모듈 여부 (폭 3.0m 초과 → 확장형 광폭 트레일러 필요)."""
-        return self.width > 3000.0
 
 
 @dataclass(frozen=True)
@@ -189,6 +293,10 @@ class Panel:
     extra_weight_kg: float = 0.0          # 비내력벽 채움재 + 슬래브 자중
     # A-1: 다면 종속 표현용. floor 에서만 사용. 0~4 개.
     wall_segments: Tuple[WallSegment, ...] = field(default_factory=tuple)
+    # Phase 1 — 종속 부재(캔틸레버 보·슬래브) 형상 첨부 (종속 floor 에서만 의미)
+    attached_parts: Tuple["AttachedPart", ...] = field(default_factory=tuple)
+    # Phase 3 — 부모 자체 부재(둘레보·슬래브 / 벽 기둥·런너·채움) 의 월드 AABB 데이터
+    body_parts: Tuple["BodyPart", ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         if self.kind not in _PANEL_KINDS:
@@ -267,8 +375,8 @@ class Truck:
     """모듈러 운송 차량.
 
     [원본과의 추가 필드]
-    - curb_weight_kg : 차체 자체 중량 (B-1 정밀화).
-    - trailer_length_mm : 트레일러 자체 길이 (B-12 정밀화).
+    - curb_weight_kg : 차체 자체 중량. 현장 총중량(GVW) 한도 검사에 화물 무게와
+      합산해 사용 (limits.can_carry).
     - active : 패킹 후보 포함 여부 (B-4 보존 정책).
 
     [truck_type 정책]
@@ -287,7 +395,6 @@ class Truck:
     vehicle_height_offset: float = 700.0
     # ── 신규 정밀화 필드 ─────────────────────────────────
     curb_weight_kg: float = 0.0
-    trailer_length_mm: float = 0.0
     active: bool = True
     note: str = ""
 
@@ -307,44 +414,62 @@ class Truck:
             )
         if self.curb_weight_kg < 0:
             raise ValueError(f"Truck '{self.name}': curb_weight_kg 음수 불가.")
-        if self.trailer_length_mm < 0:
-            raise ValueError(
-                f"Truck '{self.name}': trailer_length_mm 음수 불가."
-            )
 
 
 @dataclass(frozen=True)
-class RoadClass:
-    """도로 등급. 원본 그대로."""
+class SiteLimit:
+    """현장 운송 제한 — 공장→현장 경로(진입로 포함)가 허용하는 한도.
 
-    name: str
-    max_length: float
-    max_width: float
-    max_height: float
-    max_weight: float
+    각 항목이 None 이면 "해당없음"(그 항목은 제한하지 않음 = 프리패스).
+    - max_gvw_kg   : 차체 자체 무게 + 화물 무게(총중량 GVW) 한도. 트럭 적재능력
+      (Truck.max_weight, 화물 단독) 과는 별개로 함께 검사한다.
+    - max_width_mm : 화물 폭 한도.
+    - max_height_mm: 지면에서 화물 꼭대기까지의 총높이 한도(차량 적재면 높이 포함).
+
+    [도로 등급 카탈로그 폐지 — 2026-05-26]
+    명명된 도로 등급(광로/일반/이면) 선택을 없애고, 사용자가 현장에 맞춰
+    직접 넣는 본 3개 한도로 대체한다. 길이는 현장 제한을 두지 않고 트럭
+    적재함 길이로만 본다.
+    """
+
+    max_gvw_kg: Optional[float] = None
+    max_width_mm: Optional[float] = None
+    max_height_mm: Optional[float] = None
 
     def __post_init__(self) -> None:
-        for k in ("max_length", "max_width", "max_height", "max_weight"):
-            if getattr(self, k) <= 0:
-                raise ValueError(f"RoadClass '{self.name}': {k} 는 양수여야 함.")
+        for k in ("max_gvw_kg", "max_width_mm", "max_height_mm"):
+            v = getattr(self, k)
+            if v is not None and v <= 0:
+                raise ValueError(
+                    f"SiteLimit.{k} 는 None(해당없음) 또는 양수여야 함."
+                )
 
 
 @dataclass(frozen=True)
 class SpacingParams:
-    """패널 적재 간격 (mm). 원본 그대로."""
+    """패널 적재 간격 (mm). 2026-05-26 이후 사용자 입력이 아닌 내장 고정값.
+
+    - panel_gap_mm: 패널 사이 수직(적층)·수평(나란히) 간격
+    - truck_edge_clearance_mm: 트럭 앞뒤 결박 여유(길이 방향)
+    - lshape_stack_gap_mm: 종속(L자) 패널 위 적층 수평 간격
+    - side_overhang_mm: 화물이 트럭 폭보다 양쪽으로 각각 튀어나올 수 있는 여유
+      (폭 허용 = 트럭 폭 + 2×side_overhang_mm)
+    """
 
     panel_gap_mm: float = 100.0
     truck_edge_clearance_mm: float = 200.0
     lshape_stack_gap_mm: float = 100.0
+    side_overhang_mm: float = 200.0
 
     def __post_init__(self) -> None:
-        for k in ("panel_gap_mm", "truck_edge_clearance_mm", "lshape_stack_gap_mm"):
+        for k in ("panel_gap_mm", "truck_edge_clearance_mm",
+                  "lshape_stack_gap_mm", "side_overhang_mm"):
             if getattr(self, k) < 0:
                 raise ValueError(f"SpacingParams.{k} 음수 불가.")
 
 
 __all__ = [
     "PanelKind", "TruckType", "SectionType",
-    "Section", "WallSegment", "Module", "Panel",
-    "Truck", "RoadClass", "SpacingParams",
+    "Section", "WallSegment", "AttachedPart", "BodyPart", "Module", "Panel",
+    "Truck", "SiteLimit", "SpacingParams",
 ]

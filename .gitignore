@@ -16,6 +16,9 @@ build/
 dist/
 *.spec.bak
 
+# 작업 전 코드 스냅샷 백업 (로컬 롤백용, 저장소 제외)
+_snapshots/
+
 # IDE / 에디터
 .vscode/
 .idea/

@@ -22,9 +22,9 @@ from dataclasses import dataclass
 
 from PyQt5.QtCore import QDate
 from PyQt5.QtWidgets import (
-    QComboBox, QDateEdit, QDialog, QDialogButtonBox,
-    QDoubleSpinBox, QFormLayout, QGroupBox, QPushButton, QSpinBox,
-    QVBoxLayout,
+    QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
+    QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QPushButton,
+    QSpinBox, QVBoxLayout, QWidget,
 )
 
 
@@ -68,6 +68,17 @@ class ProjectSettings:
     lowbed_per_km_krw: float = 3500.0   # 저상/초저상 km단가 (per_km 방식)
     extendable_per_km_krw: float = 5000.0  # 광폭(확장형) km단가
     aframe_per_km_krw: float = 5000.0   # A-frame km단가
+    # 트레일러별 1회 고정 운송비 (cost_mode='fixed_per_trip' — 거리 무관, 회차당)
+    lowbed_fixed_krw: float = 600000.0
+    extendable_fixed_krw: float = 700000.0
+    aframe_fixed_krw: float = 800000.0
+    # 현장 운송 제한 (도로 등급 대체 — 2026-05-26). *_enabled=False → 해당없음(프리패스).
+    site_limit_gvw_kg: float = 40000.0       # 차체+화물 총중량(GVW) 한도
+    site_limit_gvw_enabled: bool = True
+    site_limit_width_mm: float = 3500.0      # 화물 폭 한도
+    site_limit_width_enabled: bool = True
+    site_limit_height_mm: float = 4500.0     # 지면~화물 꼭대기 총높이(차량 포함) 한도
+    site_limit_height_enabled: bool = True
     # 비내력벽 단위중량
     wall_interior_kg_m2: float = 30.0   # 내부 단위중량
     wall_exterior_kg_m2: float = 55.0   # 외부 단위중량
@@ -107,6 +118,7 @@ class ProjectSettingsDialog(QDialog):
         self._cost_mode_combo = QComboBox()
         self._cost_mode_combo.addItem("요금표 (전국특송24시콜)", "freight_table")
         self._cost_mode_combo.addItem("트레일러별 km단가", "per_km")
+        self._cost_mode_combo.addItem("트레일러별 1회 고정비", "fixed_per_trip")
         tf.addRow("운임 방식:", self._cost_mode_combo)
 
         # 트럭 종류별 km단가 (per_km 방식에서 사용)
@@ -124,7 +136,56 @@ class ProjectSettingsDialog(QDialog):
         self._aframe_per_km_spin.setRange(0, 1_000_000)
         self._aframe_per_km_spin.setSuffix(" 원/km")
         tf.addRow("A-frame km단가:", self._aframe_per_km_spin)
+
+        # 트레일러별 1회 고정비 (운임 방식 '트레일러별 1회 고정비' 에서 사용)
+        def _mk_fixed():
+            s = QSpinBox()
+            s.setRange(0, 100_000_000)
+            s.setSingleStep(10_000)
+            s.setSuffix(" 원")
+            s.setGroupSeparatorShown(True)
+            return s
+
+        self._lowbed_fixed_spin = _mk_fixed()
+        tf.addRow("저상 1회 고정비:", self._lowbed_fixed_spin)
+        self._extend_fixed_spin = _mk_fixed()
+        tf.addRow("광폭 1회 고정비:", self._extend_fixed_spin)
+        self._aframe_fixed_spin = _mk_fixed()
+        tf.addRow("A-frame 1회 고정비:", self._aframe_fixed_spin)
+        bulk_btn = QPushButton("1회 고정비 일괄 적용 (저상값 → 전체)")
+        bulk_btn.clicked.connect(self._apply_fixed_bulk)
+        tf.addRow("", bulk_btn)
         root.addWidget(trans_box)
+
+        # ── 현장 운송 제한 ───────────────────────────────
+        # 도로 등급 선택을 대체. 무게=차체+화물(GVW), 폭, 높이(차량 포함 총높이).
+        # "해당없음" 체크 시 그 항목은 제한하지 않는다(프리패스).
+        site_box = QGroupBox("현장 운송 제한 (공통)")
+        sf = QFormLayout(site_box)
+
+        def _limit_row(spin_attr, none_attr, suffix, maximum):
+            spin = QSpinBox()
+            spin.setRange(1, maximum)
+            spin.setSuffix(suffix)
+            none_cb = QCheckBox("해당없음")
+            none_cb.toggled.connect(lambda checked: spin.setEnabled(not checked))
+            setattr(self, spin_attr, spin)
+            setattr(self, none_attr, none_cb)
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.addWidget(spin, stretch=1)
+            row.addWidget(none_cb)
+            holder = QWidget()
+            holder.setLayout(row)
+            return holder
+
+        sf.addRow("총중량 한도(차체+화물):",
+                  _limit_row("_site_gvw_spin", "_site_gvw_none", " kg", 1_000_000))
+        sf.addRow("폭 한도:",
+                  _limit_row("_site_width_spin", "_site_width_none", " mm", 100_000))
+        sf.addRow("높이 한도(차량 포함):",
+                  _limit_row("_site_height_spin", "_site_height_none", " mm", 100_000))
+        root.addWidget(site_box)
 
         # ── 비내력벽 단위중량 ────────────────────────────
         wall_box = QGroupBox("비내력벽 단위중량 (공통)")
@@ -236,6 +297,19 @@ class ProjectSettingsDialog(QDialog):
         self._lowbed_per_km_spin.setValue(int(s.lowbed_per_km_krw))
         self._extend_per_km_spin.setValue(int(s.extendable_per_km_krw))
         self._aframe_per_km_spin.setValue(int(s.aframe_per_km_krw))
+        self._lowbed_fixed_spin.setValue(int(s.lowbed_fixed_krw))
+        self._extend_fixed_spin.setValue(int(s.extendable_fixed_krw))
+        self._aframe_fixed_spin.setValue(int(s.aframe_fixed_krw))
+        # 현장 제한
+        self._site_gvw_spin.setValue(int(s.site_limit_gvw_kg))
+        self._site_gvw_none.setChecked(not s.site_limit_gvw_enabled)
+        self._site_gvw_spin.setEnabled(s.site_limit_gvw_enabled)
+        self._site_width_spin.setValue(int(s.site_limit_width_mm))
+        self._site_width_none.setChecked(not s.site_limit_width_enabled)
+        self._site_width_spin.setEnabled(s.site_limit_width_enabled)
+        self._site_height_spin.setValue(int(s.site_limit_height_mm))
+        self._site_height_none.setChecked(not s.site_limit_height_enabled)
+        self._site_height_spin.setEnabled(s.site_limit_height_enabled)
         self._interior_spin.setValue(float(s.wall_interior_kg_m2))
         self._exterior_spin.setValue(float(s.wall_exterior_kg_m2))
         # 지역 선택 → currentIndexChanged 가 별표1/별표2 를 자동 채운 뒤,
@@ -249,6 +323,12 @@ class ProjectSettingsDialog(QDialog):
         else:
             self._start_date_edit.setDate(QDate(2026, 1, 1))
 
+    def _apply_fixed_bulk(self) -> None:
+        """1회 고정비 일괄 적용 — 저상 입력값을 광폭·A-frame 에도 복사."""
+        v = self._lowbed_fixed_spin.value()
+        self._extend_fixed_spin.setValue(v)
+        self._aframe_fixed_spin.setValue(v)
+
     def _on_accept(self) -> None:
         """위젯 값을 ProjectSettings 에 되쓰고 창을 닫는다."""
         s = self._settings
@@ -257,6 +337,16 @@ class ProjectSettingsDialog(QDialog):
         s.lowbed_per_km_krw = float(self._lowbed_per_km_spin.value())
         s.extendable_per_km_krw = float(self._extend_per_km_spin.value())
         s.aframe_per_km_krw = float(self._aframe_per_km_spin.value())
+        s.lowbed_fixed_krw = float(self._lowbed_fixed_spin.value())
+        s.extendable_fixed_krw = float(self._extend_fixed_spin.value())
+        s.aframe_fixed_krw = float(self._aframe_fixed_spin.value())
+        # 현장 제한
+        s.site_limit_gvw_kg = float(self._site_gvw_spin.value())
+        s.site_limit_gvw_enabled = not self._site_gvw_none.isChecked()
+        s.site_limit_width_mm = float(self._site_width_spin.value())
+        s.site_limit_width_enabled = not self._site_width_none.isChecked()
+        s.site_limit_height_mm = float(self._site_height_spin.value())
+        s.site_limit_height_enabled = not self._site_height_none.isChecked()
         s.wall_interior_kg_m2 = float(self._interior_spin.value())
         s.wall_exterior_kg_m2 = float(self._exterior_spin.value())
         data = self._region_combo.currentData()

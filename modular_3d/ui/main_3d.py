@@ -33,12 +33,28 @@ import vispy
 vispy.use('pyqt5')  # canvas 생성 전 필수
 
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget,
+    QApplication, QDialog, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget,
     QSlider, QLabel, QCheckBox, QTabWidget, QSplitter, QPushButton,
     QFileDialog, QMessageBox, QSpinBox, QInputDialog,
 )
-from PyQt5.QtCore import Qt, QEvent
+from PyQt5.QtCore import Qt, QEvent, QObject, pyqtSlot, pyqtSignal
 from PyQt5.QtGui import QFont, QFontDatabase
+from PyQt5.QtWebChannel import QWebChannel
+
+
+# ─────────────────────────────────────────────────────────────
+# Transport 3D ↔ Python 통신 브리지 (QWebChannel)
+# ─────────────────────────────────────────────────────────────
+class _TransportBridge(QObject):
+    """Three.js JS 가 트럭 클릭 시 on_truck_clicked(trip_no) 호출.
+
+    PyQt 신호로 변환 후 MainWindow 가 받아 회차표·경제성표 행 선택 + 3D 강조 트리거.
+    """
+    truck_clicked_in_3d = pyqtSignal(int)
+
+    @pyqtSlot(int)
+    def on_truck_clicked(self, trip_no: int) -> None:
+        self.truck_clicked_in_3d.emit(int(trip_no))
 
 from modular_3d.model import Scene, ComponentType, TYPE_NAMES
 from modular_3d.render.viewer import Viewer3D
@@ -66,8 +82,13 @@ TAB_JOINT_EDIT = 2
 TAB_ANALYSIS = 3
 TAB_QUANTITY = 4
 TAB_TRANSPORT = 5
-TAB_JOINT_AIR = 6
-TAB_FINAL = 7
+# [2026-05-27 공정표 이식] 옛 이름 TAB_JOINT_AIR → TAB_SCHEDULE 로 변경.
+# 외부 코드에서 참조하는 경우를 위해 옛 이름은 별칭으로 유지.
+TAB_SCHEDULE = 6
+TAB_JOINT_AIR = TAB_SCHEDULE  # deprecated alias
+# [2026-05-27 평가 탭 이식] 옛 이름 TAB_FINAL → TAB_EVALUATION 으로 변경.
+TAB_EVALUATION = 7
+TAB_FINAL = TAB_EVALUATION  # deprecated alias
 
 
 class MainWindow(QMainWindow):
@@ -218,16 +239,33 @@ class MainWindow(QMainWindow):
         # 새 탭: 운송 / 공기 및 접합부 / 최종평가. 내부 내용은 비워둠.
         # Phase 6: 운송 탭은 placeholder 대신 운송 전용 center+right 페이지.
         self._tab_transport = self._build_transport_tab_layout()
-        self._tab_joint_air = self._build_placeholder_tab('공기 및 접합부')
-        self._tab_final = self._build_placeholder_tab('최종평가')
+        # [2026-05-27 공정표 이식 Phase A] placeholder → 팀원 HTML 임베드.
+        # 공정표_이식_계획서.md 참조. 변수명을 _tab_schedule 로 통일하고,
+        # 외부 호환을 위해 _tab_joint_air 는 별칭으로 유지.
+        from .schedule_panel import SchedulePanel
+        self._tab_schedule = SchedulePanel()
+        # [2026-05-27 평가 탭 Phase L] 공정표 calc() 결과 캐시.
+        # SchedulePanel 의 ScheduleBridge 시그널을 받아 self._schedule_payload 에 저장.
+        # 평가 탭이 진입 시 이 캐시를 어댑터에 넘긴다.
+        self._schedule_payload: dict = {}
+        self._tab_schedule.bridge().schedule_payload_pushed.connect(
+            self._on_schedule_payload_pushed
+        )
+        self._tab_joint_air = self._tab_schedule  # deprecated alias
+        # [2026-05-27 평가 탭 이식 Phase J] placeholder → EvaluationPanel.
+        # 평가탭_구축_계획서.md 참조. 변수명 _tab_evaluation 통일, 별칭 유지.
+        from .evaluation_panel import EvaluationPanel
+        self._tab_evaluation = EvaluationPanel()
+        self._tab_evaluation.save_case_requested.connect(self._on_evaluation_save_case)
+        self._tab_final = self._tab_evaluation  # deprecated alias
         self._tabs.addTab(self._define_tab, '모듈 정의')
         self._tabs.addTab(self._tab_design, '배치 설계')
         self._tabs.addTab(self._tab_joint_edit, '접합부 설계')
         self._tabs.addTab(self._tab_analysis, '구조해석')
         self._tabs.addTab(self._tab_quantity, '물량')
         self._tabs.addTab(self._tab_transport, '운송')
-        self._tabs.addTab(self._tab_joint_air, '공기 및 접합부')
-        self._tabs.addTab(self._tab_final, '최종평가')
+        self._tabs.addTab(self._tab_schedule, '공정표')
+        self._tabs.addTab(self._tab_evaluation, '평가')
         self._tabs.currentChanged.connect(self._on_tab_changed)
         self.setCentralWidget(self._tabs)
 
@@ -242,6 +280,12 @@ class MainWindow(QMainWindow):
             tt = getattr(self._analysis_panel, '_transport_tab', None)
             if tt is not None and hasattr(tt, 'set_project_root'):
                 tt.set_project_root(_parent)
+            # [Phase C — 2026-05-26] 운송 계산 완료 → center pane 3D 도식 갱신.
+            if tt is not None and hasattr(tt, 'transport_pack_updated'):
+                tt.transport_pack_updated.connect(self._on_transport_pack_updated)
+            # [Phase E — 2026-05-26] 회차표 행 클릭 → 3D 도식에서 해당 회차 강조.
+            if tt is not None and hasattr(tt, 'transport_trip_clicked'):
+                tt.transport_trip_clicked.connect(self._on_transport_trip_clicked)
         except Exception:
             pass
 
@@ -286,7 +330,12 @@ class MainWindow(QMainWindow):
             on_open_catalog=self._open_transport_catalog,
             parent=self,
         )
-        dlg.exec_()
+        if dlg.exec_() == QDialog.Accepted:
+            # [2026-05-26] 확인 즉시 운송탭 읽기전용 표시(현장제한 등) 갱신.
+            # 종전엔 탭을 빠져나갔다 다시 들어와야 반영됐음.
+            tt = getattr(self._analysis_panel, '_transport_tab', None)
+            if tt is not None and hasattr(tt, 'apply_project_settings'):
+                tt.apply_project_settings(self._project_settings)
 
     def _open_transport_catalog(self) -> None:
         """파일 메뉴 진입점 — AnalysisPanel 의 _transport_tab 에 위임."""
@@ -295,6 +344,54 @@ class MainWindow(QMainWindow):
             tt.open_catalog_dialog()
 
     # ── 변형 형상 컨트롤 위젯 ─────────────────────────────
+    # ── 평가 탭 — 공정표 결과 푸시 수신 (Phase L) ─────────────
+    def _on_schedule_payload_pushed(self, payload: dict) -> None:
+        """공정표 HTML 의 calc() 가 보낸 결과를 캐시. 평가 탭이 진입 시 어댑터로 전달."""
+        if isinstance(payload, dict):
+            self._schedule_payload = payload
+
+    # ── 평가 탭 — 케이스 저장 핸들러 (Phase N) ─────────────────
+    def _on_evaluation_save_case(self) -> None:
+        """저장 버튼 → QFileDialog → .case.json 완전 스냅샷 저장.
+
+        구조: scene_state + ProjectSettings + 평가 화면 표시 데이터.
+        배치 설계 탭과 같은 흐름이지만 확장자 .case.json 으로 구분.
+        """
+        from PyQt5.QtWidgets import QFileDialog, QMessageBox
+        from modular_3d.io.scene_io import scene_to_state_dict
+        from modular_3d.evaluation.case_io import save_case
+        from modular_3d.evaluation.evaluation_adapter import build_evaluation_data
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "평가 결과 저장", "case.case.json", "평가 케이스 (*.case.json)"
+        )
+        if not path:
+            return
+        try:
+            comps = list(self._scene.components.values()) if hasattr(self._scene, 'components') else []
+            n_floors = self._f5_panel.floors if getattr(self, '_f5_panel', None) else 1
+            scene_state = scene_to_state_dict(self._scene, n_floors)
+            evaluation_data = build_evaluation_data(
+                components=comps,
+                project_settings=self._project_settings,
+                design_results=getattr(self._controller, '_design_results', None),
+                transport_result=getattr(self, '_last_transport_pack', None),
+                schedule_payload=getattr(self, '_schedule_payload', None) or None,
+            )
+            save_case(
+                path=path,
+                scene_state=scene_state,
+                project_settings=self._project_settings,
+                evaluation_data=evaluation_data,
+            )
+            QMessageBox.information(
+                self, "평가 결과 저장",
+                f"케이스 파일을 저장했습니다.\n{path}",
+            )
+        except Exception as e:
+            dprint('EVALUATION', f'[EVALUATION] 저장 실패: {e}')
+            QMessageBox.critical(self, "저장 실패", f"케이스 저장 중 오류:\n{e}")
+
     def _build_deformed_widget(self) -> QWidget:
         row = QHBoxLayout()
         row.setContentsMargins(6, 0, 6, 0)
@@ -459,17 +556,45 @@ class MainWindow(QMainWindow):
         return page
 
     def _build_transport_tab_layout(self) -> QWidget:
-        """운송 탭 — _analysis_panel 의 운송 sub-탭을 우측에 부착할 골격.
+        """운송 탭 — *3 단 분할* (좌 입력 / 중 3D 도식 / 우 결과).
 
-        디자인/구조해석/물량 탭과 동일한 center+right 2분할 구조.
-        center: 3D 캔버스(공유 위젯), right: _analysis_panel (운송 sub-탭만 표시).
+        [2026-05-27 사용자 결정]
+        - 좌측: TransportTab 의 입력 패널 (카탈로그 / 옵션 / 실행 버튼)
+        - 중앙: 운송 3D 적재 도식 (WebEngineView)
+        - 우측: TransportTab 의 결과 패널 (회차표 / 적재율 / 경제성 / 진단)
+        - 좌측은 *접기 토글 버튼* 으로 collapse 가능
         """
+        from PyQt5.QtWebEngineWidgets import QWebEngineView
         from PyQt5.QtWidgets import QSizePolicy as _QSP
+        from PyQt5.QtWidgets import QSplitter, QPushButton
         page = QWidget()
-        h = QHBoxLayout(page)
-        h.setContentsMargins(0, 0, 0, 0)
-        h.setSpacing(2)
-        # center pane (3D 캔버스 + deformed widget)
+        root = QVBoxLayout(page)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # 상단 툴바 — 좌측 패널 접기 토글
+        toolbar = QWidget()
+        tb_lay = QHBoxLayout(toolbar)
+        tb_lay.setContentsMargins(4, 2, 4, 2)
+        tb_lay.setSpacing(4)
+        self._transport_left_toggle_btn = QPushButton("◀ 입력 패널 접기")
+        self._transport_left_toggle_btn.setCheckable(True)
+        self._transport_left_toggle_btn.setMaximumWidth(150)
+        self._transport_left_toggle_btn.clicked.connect(
+            self._on_transport_left_toggle
+        )
+        tb_lay.addWidget(self._transport_left_toggle_btn)
+        tb_lay.addStretch(1)
+        root.addWidget(toolbar)
+
+        # 메인 3 단 splitter
+        self._transport_splitter = QSplitter(Qt.Horizontal)
+        # 좌 영역
+        self._transport_left_pane = QWidget()
+        self._transport_left_pane.setMinimumWidth(280)
+        self._transport_left_lay = QVBoxLayout(self._transport_left_pane)
+        self._transport_left_lay.setContentsMargins(0, 0, 0, 0)
+        # 중 영역
         center = QWidget()
         cv = QVBoxLayout(center)
         cv.setContentsMargins(0, 0, 0, 0)
@@ -478,15 +603,216 @@ class MainWindow(QMainWindow):
         self._transport_center_lay = QVBoxLayout(self._transport_center_pane)
         self._transport_center_lay.setContentsMargins(0, 0, 0, 0)
         cv.addWidget(self._transport_center_pane, stretch=1)
-        h.addWidget(center, stretch=1)
-        # right pane (_analysis_panel 부착 자리)
+
+        # 우 영역
         self._transport_right_pane = QWidget()
-        self._transport_right_pane.setMinimumWidth(500)
-        self._transport_right_pane.setSizePolicy(_QSP.Minimum, _QSP.Expanding)
+        self._transport_right_pane.setMinimumWidth(400)
         self._transport_right_lay = QVBoxLayout(self._transport_right_pane)
         self._transport_right_lay.setContentsMargins(0, 0, 0, 0)
-        h.addWidget(self._transport_right_pane)
+
+        self._transport_splitter.addWidget(self._transport_left_pane)
+        self._transport_splitter.addWidget(center)
+        self._transport_splitter.addWidget(self._transport_right_pane)
+        self._transport_splitter.setStretchFactor(0, 0)
+        self._transport_splitter.setStretchFactor(1, 2)
+        self._transport_splitter.setStretchFactor(2, 1)
+        self._transport_splitter.setSizes([320, 900, 500])
+        # 사용자 사이즈 저장용 (접기 후 펼침 시 복원)
+        self._transport_left_saved_size = 320
+        root.addWidget(self._transport_splitter, stretch=1)
+
+        # ── 운송 3D 도식 WebEngineView (center pane 안에 들어갈 위젯) ──
+        self._transport_3d_web = QWebEngineView()
+        self._transport_3d_web.setMinimumHeight(400)
+        # [양방향 동기화 — 2026-05-27] WebChannel + Bridge 등록.
+        # Three.js JS 에서 트럭 클릭 시 bridge.on_truck_clicked(trip_no) 호출 가능.
+        self._transport_bridge = _TransportBridge()
+        self._transport_channel = QWebChannel()
+        self._transport_channel.registerObject("bridge", self._transport_bridge)
+        self._transport_3d_web.page().setWebChannel(self._transport_channel)
+        self._transport_bridge.truck_clicked_in_3d.connect(
+            self._on_3d_truck_clicked
+        )
+        # 초기 안내 HTML — Three.js 스타일에 맞춘 어두운 테마
+        empty_html = (
+            "<html><body style='margin:0;padding:0;background:#0d1117;'>"
+            "<div style='display:flex;align-items:center;justify-content:center;"
+            "height:100vh;font-family:Segoe UI,sans-serif;"
+            "color:#8b949e;font-size:16px;'>"
+            "<div style='text-align:center;'>"
+            "<div style='font-size:56px;margin-bottom:20px;'>🚚</div>"
+            "<div style='color:#e6edf3;font-size:18px;font-weight:600;'>"
+            "운송 적재 3D 도식</div>"
+            "<div style='margin-top:14px;color:#6e7681;font-size:14px;'>"
+            "우측에서 <span style='color:#58a6ff;font-weight:500;'>"
+            "[▷ 운송 계산 실행]</span> 버튼을 눌러주세요"
+            "</div></div></div></body></html>"
+        )
+        self._transport_3d_web.setHtml(empty_html)
+
         return page
+
+    def _on_transport_left_toggle(self, checked: bool) -> None:
+        """[2026-05-27] 운송 탭 좌측 입력 패널 접기 / 펼치기 토글."""
+        if not hasattr(self, '_transport_splitter'):
+            return
+        sizes = self._transport_splitter.sizes()
+        if checked:
+            # 접기 — 좌측 0, 그 폭을 중·우에 분배
+            if sizes[0] > 0:
+                self._transport_left_saved_size = sizes[0]
+            extra = sizes[0]
+            self._transport_splitter.setSizes(
+                [0, sizes[1] + int(extra * 0.6), sizes[2] + int(extra * 0.4)]
+            )
+            self._transport_left_toggle_btn.setText("▶ 입력 패널 펼치기")
+        else:
+            # 펼치기 — 저장된 사이즈 복원
+            saved = getattr(self, '_transport_left_saved_size', 320)
+            mid_take = saved * 6 // 10
+            right_take = saved - mid_take
+            self._transport_splitter.setSizes(
+                [saved, max(200, sizes[1] - mid_take), max(200, sizes[2] - right_take)]
+            )
+            self._transport_left_toggle_btn.setText("◀ 입력 패널 접기")
+
+    def _on_transport_pack_updated(self, pack, sp) -> None:
+        """[Phase C] 운송 패널 계산 완료 → center pane 3D 도식 갱신.
+
+        TransportTab 의 transport_pack_updated 신호에 연결. PackResult + SpacingParams
+        를 받아 draw_loaded_3d_view 로 Plotly Figure 생성 후 임시 HTML 파일에
+        저장하고 WebEngineView 에 file:// URL 로 로드.
+
+        [Phase E] 최근 pack/sp 를 캐시해두면 회차 클릭 시 강조 재렌더 시 사용.
+        회차별 비용 (trip_costs) 도 운송 패널의 마지막 economics 결과에서 추출.
+        """
+        # Phase E — 강조 재렌더용 캐시
+        self._last_transport_pack = pack
+        self._last_transport_sp = sp
+        self._render_transport_3d(pack, sp, highlight_trip_no=None)
+
+    def _on_transport_trip_clicked(self, trip_no: int) -> None:
+        """[Phase E + Three.js 마이그레이션] 회차표 행 클릭 → JS 함수 호출로
+        ① 빨간 outline 강조 + ② 카메라 평행이동 (X·Z 만, 거리·각도·Y 그대로).
+        둘 다 페이지 reload 없이 — JS API 만 호출.
+        """
+        try:
+            page = self._transport_3d_web.page()
+            page.runJavaScript(
+                f"window.highlightTrip({int(trip_no)}); "
+                f"window.focusTrip({int(trip_no)});"
+            )
+        except Exception as e:
+            print(f"[운송 3D 강조 실패] {type(e).__name__}: {e}", flush=True)
+
+    def _on_3d_truck_clicked(self, trip_no: int) -> None:
+        """[양방향 동기화 — 2026-05-27] 3D 트럭 클릭 → 회차표·경제성표 행 선택.
+
+        TransportTab.select_trip 이 통합 진입점 — 회차표·경제성표 둘 다 선택 + 3D
+        강조 신호 emit. 무한 루프 없음 (selectRow 가 cellClicked 발화 안 함).
+        """
+        try:
+            tt = getattr(self._analysis_panel, '_transport_tab', None)
+            if tt is not None and hasattr(tt, 'select_trip'):
+                tt.select_trip(int(trip_no))
+        except Exception as e:
+            print(f"[3D→회차표 동기화 실패] {type(e).__name__}: {e}", flush=True)
+
+    def _render_transport_3d(self, pack, sp, highlight_trip_no=None) -> None:
+        """[Three.js 마이그레이션 — 2026-05-26] 운송 3D 도식 렌더.
+
+        - modular_designer.html 동일 스타일 (어두운 배경 + 그림자 + OrbitControls)
+        - 회차 클릭 시 페이지 reload 없이 JS 함수 호출로 부분 갱신 → 카메라 보존
+        - 마우스: 왼클릭=회전, 우클릭=이동, 휠=줌
+
+        Phase C 의 _on_transport_pack_updated 와 Phase E 강조 재렌더(=초기 강조)가
+        같은 함수를 호출. 단 *클릭 강조* 는 별도 _on_transport_trip_clicked 가
+        JS runJavaScript 로 부분 갱신 → 이 함수는 *새 pack 결과 도착 시* 한 번 호출.
+        """
+        try:
+            from modular_3d.transport.loaded_3d_three import (
+                build_loaded_3d_three_html,
+            )
+            from PyQt5.QtCore import QUrl
+
+            if pack is None or not pack.trips:
+                empty_html = (
+                    "<div style='display:flex;align-items:center;justify-content:center;"
+                    "height:100vh;font-family:sans-serif;background:#0d1117;"
+                    "color:#8b949e;font-size:16px;'>"
+                    "<div style='text-align:center;'>"
+                    "<div style='font-size:48px;margin-bottom:20px;'>🚚</div>"
+                    "<div><b>회차 없음</b></div>"
+                    "<div style='margin-top:10px;color:#6e7681;font-size:14px;'>"
+                    "운송 가능 화물이 없거나 패킹 결과가 비어있습니다"
+                    "</div></div></div>"
+                )
+                self._transport_3d_web.setHtml(empty_html)
+                return
+
+            # 회차별 비용 추출
+            trip_costs = {}
+            try:
+                tt = getattr(self._analysis_panel, '_transport_tab', None)
+                last_eco = getattr(tt, '_last_eco', None) if tt else None
+                if last_eco is not None:
+                    for tc in last_eco.trips:
+                        trip_costs[tc.trip_no] = tc.cost_krw
+            except Exception:
+                trip_costs = {}
+
+            html = build_loaded_3d_three_html(
+                pack.trips, sp,
+                highlight_trip_no=highlight_trip_no,
+                trip_costs=trip_costs,
+            )
+            path = self._write_transport_3d_temp_html(html)
+            if path:
+                self._transport_3d_web.load(QUrl.fromLocalFile(path))
+            else:
+                self._transport_3d_web.setHtml(html)
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            print(f"[운송 3D 렌더 실패] {tb}", flush=True)
+            err_html = (
+                "<div style='padding:20px;font-family:sans-serif;background:#0d1117;"
+                "color:#f85149;'>"
+                "<b>운송 3D 도식 렌더링 실패</b><br>"
+                f"{type(e).__name__}: {e}<br>"
+                "<small style='color:#8b949e;'>콘솔에서 traceback 확인</small></div>"
+            )
+            try:
+                self._transport_3d_web.setHtml(err_html)
+            except Exception:
+                pass
+
+    def _write_transport_3d_temp_html(self, html: str) -> str:
+        """ASCII 경로 임시 파일에 HTML 저장 — file:// URL 로 로드 가능.
+
+        한글 경로 회피 위해 시스템 temp / 가상드라이브 / ProgramData 폴백.
+        """
+        import tempfile
+        candidates = []
+        sys_tmp = tempfile.gettempdir()
+        if sys_tmp.isascii():
+            candidates.append(sys_tmp)
+        for letter in "QRSTUVWXYZ":
+            if os.path.exists(letter + ":\\"):
+                candidates.append(letter + ":\\Temp")
+                break
+        candidates.append("C:\\ProgramData\\modular3d_temp")
+        for d in candidates:
+            try:
+                os.makedirs(d, exist_ok=True)
+                path = os.path.join(d, "transport_3d_loaded.html")
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(html)
+                if path.isascii():
+                    return path
+            except Exception:
+                continue
+        return ""
 
     def _build_placeholder_tab(self, title_text: str) -> QWidget:
         """빈 탭 — 운송 / 공기 및 접합부 / 최종평가 용. 내부 내용은 추후 추가.
@@ -513,6 +839,11 @@ class MainWindow(QMainWindow):
         # 모든 페이지의 placeholder layout 비우기 — 이전 reparent 잔재 제거
         # (Qt 는 widget 을 다른 layout 에 addWidget 하면 자동 reparent 하므로
         # 명시적 removeWidget 없이 진행 가능. 단, hide 처리만)
+
+        # [2026-05-27] AnalysisPanel 상단 컨트롤 + 탭바 기본 표시. 운송 탭 분기에서만
+        # 다시 hide 한다. 다른 탭(구조해석·물량·접합부 등) 으로 이동 시 자동 복원.
+        if hasattr(self._analysis_panel, 'set_visualization_controls_visible'):
+            self._analysis_panel.set_visualization_controls_visible(True)
 
         # [2026-05-13 접합부조정탭 Phase 4] 직전 탭 추적.
         # 접합부 조정 탭에서 구조해석/물량 탭으로 이동할 때는 본 탭에서 토글/
@@ -606,20 +937,36 @@ class MainWindow(QMainWindow):
             if hasattr(self._analysis_panel, 'select_envelope_case'):
                 self._analysis_panel.select_envelope_case()
         elif idx == TAB_TRANSPORT:
-            # Phase 6: 운송 탭 — 구조해석/물량과 동일하게 _analysis_panel 부착 +
-            # 운송 sub-탭만 보이게.
-            self._transport_center_lay.addWidget(self._canvas_widget)
-            self._transport_center_lay.addWidget(self._deformed_widget)
-            self._deformed_widget.show()
-            self._transport_right_lay.addWidget(self._analysis_panel)
+            # [2026-05-27] 운송 탭 — *좌 입력 / 중 3D / 우 결과* 3 단 분할.
+            # AnalysisPanel 통째 부착 안 함. TransportTab 의 좌·우 영역만 직접
+            # reparent 해서 좌·우 layout 에 부착. AnalysisPanel 의 메서드는
+            # _transport_tab 접근자로 호출.
+            self._transport_center_lay.addWidget(self._transport_3d_web)
+            if hasattr(self, "_deformed_widget"):
+                self._deformed_widget.hide()
+            tt = getattr(self._analysis_panel, '_transport_tab', None)
+            if tt is not None:
+                if hasattr(tt, '_left_pane_scroll'):
+                    self._transport_left_lay.addWidget(tt._left_pane_scroll)
+                if hasattr(tt, '_right_pane_scroll'):
+                    self._transport_right_lay.addWidget(tt._right_pane_scroll)
             if hasattr(self._dim_panel, 'deactivate'):
                 self._dim_panel.deactivate()
             self._dim_panel.setVisible(False)
+            # 운송 탭에선 AnalysisPanel 자체가 부착 안 됐지만 set_visible_subtabs /
+            # set_visualization_controls_visible 메서드는 *AnalysisPanel 객체* 에
+            # 호출해 내부 상태만 갱신. 부착 안 됐어도 sub-탭 visibility 는 다음
+            # 탭 진입 시 영향.
             if hasattr(self._analysis_panel, 'set_visible_subtabs'):
                 self._analysis_panel.set_visible_subtabs(
                     show_summary=False, show_member=False,
                     show_quantity=False, show_transport=True,
                 )
+            # [2026-05-27] 운송 탭에선 *AnalysisPanel 통째* 가 부착 안 되니 이미
+            # 시각 컨트롤이 화면에 없지만 — 메서드 호출은 *다른 탭 복귀 시 복원
+            # 동작* 의 한쪽 짝이라 그대로 유지.
+            if hasattr(self._analysis_panel, 'set_visualization_controls_visible'):
+                self._analysis_panel.set_visualization_controls_visible(False)
             # [2026-05-24 프로젝트 설정 2단계] 운송 탭 진입 시 공통 설정값을
             # 운송 옵션 위젯에 주입 + 읽기전용(회색)으로 갱신. 운송 계산은
             # 위젯 값을 읽으므로, 계산 실행 전에 먼저 동기화한다.
@@ -635,11 +982,57 @@ class MainWindow(QMainWindow):
             if design_results and hasattr(self._analysis_panel, 'populate_transport'):
                 policy = getattr(self._analysis_panel, '_current_policy', '3종')
                 self._analysis_panel.populate_transport(design_results, policy)
-        elif idx in (TAB_JOINT_AIR, TAB_FINAL):
-            # 공기 및 접합부 / 최종평가 — 빈 탭. 공유 위젯 X.
+        elif idx == TAB_SCHEDULE:
+            # [2026-05-27 공정표 이식 Phase A·C] SchedulePanel 자체가 자기 컨텐츠를
+            # 가진 위젯이므로 공유 위젯 reparent 없음. 다만 다른 공유 위젯
+            # (치수 패널·변형형상)은 다른 탭과 동일하게 정리한다.
             if hasattr(self._dim_panel, 'deactivate'):
                 self._dim_panel.deactivate()
             self._dim_panel.setVisible(False)
+            if hasattr(self, "_deformed_widget"):
+                self._deformed_widget.hide()
+            # [Phase C] 진입 즉시 자동주입 — 현재 씬 상태를 어댑터로 직렬화 후
+            # SchedulePanel.apply_scene_data() 호출. 페이지 미로드 상태면
+            # SchedulePanel 가 큐에 쌓아뒀다가 loadFinished 시 적용한다.
+            try:
+                from modular_3d.schedule.schedule_adapter import build_scene_data
+                comps = list(self._scene.components.values()) if hasattr(self._scene, 'components') else []
+                data = build_scene_data(comps, project_settings=self._project_settings)
+                self._tab_schedule.apply_scene_data(data)
+            except Exception as e:
+                dprint('SCHEDULE', f'[SCHEDULE] 자동주입 실패: {e}')
+        elif idx == TAB_EVALUATION:
+            # [2026-05-27 평가 탭 Phase J·M] EvaluationPanel — 공유 위젯 X.
+            # 진입 즉시 evaluation_adapter 가 scene·ProjectSettings·물량·운송·공정표
+            # 결과를 모아 dict 산출 → 패널의 apply_data 로 주입.
+            if hasattr(self._dim_panel, 'deactivate'):
+                self._dim_panel.deactivate()
+            self._dim_panel.setVisible(False)
+            if hasattr(self, "_deformed_widget"):
+                self._deformed_widget.hide()
+            try:
+                from modular_3d.evaluation.evaluation_adapter import build_evaluation_data
+                comps = list(self._scene.components.values()) if hasattr(self._scene, 'components') else []
+                # 물량 — analysis_panel._quantity_reports (정책별 QuantityReport).
+                # 정책 — analysis_panel._current_policy (사용자가 물량 탭에서 선택).
+                quantity_reports = getattr(self._analysis_panel, '_quantity_reports', None) or None
+                current_policy = getattr(self._analysis_panel, '_current_policy', '3종')
+                # 운송 — pack 은 self._last_transport_pack, economics 는 transport_panel._last_eco.
+                transport_pack = getattr(self, '_last_transport_pack', None)
+                transport_tab = getattr(self._analysis_panel, '_transport_tab', None)
+                transport_eco = getattr(transport_tab, '_last_eco', None) if transport_tab is not None else None
+                data = build_evaluation_data(
+                    components=comps,
+                    project_settings=self._project_settings,
+                    quantity_reports=quantity_reports,
+                    current_policy=current_policy,
+                    transport_pack=transport_pack,
+                    transport_eco=transport_eco,
+                    schedule_payload=getattr(self, '_schedule_payload', None) or None,
+                )
+                self._tab_evaluation.apply_data(data)
+            except Exception as e:
+                dprint('EVALUATION', f'[EVALUATION] 데이터 수집 실패: {e}')
 
     # ── 디자인 탭 복귀 시 3D 뷰 정리 ────────────────────
 

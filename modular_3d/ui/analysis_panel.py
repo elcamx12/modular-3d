@@ -213,19 +213,21 @@ class AnalysisPanel(QWidget):
         root.setContentsMargins(4, 4, 4, 4)
 
         # ── 하중조합 콤보 (2026-05-13 표기 명확화) ──────────
-        # 표시: "1.2D + 1.6L (중력)" 같은 실제 조합식. 내부 키는 itemData 에.
-        # 비활성 항목(추후 구현 KDS 추가 조합) 도 함께 보여 사용자에게 향후
-        # 지원 예정을 안내.
-        case_row = QHBoxLayout()
+        # [2026-05-27] 운송 sub-탭에서 hide 가능하도록 행 전체를 QWidget 으로 감쌈.
+        self._case_row_widget = QWidget()
+        case_row = QHBoxLayout(self._case_row_widget)
+        case_row.setContentsMargins(0, 0, 0, 0)
         case_row.addWidget(QLabel("하중조합:"))
         self._case_combo = QComboBox()
         self._populate_case_combo_initial()
         self._case_combo.currentIndexChanged.connect(self._on_case_index_changed)
         case_row.addWidget(self._case_combo, stretch=1)
-        root.addLayout(case_row)
+        root.addWidget(self._case_row_widget)
 
         # ── 컨투어 종류 (Phase 4-C) ────────────────────────
-        contour_row = QHBoxLayout()
+        self._contour_row_widget = QWidget()
+        contour_row = QHBoxLayout(self._contour_row_widget)
+        contour_row.setContentsMargins(0, 0, 0, 0)
         contour_row.addWidget(QLabel("컨투어:"))
         self._contour_combo = QComboBox()
         self._contour_combo.addItems([
@@ -234,12 +236,12 @@ class AnalysisPanel(QWidget):
         ])
         self._contour_combo.currentTextChanged.connect(self._on_contour_changed)
         contour_row.addWidget(self._contour_combo, stretch=1)
-        root.addLayout(contour_row)
+        root.addWidget(self._contour_row_widget)
 
         # ── 시각화 토글 ─────────────────────────────────
-        # [2026-05-13 접합부조정탭] 다이어프램 토글은 JointEditPanel 로 이동.
-        # DOF 색 모드는 디버깅 시 자유도 묶음 종류를 확인할 때 ON.
-        toggle_row = QHBoxLayout()
+        self._toggle_row_widget = QWidget()
+        toggle_row = QHBoxLayout(self._toggle_row_widget)
+        toggle_row.setContentsMargins(0, 0, 0, 0)
         self._dof_color_cb = QCheckBox("자유도 색")
         self._dof_color_cb.setToolTip(
             "자유도 묶음을 DOF 수별로 분리 색상 표시 "
@@ -248,7 +250,7 @@ class AnalysisPanel(QWidget):
         self._dof_color_cb.toggled.connect(self.dof_color_toggle.emit)
         toggle_row.addWidget(self._dof_color_cb)
         toggle_row.addStretch(1)
-        root.addLayout(toggle_row)
+        root.addWidget(self._toggle_row_widget)
 
         self._tabs = QTabWidget()
         root.addWidget(self._tabs)
@@ -353,6 +355,22 @@ class AnalysisPanel(QWidget):
                 if flags[i]:
                     self._tabs.setCurrentIndex(i)
                     break
+
+    def set_visualization_controls_visible(self, show: bool) -> None:
+        """[2026-05-27] 상단 *하중조합 / 컨투어 / 자유도 색* 위젯 + 탭바 일괄 hide.
+
+        운송 sub-탭에선 이 컨트롤들이 의미 없어 사용자가 제거 요청. 다른 탭(구조
+        해석·물량) 복귀 시 show=True 로 다시 표시.
+        """
+        for attr in ("_case_row_widget", "_contour_row_widget", "_toggle_row_widget"):
+            w = getattr(self, attr, None)
+            if w is not None:
+                w.setVisible(show)
+        # sub-탭 헤더(QTabBar) — 운송만 보일 땐 "운송" 라벨 의미 없어서 함께 hide
+        if hasattr(self, "_tabs") and self._tabs is not None:
+            tb = self._tabs.tabBar()
+            if tb is not None:
+                tb.setVisible(show)
 
     def _build_quantity_tab(self):
         """물량산출 탭 위젯 구성."""

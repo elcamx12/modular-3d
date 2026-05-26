@@ -77,18 +77,83 @@ def lookup_freight_rate(round_trip_km: float, col: str) -> int:
 
 @dataclass(frozen=True)
 class EconomicsOptions:
-    """운임 계산 옵션. 운송탭/프로젝트 설정 위젯과 매핑.
+    """운임 계산 옵션 — *단일 진실원*.
+
+    [통합 — 2026-05-27]
+    이전엔 본 클래스(UI 운임 표시용) 와 transport/packer_core.py 의 EcoOptions
+    (패커 트럭 선정용) 가 *별개로 따로* 살았다. 둘 다 같은 의미였지만 필드값이
+    어긋나서 패커의 비용 인식과 사용자가 보는 운임이 일치하지 않는 버그가
+    있었다. 본 클래스로 일원화 — 패커도 본 클래스를 직접 사용.
 
     [운임 방식]
     - cost_mode='freight_table' (기본): 요금표 자동 조회. km단가 미사용.
     - cost_mode='per_km': 트럭 종류별 km단가 × 왕복거리.
+    - cost_mode='fixed_per_trip': 트럭 종류별 1회 고정비(거리 무관, 회차당).
     """
     distance_km: float = 30.0             # 편도 거리 (운임은 항상 왕복=편도×2)
-    cost_mode: str = "freight_table"      # 'freight_table' | 'per_km'
-    # 트럭 종류별 km단가 (per_km 방식에서 사용)
+    cost_mode: str = "freight_table"      # 'freight_table' | 'per_km' | 'fixed_per_trip'
+    # 트럭 종류별 km단가 (per_km 방식)
     lowbed_per_km_krw: float = 3500.0     # 저상/초저상 트레일러
     extendable_per_km_krw: float = 5000.0 # 광폭(확장형) 트레일러
     aframe_per_km_krw: float = 5000.0     # A-frame 트레일러
+    # 트럭 종류별 1회 고정 운송비 (fixed_per_trip 방식)
+    lowbed_fixed_krw: float = 600000.0    # 저상/초저상
+    extendable_fixed_krw: float = 700000.0  # 광폭(확장형)
+    aframe_fixed_krw: float = 800000.0    # A-frame
+    # (참고) freight_table 모드는 FREIGHT_RATE_TABLE + 거리·트럭종류로 자동 조회.
+
+    # ── 패커 측 호환 헬퍼 (구 EcoOptions API) ──────────────────────
+    @property
+    def round_trip_km(self) -> float:
+        """왕복 거리 (편도 × 2)."""
+        return self.distance_km * 2.0
+
+    @property
+    def fixed_per_trip_rate(self) -> float:
+        """fixed_per_trip 모드의 *트럭 종류 평균* 비용 (구 EcoOptions 호환용).
+
+        호출자가 트럭 type 을 모를 때 사용. 실제 패커 점수 계산은
+        fixed_rate_for_truck_type(truck_type) 으로 트럭별 차별화.
+        """
+        return (self.lowbed_fixed_krw + self.extendable_fixed_krw
+                + self.aframe_fixed_krw) / 3.0
+
+    def fixed_rate_for_truck_type(self, truck_type: str) -> float:
+        """트럭 종류별 1회 고정비 (fixed_per_trip / freight_table 의 *예측치*).
+
+        [freight_table 모드도 본 메서드로 *대표 단가* 반환]
+        패커가 트럭 선정 점수를 산정할 때 *대략적 비용* 이 필요한데, 요금표는
+        무게 컬럼이 결정돼야 정확. 패킹 *전* 에 무게 모르므로 본 *고정 단가*
+        를 freight_table 모드의 대표값으로 사용.
+        """
+        table = {
+            "lowbed": self.lowbed_fixed_krw,
+            "extendable": self.extendable_fixed_krw,
+            "aframe": self.aframe_fixed_krw,
+        }
+        return table.get(truck_type, self.fixed_per_trip_rate)
+
+    def km_rate_for_truck(self, truck) -> float:
+        """트럭별 km단가 (per_km 모드)."""
+        table = {
+            "lowbed": self.lowbed_per_km_krw,
+            "extendable": self.extendable_per_km_krw,
+            "aframe": self.aframe_per_km_krw,
+        }
+        return table.get(truck.truck_type, self.lowbed_per_km_krw)
+
+    # ── 구 EcoOptions 필드명 alias (테스트 호환) ──────────────────
+    @property
+    def lowbed_km_rate(self) -> float:
+        return self.lowbed_per_km_krw
+
+    @property
+    def extendable_km_rate(self) -> float:
+        return self.extendable_per_km_krw
+
+    @property
+    def aframe_km_rate(self) -> float:
+        return self.aframe_per_km_krw
 
 
 @dataclass(frozen=True)
@@ -144,6 +209,15 @@ def _per_km_rate(options: EconomicsOptions, truck_type: str) -> float:
     return options.lowbed_per_km_krw
 
 
+def _fixed_per_trip_rate(options: EconomicsOptions, truck_type: str) -> float:
+    """트럭 종류 → 1회 고정 운송비 (거리 무관)."""
+    if truck_type == "extendable":
+        return options.extendable_fixed_krw
+    if truck_type == "aframe":
+        return options.aframe_fixed_krw
+    return options.lowbed_fixed_krw
+
+
 # ── 회차 1 건 운임 ───────────────────────────────────────
 def compute_trip_cost(
     trip: Trip, options: EconomicsOptions,
@@ -161,6 +235,16 @@ def compute_trip_cost(
             truck_type=tr.truck_type, cost_krw=cost,
             pricing_mode="freight_table",
             distance_km=distance_total_km, rate_label="요금표",
+        )
+
+    # ③ 트레일러별 1회 고정비 — 거리 무관, 회차당 고정
+    if options.cost_mode == "fixed_per_trip":
+        cost = _fixed_per_trip_rate(options, tr.truck_type)
+        return TripCost(
+            trip_no=trip.trip_no, truck_name=tr.name,
+            truck_type=tr.truck_type, cost_krw=cost,
+            pricing_mode="fixed_per_trip",
+            distance_km=distance_total_km, rate_label="1회 고정",
         )
 
     # ② 트레일러별 km단가 방식 — 종류별 단가 × 왕복거리

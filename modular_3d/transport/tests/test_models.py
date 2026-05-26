@@ -5,7 +5,8 @@
 - B-15: 잘못된 truck_type/section_type/panel_kind 가 ValueError.
 - A-1: Panel(kind="floor", wall_segments=N) 0/1/2/3/4 면 모두 생성 가능.
 - A-1 일반화 weight: 다면 종속 floor 의 weight 가 합산 식과 일치.
-- Truck 신규 필드(curb_weight_kg, trailer_length_mm, active) 기본값/검증.
+- Truck 신규 필드(curb_weight_kg, active) 기본값/검증.
+- SiteLimit 검증: None=해당없음, 음수/0 불가.
 - WallSegment 검증: side 범위, 변 길이 초과 시 ValueError.
 """
 from __future__ import annotations
@@ -13,7 +14,7 @@ from __future__ import annotations
 import pytest
 
 from modular_3d.transport.models import (
-    Section, WallSegment, Module, Panel, Truck, RoadClass, SpacingParams,
+    Section, WallSegment, Module, Panel, Truck, SiteLimit, SpacingParams,
 )
 
 
@@ -77,15 +78,6 @@ def test_module_extra_weight_negative_raises():
         Module(name="m", width=1000, length=1000, height=1000,
                column_section=SHS_200, beam_section=SHS_150,
                extra_weight_kg=-1)
-
-
-def test_module_is_wide():
-    m_narrow = Module(name="n", width=3000, length=6000, height=3400,
-                      column_section=SHS_200, beam_section=SHS_150)
-    m_wide = Module(name="w", width=3001, length=6000, height=3400,
-                    column_section=SHS_200, beam_section=SHS_150)
-    assert m_narrow.is_wide() is False
-    assert m_wide.is_wide() is True
 
 
 # ─────────────────────────── Panel (A-1) ───────────────────────────
@@ -184,9 +176,8 @@ def test_wall_segment_negative_offset_raises():
 def test_truck_basic_construction_with_new_fields():
     t = Truck(name="t", truck_type="lowbed",
               max_length=12000, max_width=3000, max_height=4500, max_weight=24000,
-              curb_weight_kg=14000, trailer_length_mm=13000, active=True)
+              curb_weight_kg=14000, active=True)
     assert t.curb_weight_kg == 14000
-    assert t.trailer_length_mm == 13000
     assert t.active is True
 
 
@@ -208,13 +199,21 @@ def test_truck_default_active_true():
               max_length=12000, max_width=3000, max_height=4500, max_weight=24000)
     assert t.active is True
     assert t.curb_weight_kg == 0.0
-    assert t.trailer_length_mm == 0.0
 
 
-# ─────────────────────────── RoadClass / SpacingParams ───────────────────────────
-def test_road_invalid_dimension_raises():
+# ─────────────────────────── SiteLimit / SpacingParams ───────────────────────────
+def test_site_limit_defaults_all_none():
+    s = SiteLimit()
+    assert s.max_gvw_kg is None
+    assert s.max_width_mm is None
+    assert s.max_height_mm is None
+
+
+def test_site_limit_negative_raises():
     with pytest.raises(ValueError):
-        RoadClass(name="r", max_length=-1, max_width=3000, max_height=4500, max_weight=40000)
+        SiteLimit(max_gvw_kg=-1)
+    with pytest.raises(ValueError):
+        SiteLimit(max_width_mm=0)
 
 
 def test_spacing_defaults():

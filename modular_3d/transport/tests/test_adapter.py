@@ -352,3 +352,29 @@ def test_build_comp_meta_alpha_label():
     # cid1 = 'a', cid2 = 'b' (xy 정렬 기준)
     labels = sorted({meta[c][0] for c in (cid1, cid2)})
     assert labels == ["a", "b"]
+
+
+# ── D단계: 단면 변환 일반화 (각형강관 + H형강) ─────────────
+def test_to_transport_section_shs():
+    """각형강관 단면 변환 — type=SHS, w/h/t 매핑."""
+    shs = find_section_by_name("SHS 200x200x8") or SHS_CATALOG[0]
+    ts = to_transport_section(shs)
+    assert ts.section_type == "SHS"
+    assert ts.width == float(shs.w)
+    assert ts.height == float(shs.h)
+    assert ts.thickness == float(shs.t)
+    assert ts.flange_thickness == 0.0
+    assert ts.weight_per_m == float(shs.weight_per_m_kg)
+
+
+def test_to_transport_section_h():
+    """H형강 단면 변환 — type=H, B/H/t1/t2 매핑 + 단위중량 일치 (버그 수정)."""
+    from modular_3d.카탈로그.h_sections import build_h_catalog
+    h = build_h_catalog()[0]
+    ts = to_transport_section(h)
+    assert ts.section_type == "H"
+    assert ts.width == float(h.B)          # 플랜지 폭
+    assert ts.height == float(h.H)         # 전체 높이
+    assert ts.thickness == float(h.t1)     # 웨브 두께
+    assert ts.flange_thickness == float(h.t2)
+    assert ts.weight_per_m == float(h.weight_per_m_kg)

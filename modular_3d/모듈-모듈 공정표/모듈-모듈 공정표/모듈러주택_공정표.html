@@ -1,0 +1,2460 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>모듈러주택 공정표</title>
+<style>
+  :root {
+    --primary: #1F4E79;
+    --critical: #C00000;
+    --orange: #FF9900;
+    --blue-bar: #4472C4;
+    --yellow: #FFFF00;
+    --light-bg: #F5F8FF;
+    --border: #BFC9D4;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Malgun Gothic', Arial, sans-serif;
+    background: #EDF2F7;
+    color: #1a1a1a;
+    font-size: 13px;
+  }
+
+  /* ── 헤더 ── */
+  .page-header {
+    background: linear-gradient(135deg, #1F4E79 0%, #2E75B6 100%);
+    color: white;
+    padding: 22px 32px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    box-shadow: 0 3px 12px rgba(0,0,0,0.25);
+  }
+  .page-header h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.3px; }
+  .page-header p  { font-size: 12px; opacity: 0.8; margin-top: 3px; }
+  .badge {
+    background: rgba(255,255,255,0.18);
+    border: 1px solid rgba(255,255,255,0.35);
+    border-radius: 20px;
+    padding: 4px 12px;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+
+  .container { max-width: 1500px; margin: 0 auto; padding: 20px 24px; }
+
+  /* ── 카드 ── */
+  .card {
+    background: white;
+    border-radius: 10px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    margin-bottom: 20px;
+    overflow: hidden;
+  }
+  .card-header {
+    padding: 13px 20px;
+    font-weight: 700;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: white;
+  }
+  .card-header.blue   { background: var(--primary); }
+  .card-header.red    { background: #C00000; }
+  .card-header.purple { background: #7030A0; }
+  .card-header.dark   { background: #2E4057; }
+  .card-body { padding: 18px 20px; }
+
+  /* ── 입력 그리드 ── */
+  .input-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 12px;
+  }
+  .input-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .input-group label {
+    font-size: 11px;
+    color: #555;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+  .input-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .input-row input {
+    width: 90px;
+    padding: 7px 10px;
+    border: 2px solid #D4AA00;
+    border-radius: 6px;
+    background: #FFFFF0;
+    font-size: 14px;
+    font-weight: 700;
+    color: #0000CC;
+    text-align: right;
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+  .input-row input:focus {
+    border-color: #FF9900;
+    box-shadow: 0 0 0 3px rgba(255,153,0,0.2);
+  }
+  .input-row .unit { color: #666; font-size: 12px; }
+  .input-row .calc-val {
+    font-size: 13px; font-weight: 700; color: var(--primary);
+    background: #EEF4FF; border-radius: 5px;
+    padding: 7px 10px; min-width: 90px; text-align: right;
+    border: 1px solid #C5D8F0;
+  }
+  .note-text { font-size: 10px; color: #888; margin-top: 2px; }
+  /* 설명 글씨는 기본 숨김 → 상단 '설명 보기' 버튼으로 토글 */
+  body:not(.show-notes) .note-text { display: none; }
+  .note-toggle-btn { margin-left:auto; padding:6px 14px; border:1px solid var(--primary,#385723); background:#fff; color:var(--primary,#385723); border-radius:6px; font-size:12px; font-weight:700; cursor:pointer; }
+  body.show-notes .note-toggle-btn { background:var(--primary,#385723); color:#fff; }
+  .warn-text { font-size: 10px; color: #C00000; margin-top: 2px; font-weight: 600; }
+
+  /* ── 모듈 타입 테이블 ── */
+  .mod-table { width:100%; border-collapse:collapse; font-size:12px; margin-top:8px; }
+  .mod-table th { background:#2E4057; color:white; padding:7px 6px; text-align:center; font-size:11px; white-space:nowrap; }
+  .mod-table td { padding:4px 5px; border-bottom:1px solid #EEE; text-align:center; vertical-align:middle; }
+  .mod-table tr:nth-child(even) td { background:#FAFAFA; }
+  .mod-table .total-row td { background:#EEF2FF; font-weight:700; border-top:2px solid #4472C4; color:#1F4E79; }
+  .mod-table input[type=text], .mod-table input[type=number] {
+    width:100%; padding:4px 5px; border:1px solid #D4AA00; border-radius:4px;
+    font-size:11px; text-align:center; background:#FFFFF0; color:#0000CC; font-weight:700; outline:none;
+  }
+  .mod-table input[type=text] { text-align:left; }
+  .mod-del-btn { background:none; border:1px solid #FFCDD2; border-radius:4px; color:#C00000; cursor:pointer; padding:2px 7px; font-size:12px; }
+  .mod-del-btn:hover { background:#FFEBEE; }
+  .mod-add-btn { margin-top:8px; padding:6px 14px; background:#4472C4; color:white; border:none; border-radius:6px; cursor:pointer; font-size:12px; font-weight:700; }
+  .mod-add-btn:hover { background:#2E75B6; }
+  .input-row select {
+    padding: 7px 10px;
+    border: 2px solid #D4AA00;
+    border-radius: 6px;
+    background: #FFFFF0;
+    font-size: 12px;
+    font-weight: 700;
+    color: #0000CC;
+    outline: none;
+    cursor: pointer;
+    min-width: 200px;
+    transition: border-color 0.2s;
+  }
+  .input-row select:focus { border-color: #FF9900; }
+  .input-row select.region-select { min-width: 180px; }
+
+  /* ── 결과 요약 카드 ── */
+  .summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  .summary-item {
+    background: var(--light-bg);
+    border-radius: 8px;
+    padding: 14px 16px;
+    border-left: 4px solid var(--primary);
+    position: relative;
+  }
+  .summary-item.critical { border-left-color: var(--critical); }
+  .summary-item.orange   { border-left-color: var(--orange); }
+  .summary-item .s-label { font-size: 11px; color: #666; margin-bottom: 4px; }
+  .summary-item .s-value { font-size: 22px; font-weight: 700; color: var(--primary); }
+  .summary-item.critical .s-value { color: var(--critical); }
+  .summary-item.orange   .s-value { color: #CC7A00; }
+  .summary-item .s-unit  { font-size: 11px; color: #999; margin-left: 3px; }
+
+  /* ── 공기산정 테이블 ── */
+  .schedule-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .schedule-table th {
+    background: var(--primary);
+    color: white;
+    padding: 9px 10px;
+    text-align: center;
+    font-weight: 600;
+    white-space: nowrap;
+    border: 1px solid #1A3F66;
+  }
+  .schedule-table td {
+    padding: 8px 10px;
+    border: 1px solid #DDE4ED;
+    vertical-align: middle;
+  }
+  .schedule-table tr:nth-child(even) td { background: #F7FAFF; }
+  .schedule-table tr:hover td { background: #EDF4FF; }
+  .schedule-table .no-col   { width: 36px; text-align: center; font-weight: 700; color: #555; }
+  .schedule-table .num-col  { text-align: right; font-variant-numeric: tabular-nums; }
+  .schedule-table .note-col { font-size: 10px; color: #777; }
+  .schedule-table .critical-row td { background: #FFF5F5 !important; }
+  .schedule-table .critical-row .task-name { color: var(--critical); font-weight: 700; }
+  .schedule-table .orange-row td { background: #FFFAF0 !important; }
+  .schedule-table .orange-row .task-name { color: #CC7700; font-weight: 700; }
+  .schedule-table .parallel-badge {
+    display: inline-block;
+    background: #D5E8D4;
+    color: #2E7D32;
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-size: 9px;
+    font-weight: 700;
+    margin-left: 4px;
+  }
+  .schedule-table .critical-badge {
+    display: inline-block;
+    background: #FFE0E0;
+    color: var(--critical);
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-size: 9px;
+    font-weight: 700;
+    margin-left: 4px;
+  }
+  .total-row td {
+    background: #1F4E79 !important;
+    color: white !important;
+    font-weight: 700;
+    font-size: 13px;
+  }
+
+  /* ── 바차트 ── */
+  .gantt-wrapper { overflow-x: auto; padding-bottom: 8px; }
+  .gantt-container {
+    min-width: 900px;
+    position: relative;
+  }
+  .gantt-header {
+    display: flex;
+    margin-left: 260px;
+    margin-bottom: 0;
+  }
+  .gantt-month {
+    flex: 1;
+    min-width: 56px;
+    text-align: center;
+    padding: 5px 2px;
+    background: var(--primary);
+    color: white;
+    font-size: 10px;
+    font-weight: 700;
+    border-right: 1px solid rgba(255,255,255,0.2);
+  }
+  .gantt-row {
+    display: flex;
+    align-items: center;
+    border-bottom: 1px solid #E5EAF0;
+    min-height: 34px;
+  }
+  .gantt-row:hover { background: #F0F5FF; }
+  .gantt-label {
+    width: 260px;
+    min-width: 260px;
+    padding: 6px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    border-right: 2px solid #DDE4ED;
+    overflow: hidden;
+  }
+  .gantt-label .g-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    flex: 1;
+  }
+  .gantt-label .g-parallel {
+    background: #D5E8D4;
+    color: #2E7D32;
+    border-radius: 3px;
+    padding: 1px 4px;
+    font-size: 9px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  .gantt-label .g-no {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 700;
+    color: white;
+    flex-shrink: 0;
+  }
+  .gantt-label .g-no.critical { background: var(--critical); }
+  .gantt-label .g-no.normal   { background: var(--blue-bar); }
+  .gantt-label .g-no.orange   { background: var(--orange); }
+  .gantt-track {
+    flex: 1;
+    position: relative;
+    height: 34px;
+    overflow: hidden;
+  }
+  /* 주 구분선 */
+  .gantt-track-bg {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    pointer-events: none;
+  }
+  .gantt-bar-wrap {
+    position: absolute;
+    top: 0; left: 0; width: 100%; height: 100%;
+  }
+  .gantt-bar {
+    position: absolute;
+    height: 20px;
+    top: 7px;
+    border-radius: 3px;
+    transition: all 0.3s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 9px;
+    color: white;
+    font-weight: 700;
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    cursor: pointer;
+  }
+  .gantt-bar:hover { filter: brightness(1.1); transform: scaleY(1.15); }
+  .gantt-bar.critical { background: linear-gradient(90deg, #C00000, #E53935); }
+  .gantt-bar.normal   { background: linear-gradient(90deg, #2962B0, #4472C4); }
+  .gantt-bar.orange   { background: linear-gradient(90deg, #CC7700, #FF9900); }
+  .gantt-bar.parallel-bar { opacity: 0.8; }
+  .gantt-milestone {
+    position: absolute;
+    top: 5px;
+    width: 0; height: 0;
+    border-left: 8px solid transparent;
+    border-right: 8px solid transparent;
+    border-top: 14px solid #7030A0;
+    transform: translateX(-50%);
+    cursor: pointer;
+    z-index: 10;
+  }
+  .gantt-milestone:hover::after {
+    content: attr(data-label);
+    position: absolute;
+    top: -32px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #7030A0;
+    color: white;
+    padding: 3px 7px;
+    border-radius: 4px;
+    font-size: 10px;
+    white-space: nowrap;
+  }
+  /* 월 구분선 */
+  .month-line {
+    position: absolute;
+    top: 0; bottom: 0;
+    width: 1px;
+    background: rgba(0,0,0,0.08);
+    pointer-events: none;
+  }
+  /* 오늘선 */
+  .today-line {
+    position: absolute;
+    top: 0; bottom: 0;
+    width: 2px;
+    background: rgba(255, 60, 60, 0.5);
+    pointer-events: none;
+  }
+
+  /* ── 기간 눈금 ── */
+  .gantt-scale {
+    display: flex;
+    margin-left: 260px;
+    border-top: 1px solid #DDE4ED;
+  }
+  .scale-tick {
+    flex: 1;
+    min-width: 56px;
+    text-align: center;
+    padding: 3px 0;
+    font-size: 9px;
+    color: #888;
+    border-right: 1px solid #E5EAF0;
+  }
+
+  /* ── 마일스톤 목록 ── */
+  .milestone-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .ms-chip {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: #F3EEF8;
+    border: 1px solid #C9A6E0;
+    border-radius: 20px;
+    padding: 6px 14px;
+    font-size: 12px;
+  }
+  .ms-chip .ms-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #7030A0;
+  }
+  .ms-chip .ms-day { font-weight: 700; color: #7030A0; }
+
+  /* ── 범례 ── */
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+  .legend-box { width: 20px; height: 12px; border-radius: 3px; }
+
+  /* ── 탭 ── */
+  .tabs { display: flex; gap: 0; border-bottom: 2px solid #DDE4ED; margin-bottom: 20px; }
+  .tab-btn {
+    padding: 10px 22px;
+    background: none;
+    border: none;
+    font-size: 13px;
+    font-weight: 600;
+    color: #888;
+    cursor: pointer;
+    border-bottom: 3px solid transparent;
+    margin-bottom: -2px;
+    transition: all 0.2s;
+  }
+  .tab-btn.active { color: var(--primary); border-bottom-color: var(--primary); }
+  .tab-btn:hover  { color: var(--primary); }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* ── 툴팁 ── */
+  .tooltip {
+    position: fixed;
+    background: rgba(0,0,0,0.85);
+    color: white;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 11px;
+    pointer-events: none;
+    z-index: 1000;
+    max-width: 260px;
+    line-height: 1.5;
+    display: none;
+  }
+
+  @media (max-width: 768px) {
+    .input-grid { grid-template-columns: 1fr 1fr; }
+    .summary-grid { grid-template-columns: 1fr 1fr; }
+  }
+
+  /* ── 참고자료 버튼 ── */
+  .ref-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    margin-left: 6px;
+    padding: 2px 7px;
+    background: #E8F0FE;
+    color: #1A56DB;
+    border: 1px solid #93B4F7;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s, transform 0.1s;
+    vertical-align: middle;
+    text-decoration: none;
+  }
+  .ref-btn:hover {
+    background: #1A56DB;
+    color: white;
+    transform: translateY(-1px);
+  }
+  .ref-btn-inline {
+    margin-left: 0;
+    margin-top: 5px;
+    display: inline-flex;
+  }
+
+  /* ── 참고자료 모달 ── */
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.65);
+    z-index: 2000;
+    align-items: center;
+    justify-content: center;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal-box {
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.4);
+    max-width: 860px;
+    width: 94vw;
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    background: var(--primary);
+    color: white;
+    flex-shrink: 0;
+  }
+  .modal-header h3 { font-size: 14px; font-weight: 700; }
+  .modal-close {
+    background: rgba(255,255,255,0.2);
+    border: none;
+    color: white;
+    font-size: 18px;
+    cursor: pointer;
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    transition: background 0.2s;
+  }
+  .modal-close:hover { background: rgba(255,255,255,0.4); }
+  .modal-body {
+    overflow-y: auto;
+    padding: 16px 20px;
+    flex: 1;
+  }
+  .modal-page-block {
+    margin-bottom: 20px;
+  }
+  .modal-page-label {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--primary);
+    background: #EEF4FF;
+    border-left: 4px solid var(--primary);
+    padding: 6px 12px;
+    margin-bottom: 8px;
+    border-radius: 0 4px 4px 0;
+  }
+  .modal-page-img {
+    width: 100%;
+    border: 1px solid #DDE4ED;
+    border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  }
+  .modal-no-ref {
+    text-align: center;
+    padding: 40px 20px;
+    color: #888;
+    font-size: 13px;
+  }
+
+  /* ── 날짜 피커 달력 ──────────────────────────────────────────────── */
+  .date-picker-wrapper { position: relative; display: inline-block; }
+  .date-picker-btn {
+    padding: 7px 14px; background: white; border: 1.5px solid #4472C4;
+    border-radius: 6px; cursor: pointer; font-size: 13px; color: #1F4E79;
+    font-weight: 600; display: inline-flex; align-items: center; gap: 5px;
+  }
+  .date-picker-btn:hover { background: #EEF4FF; }
+  .calendar-popup {
+    position: fixed; z-index: 9999;
+    background: white; border: 1px solid #C8D8F0; border-radius: 10px;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.18); padding: 12px 14px;
+    width: 268px; display: none;
+  }
+  .calendar-popup.open { display: block; }
+  .cal-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .cal-nav-btn {
+    background: none; border: 1px solid #ddd; border-radius: 4px;
+    padding: 3px 9px; cursor: pointer; font-size: 13px; color: #444;
+  }
+  .cal-nav-btn:hover { background: #f0f0f0; }
+  .cal-month-label { font-weight: 700; font-size: 14px; color: #1F4E79; }
+  .cal-grid {
+    display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px;
+  }
+  .cal-dow {
+    text-align: center; font-size: 10px; font-weight: 700;
+    padding: 3px 0 5px; color: #666;
+  }
+  .cal-dow:first-child { color: #D32F2F; }
+  .cal-dow:last-child  { color: #1565C0; }
+  .cal-day {
+    text-align: center; padding: 5px 1px 3px; font-size: 12px;
+    cursor: pointer; border-radius: 4px; line-height: 1.2; min-height: 30px;
+  }
+  .cal-day:hover:not(.other-month) { background: #E8F0FE; }
+  .cal-day.other-month { color: #ccc; cursor: default; }
+  .cal-day.today { outline: 1.5px solid #4472C4; outline-offset: -1px; }
+  .cal-day.selected {
+    background: #1F4E79 !important; color: white !important;
+    font-weight: 700; border-radius: 50%;
+  }
+  .cal-day.selected .hol-dot { background: white; }
+  .cal-day.sunday  { color: #D32F2F; }
+  .cal-day.saturday { color: #1565C0; }
+  .cal-day.holiday { color: #D32F2F; font-weight: 600; }
+  .cal-day.other-month.holiday { color: #FFCDD2; }
+  .cal-day.other-month.saturday { color: #BBDEFB; }
+  .hol-dot {
+    width: 4px; height: 4px; background: #D32F2F;
+    border-radius: 50%; margin: 1px auto 0;
+  }
+</style>
+</head>
+<body>
+
+<div class="page-header">
+  <div style="flex:1">
+    <h1>🏗️ 모듈러주택 현장공정표</h1>
+    <p>코어병행형 모듈러 | 공기 + 경제성(노무비·경비) 자동 계산 | 입력 즉시 반영</p>
+  </div>
+  <span class="badge" id="total-badge">총 공사기간 계산 중...</span>
+  <span class="badge" id="region-badge">📍 천안(충남) 기준</span>
+</div>
+
+<div class="container">
+
+  <!-- 입력 검증 경고 -->
+  <div id="inputWarn" style="display:none; margin-bottom:14px; padding:12px 16px; background:#FFEBEE; border:1px solid #EF9A9A; border-radius:8px; color:#B71C1C; font-weight:700; font-size:13px;"></div>
+
+  <!-- 탭 -->
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab('inputs')">📋 변수 입력</button>
+    <button class="tab-btn" onclick="switchTab('schedule')">📊 공기 산정표</button>
+    <button class="tab-btn" onclick="switchTab('gantt')">📅 바차트 (간트)</button>
+    <button class="note-toggle-btn" id="noteToggleBtn" onclick="toggleNotes()">💡 설명 보기</button>
+  </div>
+
+  <!-- ── 탭1: 변수입력 ── -->
+  <div class="tab-panel active" id="tab-inputs">
+
+    <!-- 모델(JSON) 불러오기 -->
+    <div style="margin-bottom:16px; padding:12px 16px; background:#EFF6FF; border:1px solid #BFDBFE; border-radius:8px;">
+      <button class="ref-btn" style="font-size:13px;" onclick="document.getElementById('sceneFileInput').click()">📂 파일 불러오기</button>
+      <input type="file" id="sceneFileInput" accept=".json,application/json" style="display:none" onchange="onSceneFile(event)">
+      <span id="sceneLoadStatus" style="margin-left:10px; font-size:12px; color:#555;">친구 프로그램의 scene.json을 불러오면 층수·모듈수·면적·코어가 자동 입력됩니다. (크레인·속도·가동율·단가는 직접 입력)</span>
+    </div>
+
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:20px;">
+
+      <!-- A. 건물 기본정보 -->
+      <div class="card">
+        <div class="card-header blue">🏢 A. 건물 기본 정보</div>
+        <div class="card-body">
+          <div class="input-grid">
+            <div class="input-group">
+              <label>세대층 수</label>
+              <div class="input-row">
+                <input type="number" id="i_세대층" value="15" min="1" max="50" oninput="calc()">
+                <span class="unit">층</span>
+              </div>
+              <span class="note-text">강봉+수평 볼트 접합 방식 — 전용 구조층 없음</span>
+            </div>
+            <div class="input-group">
+              <label>총 층수 (자동)</label>
+              <div class="input-row">
+                <span class="calc-val" id="r_총층수">15</span>
+                <span class="unit">층</span>
+              </div>
+              <span class="note-text">= 세대층 수 (구조전용층 없음)</span>
+            </div>
+            <div class="input-group">
+              <label>층당 세대 수</label>
+              <div class="input-row">
+                <input type="number" id="i_층당세대" value="2" min="1" max="20" oninput="calc()">
+                <span class="unit">세대</span>
+              </div>
+            </div>
+            <div class="input-group">
+              <label>총 세대 수 (자동)</label>
+              <div class="input-row">
+                <span class="calc-val" id="r_총세대">30</span>
+                <span class="unit">세대</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 모듈 타입별 구성 -->
+          <div style="margin-top:16px; padding-top:14px; border-top:1px solid #EEE;">
+            <div style="font-weight:700; color:#2E4057; font-size:12px; margin-bottom:6px; display:flex; align-items:center; gap:12px;">
+              📦 모듈 타입별 구성 (세대당)
+              <button class="mod-add-btn" onclick="addModuleType()">+ 타입 추가</button>
+            </div>
+            <table class="mod-table">
+              <thead>
+                <tr>
+                  <th style="text-align:left; min-width:90px;">타입명</th>
+                  <th>폭(m)</th>
+                  <th>길이(m)</th>
+                  <th>면적(㎡)</th>
+                  <th>세대당 수</th>
+                  <th>중량(t)</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="moduleTypeBody"></tbody>
+              <tfoot>
+                <tr class="total-row">
+                  <td colspan="3" style="text-align:left; padding-left:8px;">합계</td>
+                  <td id="r_합계면적">—</td>
+                  <td id="r_세대당총모듈">—</td>
+                  <td id="r_최대중량" style="font-size:10px; color:#555;">—</td>
+                  <td></td>
+                </tr>
+              </tfoot>
+            </table>
+            <div style="display:flex; gap:16px; margin-top:10px; flex-wrap:wrap; align-items:stretch;">
+              <div class="input-group" style="border:2px solid #BFC9D4; border-radius:8px; padding:10px; background:#FAFAFA; flex:1; min-width:160px;">
+                <label style="color:#555; font-weight:800;">총 모듈 수 (자동)</label>
+                <div class="input-row">
+                  <span class="calc-val" id="r_총모듈" style="font-size:20px;">—</span>
+                  <span class="unit">모듈</span>
+                </div>
+                <span class="note-text">= 세대당 총모듈 × 층당세대 × 세대층</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 토공사 (면적 비례) -->
+          <div style="margin-top:16px; padding-top:14px; border-top:1px solid #EEE;">
+            <div style="font-weight:700; color:#2E4057; font-size:12px; margin-bottom:10px;">
+              🏚️ 하부공사 조건
+            </div>
+            <div class="input-grid">
+              <div class="input-group">
+                <label>층당 모듈 면적 (자동)</label>
+                <div class="input-row">
+                  <span class="calc-val" id="r_층당모듈면적">—</span>
+                  <span class="unit">m²</span>
+                </div>
+                <span class="note-text">= 모듈 타입별 면적 합계 × 층당 세대 수 (복도·코어 제외)</span>
+              </div>
+              <div class="input-group">
+                <label>건물 1층 바닥면적 (footprint)</label>
+                <div class="input-row">
+                  <input type="number" id="i_바닥면적" value="0" min="0" oninput="calc()">
+                  <span class="unit">m²</span>
+                </div>
+                <span class="note-text">토공·기초·저층 골조의 비례 기준 (실제 건물 1층 바닥면적). <b>0이면 층당 모듈 면적으로 대체</b> (기존 동작 유지)</span>
+              </div>
+              <div class="input-group">
+                <label>토공사 기간 (자동)</label>
+                <div class="input-row">
+                  <span class="calc-val" id="r_토공사기간">—</span>
+                  <span class="unit">일</span>
+                </div>
+                <span class="note-text">= 바닥면적 × 0.0414일/m² × 깊이계수 ÷ 가동율 (켄텍 29일÷701m², 지하2층 기준) · 깊이계수: 지하없음 0.30·1층 0.50·2층 1.00·3층 1.50</span>
+                <button class="ref-btn ref-btn-inline" onclick="openRef(['kentech_core'])">📄 근거 보기</button>
+              </div>
+              <div class="input-group">
+                <label>기초 RC 기간 (자동)</label>
+                <div class="input-row">
+                  <span class="calc-val" id="r_기초RC기간">—</span>
+                  <span class="unit">일</span>
+                </div>
+                <span class="note-text">= 바닥면적 × 0.0203 작업일/m² ÷ 가동율 (켄텍: 기초 작업일 14.24일 ÷ 701m²)</span>
+                <button class="ref-btn ref-btn-inline" onclick="openRef(['kentech_core'])">📄 근거 보기</button>
+              </div>
+              <div class="input-group">
+                <label>지하층 수</label>
+                <div class="input-row">
+                  <select id="i_지하층" onchange="calc()">
+                    <option value="0">지하 없음 (0층)</option>
+                    <option value="1">지하 1층</option>
+                    <option value="2">지하 2층</option>
+                    <option value="3">지하 3층</option>
+                  </select>
+                </div>
+                <span class="note-text">지하층 있으면 골조 공사 별도 추가 (광양 비례: B1F 0.097일/m², B2F 0.090일/m²)</span>
+                <button class="ref-btn ref-btn-inline" onclick="openRef(['gwangyang_structure'])">📄 근거 보기</button>
+              </div>
+              <div class="input-group" id="g_지하골조" style="display:none">
+                <label>지하층 골조 기간 (자동)</label>
+                <div class="input-row">
+                  <span class="calc-val" id="r_지하골조기간">0</span>
+                  <span class="unit">일 (달력일)</span>
+                </div>
+                <span class="note-text">광양 기가타운 실적 비례: B1F 46일(0.097/m²), B2F 43일(0.090/m²) × 층당 면적 / 별표2 반영</span>
+                <button class="ref-btn ref-btn-inline" onclick="openRef(['gwangyang_structure'])">📄 근거 보기</button>
+              </div>
+            </div>
+            <div style="margin-top:8px; background:#EEF4FF; border-radius:6px; padding:8px 12px; font-size:11px; color:#555;">
+              <strong>켄텍 대학원숙소 비례 기준 (1층 슬래브 701m²):</strong> 바닥면적 입력 기준<br>
+토공사 작업일 29일 = 0.0414일/m² · 기초RC 14.24일 = 0.0203일/m² · 1층·필로티 17.87일 = 0.0255일/m² (모두 ÷ 지역 가동율로 달력 환산)<br>
+              <span style="color:#888;">※ 지하층 골조는 광양 기준 (B2F 0.090·B1F 0.097일/m²) × 바닥면적 — 토공·기초·1층과 동일하게 바닥면적 기준</span>
+            </div>
+          </div>
+
+          <!-- 상부 골조(코어) 조건 — 코어병행형: RC/철골 코어 + 모듈 병행 설치 -->
+          <div style="margin-top:16px; padding-top:14px; border-top:1px solid #EEE;">
+            <div style="font-weight:700; color:#2E4057; font-size:12px; margin-bottom:10px;">
+              🧱 상부 골조(코어) 조건 — 코어병행형
+            </div>
+            <div class="input-grid">
+              <div class="input-group">
+                <label>코어 바닥면적 (한 층)</label>
+                <div class="input-row">
+                  <input type="number" id="i_코어바닥면적" value="475" min="0" oninput="calc()">
+                  <span class="unit">m²/층</span>
+                </div>
+                <span class="note-text">코어(계단실·EV) 한 층 바닥면적. 켄텍 기준층 데크 475m² → 거푸집 696m²(×1.465 자동 환산)</span>
+                <button class="ref-btn ref-btn-inline" onclick="openRef(['kentech_core'])">📄 근거 보기</button>
+              </div>
+              <div class="input-group">
+                <label>코어 골조 기간 (자동)</label>
+                <div class="input-row">
+                  <span class="calc-val" id="r_코어층당일">9</span>
+                  <span class="unit">일/층</span>
+                </div>
+                <div class="input-row" style="margin-top:4px;">
+                  <span class="calc-val" id="r_코어총기간">—</span>
+                  <span class="unit">일 (총 코어)</span>
+                </div>
+                <span class="note-text">= CEILING(바닥×1.465(거푸집) × 0.00809작업일/m² ÷ 가동율) × 총층수</span>
+              </div>
+              <div class="input-group">
+                <label>코어 선행 일수 (모듈 착수 오프셋)</label>
+                <div class="input-row">
+                  <input type="number" id="i_코어선행일" value="14" min="0" oninput="calc()">
+                  <span class="unit">일</span>
+                </div>
+                <span class="note-text">코어 착수 후 n일 뒤 모듈 설치 시작 → 이후 병행. 광양=큰값(거의 완료 후), 켄텍=작은값(조기 병행)</span>
+                <button class="ref-btn ref-btn-inline" onclick="openRef(['kentech_gantt'])">📄 근거 보기</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- B. 모듈 현장 조립 -->
+      <div class="card">
+        <div class="card-header red">🏗️ B. 모듈 현장 조립 (크레인 + 접합 작업)</div>
+        <div class="card-body">
+          <div class="input-grid">
+            <div class="input-group">
+              <label>크레인 종류 (양중 용량 기준)</label>
+              <div class="input-row">
+                <select id="i_크레인종류" onchange="calc()">
+                  <option value="50">50t 이동식(타이어)</option>
+                  <option value="100">100t 이동식(타이어)</option>
+                  <option value="130" selected>130t 이동식(타이어)</option>
+                  <option value="160">160t 이동식(타이어)</option>
+                  <option value="200">200t 이동식(타이어)</option>
+                  <option value="250">250t 이동식(타이어)</option>
+                  <option value="300">300t 이동식(타이어)</option>
+                </select>
+              </div>
+              <span class="note-text">모듈 중량에 맞는 크레인 선택 / 양중 적합성 자동 검토용</span>
+              <button class="ref-btn ref-btn-inline" onclick="openRef(['otkcrk_p163'])">📄 근거 보기</button>
+            </div>
+            <div class="input-group">
+              <label>크레인 대수</label>
+              <div class="input-row">
+                <input type="number" id="i_크레인대수" value="1" min="1" max="10" oninput="calc()">
+                <span class="unit">대</span>
+              </div>
+              <span class="note-text">현장 투입 이동식 크레인 대수 (보고서 기준 없음 — 현장 계획에 따라 직접 입력)</span>
+            </div>
+            <div class="input-group">
+              <label>최하층 설치 속도 (크레인 1대)</label>
+              <div class="input-row">
+                <input type="number" id="i_최하층속도" value="4" min="1" oninput="calc()">
+                <span class="unit">유닛/일</span>
+              </div>
+              <span class="note-text">★ OTKCRK p.163: 최하층 4~5개/일 (순수 양중, 접합 별도) / 참고: 켄텍은 접합 포함 5개/일</span>
+              <button class="ref-btn ref-btn-inline" onclick="openRef(['otkcrk_p163','kentech_module'])">📄 근거 보기</button>
+            </div>
+            <div class="input-group">
+              <label>기준층 설치 속도 (크레인 1대)</label>
+              <div class="input-row">
+                <input type="number" id="i_기준층속도" value="6" min="1" oninput="calc()">
+                <span class="unit">유닛/일</span>
+              </div>
+              <span class="note-text">★ OTKCRK p.163: 기준층 6개/일 (순수 양중, 접합 별도) / 참고: 켄텍은 접합 포함 5개/일</span>
+              <button class="ref-btn ref-btn-inline" onclick="openRef(['otkcrk_p163','kentech_module'])">📄 근거 보기</button>
+            </div>
+            <div class="input-group" style="grid-column: 1 / -1;">
+              <label>🏗️ 크레인 양중 적합성 검토 (모듈 중량 기준)</label>
+              <div id="r_크레인적합" style="padding:9px 14px; border-radius:7px; font-size:12px; font-weight:700; background:#F5F5F5; color:#888; margin-top:4px;">
+                — 모듈 중량을 입력하면 자동으로 검토됩니다
+              </div>
+              <span class="note-text">모듈 중량 × 1.25 기준 / 작업 반경에 따라 실제 양중 가능 무게가 달라지므로 현장 하중표 별도 확인</span>
+            </div>
+          </div>
+
+          <!-- 접합 작업 -->
+          <div style="margin-top:16px; padding-top:14px; border-top:1px solid #EEE;">
+            <div style="font-weight:700; color:#385723; font-size:12px; margin-bottom:10px;">
+              🔩 접합 작업 (수직접합=양중에 합침 · 수평접합=양중과 동시 진행 병행 → 한 층 = max(양중+수직, 수평))
+            </div>
+            <div class="input-grid">
+              <div class="input-group">
+                <label>모듈당 수직접합 수</label>
+                <div class="input-row">
+                  <input type="number" id="i_모듈당수직접합" value="4" min="0" step="1" oninput="calc()">
+                  <span class="unit">개/모듈</span>
+                </div>
+                <span class="note-text">모듈 꼭지점 기둥 = <b>4개/모듈</b> (기본) · 수직접합 총수 = 모듈수 × 이 값 · <b>양중 시간에 합산</b>(개수↑ → 공기↑)</span>
+              </div>
+              <div class="input-group">
+                <label>수직접합 1개당 소요일</label>
+                <div class="input-row">
+                  <input type="number" id="i_수직접합속도" value="0.025" min="0" step="0.005" oninput="calc()">
+                  <span class="unit">일/접합</span>
+                </div>
+                <span class="note-text">★ OTKCRK 볼트체결 2일/20모듈 ÷ 4개 = <b>0.025일/접합</b> (4개×0.025 = 0.1일/모듈)</span>
+                <button class="ref-btn ref-btn-inline" onclick="openRef(['otkcrk_p163'])">📄 근거 보기</button>
+              </div>
+              <div class="input-group">
+                <label>층당 수평접합부 수</label>
+                <div class="input-row">
+                  <input type="number" id="i_수평접합부" value="0" min="0" oninput="calc()">
+                  <span class="unit">접합부/층</span>
+                </div>
+                <span class="note-text">한 층 기준 입력 (모델 JSON 불러오면 자동 검출). 예: 층당 n모듈 1열 배치 → (n−1)개/층</span>
+              </div>
+              <div class="input-group">
+                <label>수평접합 소요 기간</label>
+                <div class="input-row">
+                  <input type="number" id="i_수평접합속도" value="0.5" min="0" step="0.1" oninput="calc()">
+                  <span class="unit">일/접합부</span>
+                </div>
+                <span class="note-text">접합부 1개당 소요 기간 (추정값 — 별도 공식 기준 없음)</span>
+              </div>
+              <div class="input-group">
+                <label>총 조립+접합 기간, 실작업일 (자동)</label>
+                <div class="input-row">
+                  <span class="calc-val" id="r_총조립기간">45</span>
+                  <span class="unit">일 (비작업일 미포함)</span>
+                </div>
+                <span class="note-text">= 1층(최하) + (세대층−1) × 기준층 각 소요일 합계</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- D. 지역 비작업일 -->
+      <div class="card">
+        <div class="card-header blue" style="background:#2E75B6;">📍 D. 지역 가동율 (기상청 2021~2025)</div>
+        <div class="card-body">
+          <div class="input-grid">
+            <div class="input-group" style="grid-column:1/-1">
+              <label>현장 지역 선택 (기상청 2021~2025 가동율)</label>
+              <div class="input-row">
+                <select id="i_지역" class="region-select" onchange="onRegionChange()"></select>
+              </div>
+              <span class="note-text">선택하면 그 지역 가동율 자동 적용 | 기상청 ASOS 일자료 2021~2025: 강수≥10mm·신적설≥1cm·최저≤−10℃·순간풍속≥14m/s + 주말·공휴일</span>
+            </div>
+            <div class="input-group">
+              <label>가동율 (작업 가능일 비율)</label>
+              <div class="input-row">
+                <input type="number" id="i_가동율" value="58.0" min="20" max="100" step="0.1" oninput="onGadongInput()">
+                <span class="unit">%</span>
+              </div>
+              <span class="note-text" id="note_가동율">지역 선택 시 자동 입력 / 직접 수정 가능</span>
+            </div>
+            <div class="input-group" style="grid-column:1/-1">
+              <label>착공 예정일 <span style="font-weight:400;color:#999;font-size:11px">(공기산정표·바차트 날짜 표시)</span></label>
+              <div class="date-picker-wrapper">
+                <button class="date-picker-btn" id="datePickerDisplay" onclick="toggleCalendar(event)">📅 2026.01.01</button>
+                <div class="calendar-popup" id="calendarPopup">
+                  <div class="cal-header">
+                    <button class="cal-nav-btn" onclick="calPrevMonth(event)">◀</button>
+                    <span class="cal-month-label" id="calMonthLabel">2026년 1월</span>
+                    <button class="cal-nav-btn" onclick="calNextMonth(event)">▶</button>
+                  </div>
+                  <div class="cal-grid" id="calGrid"></div>
+                </div>
+              </div>
+              <span class="note-text">클릭하여 착공일 선택 · 빨간날(공휴일·일요일) 표시 (2025~2030)</span>
+            </div>
+          </div>
+          <div style="margin-top:12px; background:#EEF4FF; border-radius:6px; padding:10px 12px; font-size:11px; color:#444;">
+            <strong>달력 환산:</strong> 달력기간 = CEILING(실작업일 ÷ 가동율) | 가동율 = (365 − 연간 비작업일) ÷ 365 | 예: 천안 가동율 58% → 실작업 1일 ≈ 1.72 달력일 (기상청 ASOS 2021~2025 5년 실측)
+          </div>
+        </div>
+      </div>
+
+      <!-- E. 요약 -->
+      <div class="card">
+        <div class="card-header purple" style="background:#7030A0;">✅ E. 현재 설정값 요약</div>
+        <div class="card-body">
+          <div class="summary-grid">
+            <div class="summary-item">
+              <div class="s-label">총 모듈 수</div>
+              <div><span class="s-value" id="s_총모듈">150</span><span class="s-unit">모듈</span></div>
+            </div>
+            <div class="summary-item orange">
+              <div class="s-label">일일 설치 속도</div>
+              <div style="font-size:11px; line-height:1.4;"><span id="s_일일속도">크레인 1대 × 6유닛 = 6유닛/일</span></div>
+            </div>
+            <div class="summary-item orange">
+              <div class="s-label">조립+접합 기간 (달력)</div>
+              <div><span class="s-value" id="s_조립기간">45</span><span class="s-unit">일</span></div>
+            </div>
+            <div class="summary-item">
+              <div class="s-label">코어골조 기간</div>
+              <div><span class="s-value" id="s_코어">120</span><span class="s-unit">일</span></div>
+            </div>
+            <div class="summary-item">
+              <div class="s-label">총 실작업일</div>
+              <div><span class="s-value" id="s_총실작업">--</span><span class="s-unit">일</span></div>
+            </div>
+            <div class="summary-item critical">
+              <div class="s-label">총 공사기간 (달력일)</div>
+              <div><span class="s-value" id="s_총기간">--</span><span class="s-unit">일</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+      <!-- F. 경제성 (노무비 + 경비) -->
+      <div class="card">
+        <div class="card-header" style="background:#385723;">💰 F. 경제성 산출 (노무비 + 경비)</div>
+        <div class="card-body">
+          <div class="input-grid" style="margin-bottom:12px;">
+            <div class="input-group">
+              <label>경유 단가 (크레인 연료)</label>
+              <div class="input-row">
+                <input type="number" id="i_유가" value="1600" min="0" step="10" oninput="calc()">
+                <span class="unit">원/ℓ</span>
+              </div>
+              <span class="note-text">크레인 연료비 산정용 (현재 경유가)</span>
+            </div>
+          </div>
+          <button class="ref-btn" style="margin-bottom:10px;" onclick="openCrew()">🔧 공종별 작업조(인부) 구성 보기</button>
+          <div style="overflow-x:auto;">
+            <table class="schedule-table" id="econTable" style="font-size:12px;">
+              <thead><tr><th style="text-align:left">공종</th><th>노무비(원)</th><th>경비(원)</th><th>합계(원)</th></tr></thead>
+              <tbody id="econBody"></tbody>
+            </table>
+          </div>
+          <div style="margin-top:10px; background:#EAF1E0; border-radius:6px; padding:10px 14px; font-size:11px; color:#385723;">
+            <span id="econNote"></span>
+          </div>
+        </div>
+      </div>
+
+  </div>
+
+  <!-- ── 탭2: 공기산정표 ── -->
+  <div class="tab-panel" id="tab-schedule">
+    <div class="card">
+      <div class="card-header blue">📊 공기 산정표</div>
+      <div class="card-body" style="padding:0; overflow-x:auto;">
+        <table class="schedule-table" id="schedTable">
+          <thead>
+            <tr>
+              <th class="no-col">No</th>
+              <th style="min-width:180px; text-align:left">공종명</th>
+              <th>실작업일</th>
+              <th>비작업일<br><small style="font-size:9px;font-weight:400">(기상·주말·공휴)</small></th>
+              <th>총기간(일)</th>
+              <th>착수</th>
+              <th>완료</th>
+              <th style="min-width:280px; text-align:left">근거 / 비고</th>
+            </tr>
+          </thead>
+          <tbody id="schedBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 탭3: 바차트 ── -->
+  <div class="tab-panel" id="tab-gantt">
+
+    <div class="card">
+      <div class="card-header dark">📅 바차트 (간트차트) — 30일 단위</div>
+      <div class="card-body" style="padding:12px 16px;">
+        <div class="legend" style="margin-bottom:14px;">
+          <div class="legend-item"><div class="legend-box" style="background:linear-gradient(90deg,#C00000,#E53935)"></div>크리티컬 패스</div>
+          <div class="legend-item"><div class="legend-box" style="background:linear-gradient(90deg,#2962B0,#4472C4)"></div>일반 공종</div>
+          <div class="legend-item"><div class="legend-box" style="background:linear-gradient(90deg,#CC7700,#FF9900)"></div>접합 작업 (수직 강봉+수평 볼트)</div>
+          <div class="legend-item"><div style="width:0;height:0;border-left:7px solid transparent;border-right:7px solid transparent;border-top:12px solid #7030A0;display:inline-block;margin-right:4px;"></div>마일스톤</div>
+        </div>
+        <div class="gantt-wrapper">
+          <div class="gantt-container" id="ganttContainer">
+            <!-- JS로 생성 -->
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header purple" style="background:#7030A0;">🏁 주요 마일스톤</div>
+      <div class="card-body">
+        <div class="milestone-list" id="milestoneList"></div>
+      </div>
+    </div>
+
+  </div>
+
+</div><!-- /container -->
+
+<div class="tooltip" id="tooltip"></div>
+
+<!-- ── 참고자료 모달 ── -->
+<div class="modal-overlay" id="refModal" onclick="closeRef(event)">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3 id="modalTitle">📄 참고 자료</h3>
+      <button class="modal-close" onclick="closeRefBtn()">✕</button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="crewModal" onclick="closeCrew(event)">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3>🔧 공종별 작업조(인부) 구성</h3>
+      <button class="modal-close" onclick="closeCrewBtn()">✕</button>
+    </div>
+    <div class="modal-body" id="crewModalBody"></div>
+  </div>
+</div>
+
+<script>
+// ── 유틸 ──────────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const ceil = Math.ceil;
+const max  = Math.max;
+
+// ── 참고자료 데이터 ──────────────────────────────────────────────────────
+const REFS = {
+  otkcrk_p8:   { label: 'OTKCRK p.8 — 공기산정기준(안)',         img: 'refs/otkcrk_p8.png' },
+  otkcrk_p135: { label: 'OTKCRK p.135 — 표4-39 현장조립 세부',   img: 'refs/otkcrk_p135.png' },
+  otkcrk_p148: { label: 'OTKCRK p.148 — 공사 준비기간',          img: 'refs/otkcrk_p148.png' },
+  otkcrk_p149: { label: 'OTKCRK p.149 — 공사 준비기간(계속)',    img: 'refs/otkcrk_p149.png' },
+  otkcrk_p156: { label: 'OTKCRK p.156 — 부대공사 기준',         img: 'refs/otkcrk_p156.png' },
+  otkcrk_p163: { label: 'OTKCRK p.163 — 표5-11 적층식 현장조립 기준(안) (볼트체결 2일/20모듈)', img: 'refs/otkcrk_p163.png' },
+  gwangyang_structure: { label: '광양생활관 공정표 — 101동 구조체+모듈러 (1층 25일 실적)', img: 'refs/gwangyang_structure.png' },
+  kentech_core:   { label: '켄텍 2-2단계 대학원숙소 — 코어 골조 산정근거 (기준층 거푸집 696m² → C/D 9일)', img: 'refs/kentech_core.png' },
+  kentech_module: { label: '켄텍 2-2단계 대학원숙소 — 모듈러 설치 산정근거 (135개, 5개/일·1조 → 27작업일)', img: 'refs/kentech_module.png' },
+  kentech_gantt:  { label: '켄텍 2-2단계 대학원숙소 — 예정공정표 (코어+모듈 병행)', img: 'refs/kentech_gantt.png' },
+  lh_p7:   { label: 'LH 지침 p.7 — 조경공사 25일 및 준비기간 30일', img: 'refs/lh_p7.png' },
+};
+
+
+// ── 참고자료 모달 함수 ────────────────────────────────────────────────────
+function openRef(keys, title) {
+  const modal = $('refModal');
+  const body  = $('modalBody');
+  const titleEl = $('modalTitle');
+
+  titleEl.textContent = '📄 참고 자료' + (title ? ' — ' + title : '');
+  body.innerHTML = '';
+
+  const validKeys = keys.filter(k => REFS[k]);
+  if (validKeys.length === 0) {
+    body.innerHTML = '<div class="modal-no-ref">📭 이 공종은 PDF 외 자료(표준품셈·KCS 규준)를 사용했습니다.<br>별도 PDF 파일이 없습니다.</div>';
+  } else {
+    validKeys.forEach(k => {
+      const ref = REFS[k];
+      const block = document.createElement('div');
+      block.className = 'modal-page-block';
+      block.innerHTML = `
+        <div class="modal-page-label">📑 ${ref.label}</div>
+        <img class="modal-page-img" src="${ref.img}" alt="${ref.label}"
+             onerror="this.style.display='none'; this.nextSibling.style.display='block'">
+        <div style="display:none; color:#C00000; padding:10px; font-size:12px;">
+          ⚠️ 이미지를 불러올 수 없습니다. refs 폴더가 HTML 파일과 같은 위치에 있는지 확인하세요.
+        </div>
+      `;
+      body.appendChild(block);
+    });
+  }
+
+  modal.classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeRef(e) {
+  if (e.target === $('refModal')) closeRefBtn();
+}
+function closeRefBtn() {
+  $('refModal').classList.remove('open');
+  document.body.style.overflow = '';
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeRefBtn(); closeCrewBtn(); } });
+
+// ── 공종별 작업조(인부) 구성 모달 ──────────────────────────────────────────
+function openCrew() {
+  if (!window._econData) { try { calc(); } catch (e) {} }
+  const data = window._econData || { rows: [] };
+  const won = n => Math.round(n).toLocaleString();
+  let html = `<div style="font-size:12px;color:#555;background:#EEF4FF;border-radius:6px;padding:10px 12px;margin-bottom:14px;line-height:1.7;">
+    <b>공종별로 어떤 직종이 몇 명, 며칠, 일당 얼마로 투입되는지</b> 보여줍니다.<br>
+    · <b>골조·모듈·옥탑</b>: 켄텍 실측 <b>man-day(인·일)</b> 기반 → '투입(명)'은 인·일 ÷ 작업일로 환산한 <b>평균 동시 인원</b>(소수 가능)<br>
+    · <b>베이스·지붕·마감·부대</b>: OTKCRK 인원 기준 (<span style="color:#c00;">(추정)</span> 표시는 인원이 추정값)</div>`;
+  data.rows.forEach(r => {
+    const hasCrew  = r.crew && r.crew.length;
+    const hasEquip = r.equipDetail && r.equipDetail.length;
+    if (!hasCrew && !hasEquip) return;
+    html += `<div style="margin-bottom:18px;">
+      <div style="font-weight:700;color:#385723;border-bottom:2px solid #385723;padding-bottom:5px;margin-bottom:7px;">${r.name}</div>`;
+    if (hasCrew) {
+      html += `<table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead><tr style="background:#EAF1E0;">
+          <th style="text-align:left;padding:5px 8px;">직종</th><th style="padding:5px 8px;">투입(명)</th>
+          <th style="padding:5px 8px;">작업일</th><th style="padding:5px 8px;">인·일</th>
+          <th style="padding:5px 8px;">일당(원)</th><th style="padding:5px 8px;">소계(원)</th>
+        </tr></thead><tbody>`;
+      r.crew.forEach(c => {
+        html += `<tr style="border-bottom:1px solid #eee;">
+          <td style="text-align:left;padding:4px 8px;">${c.직종}${c.추정 ? ' <span style="color:#c00;font-size:10px;">(추정)</span>' : ''}</td>
+          <td style="text-align:center;padding:4px 8px;">${c.인원}</td>
+          <td style="text-align:center;padding:4px 8px;">${c.작업일}</td>
+          <td style="text-align:center;padding:4px 8px;">${c.manday}</td>
+          <td style="text-align:right;padding:4px 8px;">${won(c.일당)}</td>
+          <td style="text-align:right;padding:4px 8px;">${won(c.소계)}</td>
+        </tr>`;
+      });
+      html += `</tbody></table>`;
+    }
+    if (hasEquip) {
+      r.equipDetail.forEach(e => {
+        html += `<div style="font-size:12px;color:#385723;margin-top:6px;">🏗️ <b>${e.장비}</b> ${e.대수}대 × ${e.시간} × ${e.작업일}일 — 운전원 ${e.운전원}</div>`;
+      });
+    }
+    html += `</div>`;
+  });
+  $('crewModalBody').innerHTML = html;
+  $('crewModal').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+function closeCrew(e) { if (e.target === $('crewModal')) closeCrewBtn(); }
+function closeCrewBtn() {
+  $('crewModal').classList.remove('open');
+  document.body.style.overflow = '';
+}
+
+// ── 날짜 유틸 ────────────────────────────────────────────────────────────
+let pickedDate   = new Date(2026, 0, 1);
+let calViewYear  = 2026;
+let calViewMonth = 0;
+
+function getStartDate() { return pickedDate; }
+
+function offsetToDate(base, n) {
+  const d = new Date(base.getTime());
+  d.setDate(d.getDate() + n);
+  return d;
+}
+function fmtDate(d) {
+  return d.getFullYear() + '.' +
+    String(d.getMonth() + 1).padStart(2, '0') + '.' +
+    String(d.getDate()).padStart(2, '0');
+}
+
+// ── 한국 공휴일 (2025~2030) ───────────────────────────────────────────────
+// 양력 고정 + 음력 기반 변환값 하드코딩
+const HOLIDAYS = {
+  // ── 2025 ──
+  '2025-01-01':'신정',
+  '2025-01-28':'설날 연휴','2025-01-29':'설날','2025-01-30':'설날 연휴',
+  '2025-03-01':'삼일절','2025-03-03':'삼일절 대체',
+  '2025-05-05':'어린이날·부처님오신날',
+  '2025-05-06':'대체공휴일',
+  '2025-06-06':'현충일',
+  '2025-08-15':'광복절',
+  '2025-10-03':'개천절',
+  '2025-10-05':'추석 연휴','2025-10-06':'추석','2025-10-07':'추석 연휴',
+  '2025-10-08':'대체공휴일','2025-10-09':'한글날',
+  '2025-12-25':'성탄절',
+  // ── 2026 ──
+  '2026-01-01':'신정',
+  '2026-02-16':'설날 연휴','2026-02-17':'설날','2026-02-18':'설날 연휴',
+  '2026-03-01':'삼일절','2026-03-02':'삼일절 대체',
+  '2026-05-05':'어린이날',
+  '2026-05-24':'부처님오신날','2026-05-25':'부처님오신날 대체',
+  '2026-06-06':'현충일',
+  '2026-08-15':'광복절','2026-08-17':'광복절 대체',
+  '2026-09-24':'추석 연휴','2026-09-25':'추석','2026-09-26':'추석 연휴',
+  '2026-09-28':'대체공휴일',
+  '2026-10-03':'개천절','2026-10-09':'한글날',
+  '2026-12-25':'성탄절',
+  // ── 2027 ──
+  '2027-01-01':'신정',
+  '2027-02-06':'설날 연휴','2027-02-07':'설날','2027-02-08':'설날 연휴',
+  '2027-02-09':'설날 대체',
+  '2027-03-01':'삼일절',
+  '2027-05-05':'어린이날',
+  '2027-05-13':'부처님오신날',
+  '2027-06-06':'현충일','2027-06-07':'현충일 대체',
+  '2027-08-15':'광복절','2027-08-16':'광복절 대체',
+  '2027-10-03':'개천절','2027-10-04':'개천절 대체',
+  '2027-10-09':'한글날',
+  '2027-10-14':'추석 연휴','2027-10-15':'추석','2027-10-16':'추석 연휴',
+  '2027-10-18':'대체공휴일',
+  '2027-12-25':'성탄절',
+  // ── 2028 ──
+  '2028-01-01':'신정','2028-01-02':'신정 대체',
+  '2028-01-26':'설날 연휴','2028-01-27':'설날','2028-01-28':'설날 연휴',
+  '2028-03-01':'삼일절',
+  '2028-05-02':'부처님오신날',
+  '2028-05-05':'어린이날',
+  '2028-06-06':'현충일',
+  '2028-08-15':'광복절',
+  '2028-10-02':'추석 연휴','2028-10-03':'추석·개천절','2028-10-04':'추석 연휴',
+  '2028-10-05':'대체공휴일',
+  '2028-10-09':'한글날',
+  '2028-12-25':'성탄절',
+  // ── 2029 ──
+  '2029-01-01':'신정',
+  '2029-02-12':'설날 연휴','2029-02-13':'설날','2029-02-14':'설날 연휴',
+  '2029-03-01':'삼일절',
+  '2029-05-05':'어린이날','2029-05-07':'어린이날 대체',
+  '2029-05-20':'부처님오신날','2029-05-21':'부처님오신날 대체',
+  '2029-06-06':'현충일',
+  '2029-08-15':'광복절',
+  '2029-09-21':'추석 연휴','2029-09-22':'추석','2029-09-23':'추석 연휴',
+  '2029-09-24':'대체공휴일','2029-09-25':'대체공휴일',
+  '2029-10-03':'개천절','2029-10-09':'한글날',
+  '2029-12-25':'성탄절',
+  // ── 2030 ──
+  '2030-01-01':'신정',
+  '2030-02-02':'설날 연휴','2030-02-03':'설날','2030-02-04':'설날 연휴',
+  '2030-02-05':'설날 대체',
+  '2030-03-01':'삼일절',
+  '2030-05-05':'어린이날','2030-05-06':'어린이날 대체',
+  '2030-05-09':'부처님오신날',
+  '2030-06-06':'현충일',
+  '2030-08-15':'광복절',
+  '2030-10-03':'개천절','2030-10-09':'한글날',
+  '2030-10-10':'추석 연휴','2030-10-11':'추석','2030-10-12':'추석 연휴',
+  '2030-10-14':'대체공휴일',
+  '2030-12-25':'성탄절',
+};
+
+function holKey(y, m, d) {
+  return y + '-' + String(m + 1).padStart(2,'0') + '-' + String(d).padStart(2,'0');
+}
+
+// ── 달력 팝업 함수 ────────────────────────────────────────────────────────
+function toggleCalendar(e) {
+  e && e.stopPropagation();
+  const popup = $('calendarPopup');
+  if (popup.classList.contains('open')) {
+    popup.classList.remove('open');
+  } else {
+    calViewYear  = pickedDate.getFullYear();
+    calViewMonth = pickedDate.getMonth();
+    renderCalendar();
+    // 버튼 위치 기준으로 팝업 좌표 계산 (fixed positioning)
+    const btn  = $('datePickerDisplay');
+    const rect = btn.getBoundingClientRect();
+    const popW = 296; // padding 포함 예상 너비
+    let left = rect.left;
+    let top  = rect.bottom + 6;
+    // 화면 오른쪽 넘침 방지
+    if (left + popW > window.innerWidth - 8) left = window.innerWidth - popW - 8;
+    // 화면 아래 넘침 방지 → 위쪽으로 표시
+    if (top + 320 > window.innerHeight) top = rect.top - 320 - 6;
+    popup.style.left = left + 'px';
+    popup.style.top  = top  + 'px';
+    popup.classList.add('open');
+  }
+}
+function closeCalendar() {
+  const p = $('calendarPopup');
+  if (p) p.classList.remove('open');
+}
+function calPrevMonth(e) {
+  e && e.stopPropagation();
+  if (calViewMonth === 0) { calViewMonth = 11; calViewYear--; }
+  else calViewMonth--;
+  renderCalendar();
+}
+function calNextMonth(e) {
+  e && e.stopPropagation();
+  if (calViewMonth === 11) { calViewMonth = 0; calViewYear++; }
+  else calViewMonth++;
+  renderCalendar();
+}
+function renderCalendar() {
+  $('calMonthLabel').textContent = calViewYear + '년 ' + (calViewMonth + 1) + '월';
+  const grid = $('calGrid');
+  grid.innerHTML = '';
+  // 요일 헤더
+  ['일','월','화','수','목','금','토'].forEach(dow => {
+    const el = document.createElement('div');
+    el.className = 'cal-dow';
+    el.textContent = dow;
+    grid.appendChild(el);
+  });
+  const today      = new Date();
+  const firstDow   = new Date(calViewYear, calViewMonth, 1).getDay();
+  const daysInMon  = new Date(calViewYear, calViewMonth + 1, 0).getDate();
+  const daysInPrev = new Date(calViewYear, calViewMonth, 0).getDate();
+
+  function makeDay(dayNum, year, month, col, isOther) {
+    const dow = col % 7;
+    const key = holKey(year, month, dayNum);
+    const isHol = !!HOLIDAYS[key];
+    const isToday = !isOther &&
+      dayNum === today.getDate() &&
+      month === today.getMonth() &&
+      year  === today.getFullYear();
+    const isSel = !isOther &&
+      dayNum === pickedDate.getDate() &&
+      month  === pickedDate.getMonth() &&
+      year   === pickedDate.getFullYear();
+
+    const el = document.createElement('div');
+    el.className = 'cal-day' +
+      (isOther  ? ' other-month' : '') +
+      (dow === 0 ? ' sunday'  : '') +
+      (dow === 6 ? ' saturday': '') +
+      ((isHol && !isOther) ? ' holiday' : '') +
+      (isToday  ? ' today'    : '') +
+      (isSel    ? ' selected' : '');
+    el.innerHTML = dayNum + (isHol ? '<div class="hol-dot"></div>' : '');
+    if (isHol) el.title = HOLIDAYS[key];
+    if (!isOther) {
+      el.addEventListener('click', function(e) {
+        e.stopPropagation();
+        selectDate(year, month, dayNum);
+      });
+    }
+    grid.appendChild(el);
+  }
+
+  // 이전 달 빈칸
+  for (let i = 0; i < firstDow; i++) {
+    const pm = calViewMonth === 0 ? 11 : calViewMonth - 1;
+    const py = calViewMonth === 0 ? calViewYear - 1 : calViewYear;
+    makeDay(daysInPrev - firstDow + 1 + i, py, pm, i, true);
+  }
+  // 이번 달
+  for (let d = 1; d <= daysInMon; d++) {
+    makeDay(d, calViewYear, calViewMonth, firstDow + d - 1, false);
+  }
+  // 다음 달 빈칸
+  const total = firstDow + daysInMon;
+  const tail  = total % 7 === 0 ? 0 : 7 - (total % 7);
+  for (let i = 1; i <= tail; i++) {
+    const nm = calViewMonth === 11 ? 0 : calViewMonth + 1;
+    const ny = calViewMonth === 11 ? calViewYear + 1 : calViewYear;
+    makeDay(i, ny, nm, total + i - 1, true);
+  }
+}
+function selectDate(y, m, d) {
+  pickedDate = new Date(y, m, d);
+  $('datePickerDisplay').textContent = '📅 ' + fmtDate(pickedDate);
+  closeCalendar();
+  calc();
+}
+// 달력 외부 클릭 시 닫기
+document.addEventListener('click', function(e) {
+  const w = document.querySelector('.date-picker-wrapper');
+  if (w && !w.contains(e.target)) closeCalendar();
+});
+
+// ── 공종 정의 ────────────────────────────────────────────────────────────
+// type: 'critical' | 'normal' | 'orange'
+// nw: 비작업일 계산 함수 (없으면 0)
+// start: 착수 계산 (schedule 배열 index 기반)
+// real: 실작업일 계산
+// note: 근거
+
+function buildTasks(v) {
+  const s = [];
+  const task = no => s.find(t => t.no === no); // task no로 검색
+
+  function add(no, name, real, nw, startDay, type, note, refs, parallel) {
+    const total = real + nw;
+    const end   = startDay + Math.max(total, 1) - 1;
+    s.push({ no, name, real, nw, total, start: startDay, end, type, note,
+             refs: refs, parallel: !!parallel });
+  }
+
+  // 1. 공사 준비
+  add(1, '공사 준비', 30, 0, 0, 'critical',
+    'OTKCRK p.148-149: 30일, 비작업일 미적용',
+    ['otkcrk_p148', 'otkcrk_p149']);
+
+  // 2. 토공사 (터파기+기초, 광양 기가타운 실적 면적 비례)
+  add(2, `토공사 (굴착+파일, 바닥 ${v.바닥면적.toFixed(0)}m², 지하 ${v.지하층수}층)`,
+      v.토공사기간, 0, task(1).end + 1, 'critical',
+      `켄텍 실적: 토공 작업일 29일 ÷ 701m² = 0.0414일/m² × 바닥 ${v.바닥면적.toFixed(0)}m² × 깊이계수 ${v.토공깊이계수.toFixed(2)}(지하${v.지하층수}층) ÷ 가동율 ${(v.가동율*100).toFixed(0)}% = ${v.토공사기간}일 (※ 켄텍 0.0414는 지하2층 굴착 기준 → 지하 깊이에 비례 보정)`,
+      ['kentech_core']);
+
+  // 달력 환산 헬퍼 ─ 실작업일 → 달력기간 (가동율 기반)
+  // 달력기간 = ceil(실작업일 / 가동율) | 가동율 = 기상청 ASOS 2021~2025 지역 실측
+  function calG(r) {
+    if (r <= 0) return 0;
+    return Math.max(r, ceil(r / v.가동율));
+  }
+
+  // 3. 기초 RC (파일캡·매트, 토공사 완료 후 착수)
+  const 기초작업일 = v.바닥면적 * 0.0203;        // 켄텍 기초 작업일 14.24일 ÷ 701m² = 0.0203일/m²
+  const t2_5_real = Math.max(1, calG(기초작업일)); // 달력 = ceil(작업일 ÷ 지역 가동율)
+  add(2.5, `기초 RC (파일캡·매트, 바닥 ${v.바닥면적.toFixed(0)}m²)`,
+      t2_5_real, 0, task(2).end + 1, 'critical',
+      `켄텍 실적: 기초 작업일 14.24일 ÷ 701m² = 0.0203일/m² × 바닥 ${v.바닥면적.toFixed(0)}m² = ${기초작업일.toFixed(1)}작업일 ÷ 가동율 ${(v.가동율*100).toFixed(0)}% = ${t2_5_real}일`,
+      ['kentech_core']);
+
+  // 4. 지하층 골조 (지하층 있을 때만, 기초RC 완료 후 착수) — 광양 기가타운 면적 비례
+  let afterFoundEnd = task(2.5).end;
+  if (v.지하층수 > 0) {
+    const 지하골조_factor = v.지하층수 === 1 ? 0.097
+                          : v.지하층수 === 2 ? 0.187
+                          : 0.187 + (v.지하층수 - 2) * 0.090;
+    const 지하골조_real = Math.max(1, ceil(v.바닥면적 * 지하골조_factor));
+    const 지하골조_nw = 0; // 광양 달력 기간 기반 — 비작업일 이미 포함
+    add(3.5, `지하층 골조 (지하 ${v.지하층수}층)`,
+        지하골조_real, 지하골조_nw, task(2.5).end + 1, 'critical',
+        `광양 기가타운 실적: B2F 43일(0.090일/m²)·B1F 46일(0.097일/m²) × 바닥면적 ${v.바닥면적.toFixed(0)}m² = ${지하골조_real}일 (달력 기간, 광양 비작업일 포함)`,
+        ['gwangyang_structure']);
+    afterFoundEnd = s[s.length - 1].end;
+  }
+
+  // 5. 1층·필로티 골조 (기초RC+지하층골조 완료 후 착수) — 광양 기가타운 면적 비례
+  const 일층작업일 = v.바닥면적 * 0.0255;        // 켄텍 1층 작업일 17.87일 ÷ 701m² = 0.0255일/m²
+  const t3_real = Math.max(1, calG(일층작업일));
+  const t3_nw   = 0;
+  add(3, '1층·필로티 골조', t3_real, t3_nw, afterFoundEnd + 1, 'critical',
+    `켄텍 실적: 1층 작업일 17.87일 ÷ 701m² = 0.0255일/m² × 바닥 ${v.바닥면적.toFixed(0)}m² = ${일층작업일.toFixed(1)}작업일 ÷ 가동율 ${(v.가동율*100).toFixed(0)}% = ${t3_real}일`,
+    ['kentech_core']);
+  const afterPilotiEnd = s[s.length - 1].end;
+
+  // 4. 코어 골조 (1층·필로티 완료 후 착수) — 코어병행형: 켄텍 거푸집면적 환산
+  const t4_real = v.코어총기간;
+  const t4_nw   = 0; // 켄텍 C/D(가동율 63.7%) 기반 — 비작업일 이미 포함
+  add(4, `코어 골조 (1~${v.총층수}층, ${v.코어층당일}일/층)`, t4_real, t4_nw, afterPilotiEnd + 1, 'critical',
+    `켄텍 실적: 기준층 거푸집 696m² → 작업일 5.63일 = 0.00809일/m² × 코어면적 ${v.코어골조면적}m² ÷ 가동율 ${(v.가동율*100).toFixed(0)}% = ${v.코어층당일}일/층 × ${v.총층수}층`,
+    ['kentech_core']);
+
+  // 5. 옥탑 골조 — 켄텍 PHF(펜트하우스층) 면적 비례: 9.04작업일 ÷ 켄텍 기준층 475㎡ = 0.019일/㎡ × 코어바닥면적
+  const 옥탑작업일 = v.코어바닥면적 * 0.019;
+  const t5_real = Math.max(1, calG(옥탑작업일));
+  add(5, '옥탑 골조 (코어 상부: 계단실·물탱크실)', t5_real, 0, task(4).end + 1, 'normal',
+    `켄텍 PHF 실적: 옥탑 9.04작업일 ÷ 켄텍 기준층 475㎡ = 0.019일/㎡ × 코어바닥면적 ${v.코어바닥면적.toFixed(0)}㎡ ÷ 가동율 ${(v.가동율*100).toFixed(0)}% = ${t5_real}일 (옥탑=코어 상부, 바닥면적 비례)`,
+    ['kentech_module']);
+  s[s.length - 1].work = Math.max(1, Math.round(옥탑작업일));   // 노무비 산정용 실작업일
+
+  // 6. 베이스플레이트 (1층·필로티 완료 후, 코어골조와 병행) — OTKCRK 5일을 층당 모듈수 비례
+  const 베이스기준모듈 = 10;   // OTKCRK 천안두정 기준 층당 모듈수(프로그램 공통 기준)
+  const 층당모듈_base = v.층당세대 * v.세대당모듈;
+  const 베이스작업일 = Math.max(1, 5 * 층당모듈_base / 베이스기준모듈);   // 5일 ÷ 10모듈 × 우리 층당모듈
+  add(6, '베이스플레이트 설치', calG(베이스작업일), 0, afterPilotiEnd + 1, 'normal',
+    `OTKCRK p.135/163: 앵커볼트+베이스+무수축몰탈 = 천안두정 5일(기준 10모듈/층) ÷ 10 × ${층당모듈_base}모듈 = ${베이스작업일.toFixed(1)}작업일 ÷ 가동율 ${(v.가동율*100).toFixed(0)}% = ${calG(베이스작업일)}일 (1층 모듈수 비례, 옥외) / 코어골조와 동시 진행`,
+    ['otkcrk_p135', 'otkcrk_p163'], true);
+  s[s.length - 1].work = Math.max(1, Math.round(베이스작업일));   // 노무비 산정용 실작업일
+
+  // ── 7. 모듈 현장 조립 + 접합 (병행: [양중+수직접합(강봉)] ∥ [수평접합], 한 층 = max) ──
+  // 코어병행형: 코어 착수 후 '코어 선행 일수'만큼 지난 뒤 모듈 시작 → 코어와 병행 진행
+  // (베이스플레이트 완료 이후로도 보정 → 둘 중 늦은 날 착수)
+  const cycleStart = max(task(4).start + v.코어선행일, task(6).end + 1);
+  const 층당설치일_최하 = v.층당설치일_최하층;
+  const 층당설치일_기준 = v.층당설치일_기준층;
+  // ── 병행 모델: 양중+수직접합 과 수평접합을 동시에 진행 → 한 층 = max(둘 중 긴 쪽) ──
+  const 층당양중_최하 = 층당설치일_최하 + v.층당강봉일;   // 양중 + 수직접합(합침)
+  const 층당양중_기준 = 층당설치일_기준 + v.층당강봉일;
+  const 층당수평 = v.층당수평접합일;                       // 수평접합(전체) — 양중과 동시
+  const 총조립기간 = v.총조립기간;
+
+  // ── 가동율 기반 달력 환산 (양중·수평 각각 환산 후, 층 = 둘 중 긴 쪽) ──
+  const 달_최하양중 = calG(층당양중_최하);
+  const 달_기준양중 = calG(층당양중_기준);
+  const 달_수평    = 층당수평 > 0 ? calG(층당수평) : 0;
+  const 달_최하층소요일 = Math.max(달_최하양중, 달_수평);
+  const 달_기준층소요일 = Math.max(달_기준양중, 달_수평);
+  // ── 코어 게이팅: 각 층 모듈은 그 층 코어 완료 후에 설치 ──
+  // 코어(층당 ${코어층당}일)가 모듈 설치(층당 3일 안팎)보다 느리므로, 모듈은 코어 진행에 끌려감(추월 불가)
+  const 코어start = task(4).start;
+  const 코어층당 = Math.max(v.코어층당일, 1);
+  const _modBars  = [];
+  const _boltBars = [];
+  let prevEnd = cycleStart - 1;   // 직전 층 모듈 완료일
+  for (let f = 0; f < v.세대층; f++) {
+    const 달_양중일 = f === 0 ? 달_최하양중 : 달_기준양중;
+    const 달_층소요일 = f === 0 ? 달_최하층소요일 : 달_기준층소요일;
+    const 코어층완료 = 코어start + (f + 1) * 코어층당 - 1;   // (f+1)층 코어 완료일
+    const fStart = Math.max(코어층완료 + 1, prevEnd + 1);     // 그 층 코어 완료 후 & 직전 층 모듈 후
+    _modBars.push({ start: fStart, total: 달_양중일, type: 'critical',
+                    name: `${f+1}층 모듈 설치 (${달_양중일}일)` });
+    if (달_수평 > 0) {
+      // 수평접합은 양중과 같은 시점에 시작 (다른 쪽에서 동시 진행)
+      _boltBars.push({ start: fStart, total: 달_수평, type: 'orange',
+                       name: `${f+1}층 수평접합 (${달_수평}일, 양중과 동시)` });
+    }
+    prevEnd = fStart + 달_층소요일 - 1;
+  }
+  const lastAssemblyEnd = v.세대층 > 0 ? prevEnd : cycleStart;
+
+  // ── 크리티컬 패스 동적 판정 (코어 vs 모듈) ──
+  const 모듈CP = lastAssemblyEnd >= task(5).end;   // 모듈이 옥탑보다 늦게 끝나면 모듈이 CP
+  s.find(t => t.no === 5).type = (task(5).end >= lastAssemblyEnd) ? 'critical' : 'normal';  // 옥탑
+  _modBars.forEach(b => { b.type = 모듈CP ? 'critical' : 'normal'; });
+
+  // 모듈 태스크 기간 = 착수~완료 (코어 진행에 맞춰 분산되어 코어 대기 포함). 실작업 = 총조립기간
+  const 조립_nw = Math.max(0, lastAssemblyEnd - cycleStart + 1 - 총조립기간);
+
+  // 공기산정표: 1개 행으로 표현 (총조립기간 = real, 간트에서 2행으로 분리)
+  add(7,
+      `모듈 현장 조립 + 접합 작업 (${v.세대층}층, 크레인 ${v.크레인대수}대)`,
+      총조립기간, 조립_nw, cycleStart, 모듈CP ? 'critical' : 'normal',
+      `OTKCRK p.163 표5-11: [양중+수직접합] 최하층 ${층당설치일_최하}+${v.층당강봉일}일, 기준층 ${층당설치일_기준}+${v.층당강봉일}일/층 (크레인 ${v.크레인대수}대, 수직접합 ${v.모듈당수직접합}개/모듈은 양중에 합산)${v.층당수평접합일 > 0 ? ` ∥ 수평접합 ${v.층당수평접합일}일/층 (층당 ${v.수평접합부}접합부×${v.수평접합속도}일, 양중과 동시 진행 → 한 층 = max(양중, 수평))` : ''} × ${v.세대층}층 / 가동율 반영`,
+      ['otkcrk_p163', 'otkcrk_p8']);
+  // 간트 세그먼트 데이터 첨부
+  s[s.length - 1].modBars  = _modBars;
+  s[s.length - 1].boltBars = _boltBars;
+
+  let taskNo = 8; // 다음 태스크 번호
+
+  // 지붕 트러스·패널·방수: 지붕 면적(층당 모듈 수) 비례 — 규모 커지면 함께 증가
+  // 기준: OTKCRK p.163/135 — 층당 10모듈(2세대×5모듈) 기준 트러스3·패널3·방수2일
+  const 층당총모듈 = v.층당세대 * v.세대당모듈;
+  const 기준_층당모듈 = 10;
+  const 지붕_트러스일 = Math.max(1, ceil(3 * 층당총모듈 / 기준_층당모듈));
+  const 지붕_패널일   = Math.max(1, ceil(3 * 층당총모듈 / 기준_층당모듈));
+  const 지붕_방수일   = Math.max(1, ceil(2 * 층당총모듈 / 기준_층당모듈));
+  // 옥외(옥상) 작업 → 가동율 적용(÷가동율, 비·눈 등 날씨 반영)
+  const 지붕_트러스_달 = calG(지붕_트러스일);
+  const 지붕_패널_달   = calG(지붕_패널일);
+  const 지붕_방수_달   = calG(지붕_방수일);
+  const 가동율pct = (v.가동율 * 100).toFixed(0);
+
+  // 지붕 트러스 (모듈+강봉 완료 AND 옥탑골조 완료 중 늦은 것)
+  add(taskNo++, '지붕 트러스 조립', 지붕_트러스_달, 0, max(lastAssemblyEnd, task(5).end) + 1, 'critical',
+    `OTKCRK p.163/135: 층당 ${기준_층당모듈}모듈 3일 → ${층당총모듈}모듈 = ${지붕_트러스일}작업일 ÷ 가동율 ${가동율pct}% = ${지붕_트러스_달}일 (옥외, 날씨 반영)`,
+    ['otkcrk_p163', 'otkcrk_p135']);
+  s[s.length - 1].work = 지붕_트러스일;   // 노무비 산정용 실작업일
+
+  add(taskNo++, '지붕 패널 설치', 지붕_패널_달, 0, s[s.length - 1].end + 1, 'critical',
+    `OTKCRK p.135 표4-39: 층당 ${기준_층당모듈}모듈 3일 → ${층당총모듈}모듈 = ${지붕_패널일}작업일 ÷ 가동율 ${가동율pct}% = ${지붕_패널_달}일 (옥외, 날씨 반영)`,
+    ['otkcrk_p135']);
+  s[s.length - 1].work = 지붕_패널일;
+
+  add(taskNo++, '방수시트 시공', 지붕_방수_달, 0, s[s.length - 1].end + 1, 'critical',
+    `OTKCRK p.135 표4-39: 층당 ${기준_층당모듈}모듈 2일 → ${층당총모듈}모듈 = ${지붕_방수일}작업일 ÷ 가동율 ${가동율pct}% = ${지붕_방수_달}일 (옥외, 날씨 반영)`,
+    ['otkcrk_p135']);
+  s[s.length - 1].work = 지붕_방수일;
+
+  // 현장마감·건축마감: 세대수 비례 — 천안두정 40세대 30일 기준 = 0.75일/세대 (규모 커지면 증가)
+  const 마감일 = Math.max(1, Math.round(30 * v.총세대 / 40));
+  add(taskNo++, '현장마감 (모듈 외부접합)', 마감일, 0, s[s.length - 1].end + 1, 'critical',
+    `OTKCRK p.8: 천안두정 40세대 30일 → ${v.총세대}세대 = ${마감일}일 (세대수 비례)`, ['otkcrk_p8']);
+
+  add(taskNo++, '건축마감 (공용부위)', 마감일, 0, s[s.length - 1].end + 1, 'critical',
+    `OTKCRK p.8: 천안두정 40세대 30일 → ${v.총세대}세대 = ${마감일}일 (세대수 비례)`, ['otkcrk_p8']);
+
+  const t_마감 = s[s.length - 1];
+  // 부대공사: 건축준공 후 순차 진행 (OTKCRK p.156 + LH지침 p.7)
+  // 토목 15일(건축준공 후) → 조경 25일(토목준공 후) = 40일
+  add(taskNo, '부대공사 (토목+조경)', calG(40), 0, t_마감.end + 1, 'critical',
+    `OTKCRK p.156+LH지침 p.7: 토목 15일 → 조경 25일 = 순차 40작업일 ÷ 가동율 ${(v.가동율*100).toFixed(0)}% = ${calG(40)}일 (옥외, 날씨 반영)`,
+    ['otkcrk_p156', 'lh_p7']);
+  s[s.length - 1].work = 40;   // 노무비 산정용 실작업일
+
+  return s;
+}
+
+// ── 모델(JSON) 불러오기 ───────────────────────────────────────────────────
+function setSceneStatus(msg, isErr) {
+  const el = $('sceneLoadStatus');
+  if (el) { el.textContent = msg; el.style.color = isErr ? '#B71C1C' : '#1d6b2f'; }
+}
+function onSceneFile(e) {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(ev) {
+    let json;
+    try { json = JSON.parse(ev.target.result); }
+    catch (err) { setSceneStatus('❌ JSON을 읽지 못했습니다: ' + err.message, true); return; }
+    try { importScene(json, file.name); }
+    catch (err) { setSceneStatus('❌ 적용 중 오류: ' + err.message, true); }
+  };
+  reader.readAsText(file);
+  e.target.value = '';   // 같은 파일 다시 선택 가능하게
+}
+// scene.json → 입력칸 채우기 (summary 있으면 우선, 없으면 부재 좌표로 계산)
+function importScene(json, fname) {
+  const comps = Array.isArray(json.components) ? json.components : [];
+  const sum = json.summary || {};
+  const mods = comps.filter(c => c.comp_type === 'module');
+  const fIdx = c => +c.floor_index || 0;
+  const dim = c => c.dimensions || {};
+
+  // ── 부재 좌표 기반 계산값 ──
+  const 계산_층수   = mods.length ? (Math.max.apply(null, mods.map(fIdx)) + 1) : 0;
+  const 계산_총모듈 = mods.length;
+  const 계산_층당   = mods.filter(c => fIdx(c) === 0).length || (계산_층수 ? Math.round(계산_총모듈 / 계산_층수) : 0);
+  const wAvg = mods.length ? mods.reduce((a, c) => a + (dim(c).width || 0), 0) / mods.length : 3400;
+  const dAvg = mods.length ? mods.reduce((a, c) => a + (dim(c).depth || 0), 0) / mods.length : 6000;
+  // 바닥면적(m²): floor0 모듈+바닥패널 footprint 합 (mm²→m²)
+  let 계산_바닥 = 0;
+  comps.filter(c => fIdx(c) === 0 && (c.comp_type === 'module' || c.comp_type === 'floor_panel'))
+       .forEach(c => { 계산_바닥 += (dim(c).width || 0) * (dim(c).depth || 0); });
+  계산_바닥 = 계산_바닥 / 1e6;
+  // 코어 한 층 면적(m²): core_slab 1개
+  const slab = comps.find(c => c.comp_type === 'core_slab');
+  const 계산_코어 = slab ? (dim(slab).width || 0) * (dim(slab).depth || 0) / 1e6 : 0;
+
+  // ── summary 우선, 없으면 계산값 ──
+  const 층수   = sum.floors_above_ground || 계산_층수 || 0;
+  const 총모듈 = sum.modules_total || 계산_총모듈 || 0;
+  let   층당   = sum.modules_per_floor;
+  if (Array.isArray(층당)) 층당 = Math.max.apply(null, 층당);
+  층당 = 층당 || 계산_층당 || (층수 ? Math.round(총모듈 / 층수) : 0);
+  const 바닥   = sum.footprint_area_m2 || 계산_바닥 || 0;
+  const 코어   = sum.core_area_per_floor_m2 || 계산_코어 || 0;
+  const 지하   = sum.basement_floors != null ? sum.basement_floors : 0;
+  const 중량   = sum.module_max_weight_t || null;
+
+  if (!층수 || !총모듈) { setSceneStatus('❌ 모듈/층 정보를 찾지 못했습니다. 파일을 확인하세요.', true); return; }
+
+  // ── 입력칸 채우기 ──
+  $('i_세대층').value   = 층수;
+  $('i_층당세대').value = 층당;   // 1모듈=1세대 가정 (세대당 모듈=1)
+  moduleTypes = [{ name: '모듈(JSON)', w: +(wAvg / 1000).toFixed(2), l: +(dAvg / 1000).toFixed(2),
+                   n: 1, wt: 중량 ? +중량 : ((moduleTypes[0] && moduleTypes[0].wt) || 10) }];
+  renderModuleTable();   // → updateModuleTotals → calc 호출됨
+  if (바닥) $('i_바닥면적').value     = Math.round(바닥);
+  if (코어) $('i_코어바닥면적').value = Math.round(코어);
+  $('i_지하층').value = String(Math.min(Math.max(지하, 0), 3));
+  // 수직접합: summary 있으면 모듈당으로 환산 (없으면 기존 4개/모듈 유지)
+  if (sum.vertical_joints_total != null && 총모듈)
+    $('i_모듈당수직접합').value = Math.max(0, Math.round(sum.vertical_joints_total / 총모듈));
+  // 수평접합부(층당): ① summary ② 실제 접합데이터(joint_records 모듈-모듈) ③ 좌표 인접(폴백)
+  let 수평txt = '';
+  const mj = readModuleJoints(comps);   // 파일에 적힌 실제 모듈-모듈 접합 읽기
+  if (sum.horizontal_joints_total != null && 층수) {
+    $('i_수평접합부').value = Math.max(0, Math.round(sum.horizontal_joints_total / 층수));
+    수평txt = ` · 수평접합 ${$('i_수평접합부').value}개/층(요약)`;
+  } else if (mj.hasData) {
+    $('i_수평접합부').value = mj.perFloorMax;
+    수평txt = ` · 수평접합 ${mj.perFloorMax}개/층(실제 접합데이터)`;
+  } else {
+    const hj = countHorizJointsFloor0(comps);
+    if (hj.ok) { $('i_수평접합부').value = hj.count; 수평txt = ` · 수평접합 ${hj.count}개/층(좌표 인접 추정)`; }
+  }
+
+  calc();
+  const src = json.summary ? '요약값(summary)' : '부재 좌표 계산';
+  const 중량txt = 중량 ? ` · 최대중량 ${중량}t` : ' · 중량 미포함(직접 입력)';
+  setSceneStatus(`✅ ${fname} 불러옴 [${src}]: ${층수}층 · 모듈 ${총모듈}개(층당 ${층당}) · 바닥 ${Math.round(바닥)}㎡ · 코어 ${Math.round(코어)}㎡${수평txt}${중량txt}. 크레인·접합속도·가동율·단가는 직접 확인하세요.`, false);
+}
+
+// 파일에 적힌 실제 모듈-모듈 접합(joint_records) 읽기 — 접합 1개당 양쪽 모듈이 시간 절반씩
+// · 한 쌍에 접합이 여러 개일 수 있으므로 각 joint_record를 개별 접합으로 셈(위치로 중복 제거)
+// · 층별 접합 수를 집계해 대표값(층 최댓값) 반환. 모듈 joint_records가 비면 hasData:false → 좌표 폴백
+function readModuleJoints(comps) {
+  const modIds = new Set(comps.filter(c => c.comp_type === 'module' || c.comp_type === 'vertical_module').map(c => c.id));
+  const byId = {}; comps.forEach(c => { byId[c.id] = c; });
+  const seen = new Set();
+  const perFloor = {};
+  comps.forEach(c => {
+    if (!modIds.has(c.id)) return;
+    (c.joint_records || []).forEach(j => {
+      if (!modIds.has(j.target_comp_id)) return;   // 모듈↔모듈 접합만
+      // 무순서 쌍 + 접합 위치로 중복 제거 (양쪽에 기록돼 있어도 1개로)
+      const pair = [c.id, j.target_comp_id].sort((a, b) => a - b).join('-');
+      const loc = (j.target_xy ? j.target_xy.map(Math.round).join(',') : '') + '@' + Math.round(j.target_z || 0);
+      const key = pair + '#' + loc;
+      if (seen.has(key)) return;
+      seen.add(key);
+      const f = +c.floor_index || 0;
+      perFloor[f] = (perFloor[f] || 0) + 1;
+    });
+  });
+  const floors = Object.keys(perFloor);
+  if (floors.length === 0) return { hasData: false, perFloorMax: 0, total: 0 };
+  const perFloorMax = Math.max.apply(null, floors.map(f => perFloor[f]));
+  const total = floors.reduce((s, f) => s + perFloor[f], 0);
+  return { hasData: true, perFloorMax, total };
+}
+
+// 모듈 좌표로 같은 층 인접 모듈쌍(=수평접합) 자동 검출 — 수직모듈 포함
+// · 수직모듈(vertical_module)은 관통하는 모든 층에 존재 → 각 층에서 옆 모듈과의 접합을 셈
+// · 수직모듈 자체의 층간 수직접합은 없음(한 덩어리). 그래서 일반 수직접합 계산엔 안 들어감
+function countHorizJointsFloor0(comps) {
+  const fIdx = c => +c.floor_index || 0;
+  const isMod = c => c.comp_type === 'module' || c.comp_type === 'vertical_module';
+  const all = comps.filter(isMod);
+  if (all.length < 2) return { ok: false, count: 0 };
+  // 층 높이 추정: 모듈 z값들의 최소 양(+) 간격
+  const zs = Array.from(new Set(all.map(c => +c.position[2] || 0))).sort((a, b) => a - b);
+  let floorH = 3000;
+  for (let i = 1; i < zs.length; i++) { const g = zs[i] - zs[i - 1]; if (g > 500) { floorH = g; break; } }
+  // 모듈이 차지하는 층 범위 [시작층, 끝층] — 수직모듈은 높이/층고만큼 여러 층
+  const span = c => {
+    const f0 = fIdx(c);
+    const h = (c.dimensions || {}).height || 0;
+    const k = c.comp_type === 'vertical_module' ? Math.max(1, Math.round(h / floorH)) : 1;
+    return [f0, f0 + k - 1];
+  };
+  // position을 모서리로 보고 그 점 기준 CCW 회전 → 박스가 뻗는 방향 결정
+  function box(c) {
+    const x = c.position[0], y = c.position[1];
+    const w = (c.dimensions || {}).width || 0, d = (c.dimensions || {}).depth || 0;
+    const rot = (((c.rotation || 0) % 360) + 360) % 360;
+    if (rot === 0)   return { x1: x,     x2: x + w, y1: y,     y2: y + d };
+    if (rot === 90)  return { x1: x - d, x2: x,     y1: y,     y2: y + w };
+    if (rot === 180) return { x1: x - w, x2: x,     y1: y - d, y2: y };
+    return               { x1: x,     x2: x + d, y1: y - w, y2: y };   // 270
+  }
+  const T = 400;   // 인접 허용 간격(mm)
+  const adjCount = list => {
+    let c = 0;
+    for (let i = 0; i < list.length; i++) for (let k = i + 1; k < list.length; k++) {
+      const a = list[i], b = list[k];
+      const ox = Math.min(a.x2, b.x2) - Math.max(a.x1, b.x1);
+      const oy = Math.min(a.y2, b.y2) - Math.max(a.y1, b.y1);
+      if (ox > 50 && oy > 50) continue;   // 겹침(비정상) 제외
+      const tX = (Math.abs(a.x2 - b.x1) <= T || Math.abs(b.x2 - a.x1) <= T) && oy > -T;
+      const tY = (Math.abs(a.y2 - b.y1) <= T || Math.abs(b.y2 - a.y1) <= T) && ox > -T;
+      if (tX || tY) c++;
+    }
+    return c;
+  };
+  // 각 층별로 그 층에 존재하는 모듈(수직모듈은 관통 층 모두 포함)의 인접쌍 수 → 대표값(층 최댓값)
+  const maxFloor = Math.max.apply(null, all.map(c => span(c)[1]));
+  let best = 0;
+  for (let f = 0; f <= maxFloor; f++) {
+    const here = all.filter(c => { const s = span(c); return f >= s[0] && f <= s[1]; }).map(box);
+    best = Math.max(best, adjCount(here));
+  }
+  return { ok: true, count: best };
+}
+
+// ── 모듈 타입 관리 ──────────────────────────────────────────────────────
+let moduleTypes = [
+  { name: 'A타입', w: 3.6, l: 7.0, n: 3, wt: 12 },
+  { name: 'B타입', w: 3.6, l: 5.0, n: 2, wt: 8  },
+];
+
+function renderModuleTable() {
+  const tbody = document.getElementById('moduleTypeBody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  moduleTypes.forEach(function(t, i) {
+    var area = (t.w * t.l).toFixed(2);
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td><input type="text" value="' + t.name + '" oninput="moduleTypes[' + i + '].name=this.value"></td>' +
+      '<td><input type="number" value="' + t.w + '" min="1" step="0.1" oninput="moduleTypes[' + i + '].w=+this.value;renderModuleTable()"></td>' +
+      '<td><input type="number" value="' + t.l + '" min="1" step="0.1" oninput="moduleTypes[' + i + '].l=+this.value;renderModuleTable()"></td>' +
+      '<td style="font-weight:700;">' + area + '</td>' +
+      '<td><input type="number" value="' + t.n + '" min="0" oninput="moduleTypes[' + i + '].n=+this.value;updateModuleTotals()"></td>' +
+      '<td><input type="number" value="' + t.wt + '" min="1" oninput="moduleTypes[' + i + '].wt=+this.value;updateModuleTotals()"></td>' +
+      '<td>' + (moduleTypes.length > 1 ? '<button class="mod-del-btn" onclick="removeModuleType(' + i + ')">✕</button>' : '') + '</td>';
+    tbody.appendChild(tr);
+  });
+  updateModuleTotals();
+}
+
+function addModuleType() {
+  var letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  moduleTypes.push({ name: letters[moduleTypes.length % 26] + '타입', w: 3.6, l: 6.0, n: 1, wt: 10 });
+  renderModuleTable();
+}
+
+function removeModuleType(i) {
+  if (moduleTypes.length <= 1) return;
+  moduleTypes.splice(i, 1);
+  renderModuleTable();
+}
+
+function updateModuleTotals() {
+  var totalN   = moduleTypes.reduce(function(s,t){ return s + (t.n||0); }, 0);
+  var totalA   = moduleTypes.reduce(function(s,t){ return s + (t.w*t.l*(t.n||0)); }, 0);
+  var maxWt    = Math.max.apply(null, moduleTypes.map(function(t){ return t.wt||0; }));
+  var el = document.getElementById('r_합계면적');   if(el) el.textContent = totalA.toFixed(1);
+  el = document.getElementById('r_세대당총모듈'); if(el) el.textContent = totalN;
+  el = document.getElementById('r_최대중량');     if(el) el.textContent = '최대 ' + maxWt + 't';
+  calc();
+}
+
+// ── 이벤트 핸들러 ────────────────────────────────────────────────────────
+
+// ── 지역별 가동율 (기상청 ASOS 일자료 2021~2025, 강수≥10mm·신적설≥1cm·최저≤-10℃·순간풍속≥14m/s + 주말·공휴일 기준) ──
+const REGION_GADONG = {"강릉": 56.2, "강진군": 58.1, "강화": 56.5, "거제": 59.5, "거창": 57.6, "경주시": 54.7, "고산": 37.7, "고창": 55.4, "고창군": 59.5, "고흥": 58.7, "광양시": 58.4, "광주": 58.5, "구미": 60.9, "군산": 57.4, "금산": 58.2, "김해시": 59.0, "남원": 57.8, "남해": 59.2, "대관령": 39.4, "대구": 59.3, "대전": 58.4, "동두천": 55.2, "동해": 56.8, "목포": 52.7, "문경": 56.3, "밀양": 61.1, "백령도": 46.9, "보령": 59.8, "보성군": 54.7, "보은": 57.0, "봉화": 56.4, "부산": 50.8, "부안": 59.6, "부여": 59.1, "북강릉": 57.4, "북부산": 60.1, "북창원": 59.9, "북춘천": 53.3, "산청": 53.6, "상주": 57.7, "서귀포": 58.6, "서산": 58.4, "서울": 57.5, "서청주": 57.9, "성산": 53.3, "세종": 59.5, "속초": 54.1, "수원": 57.4, "순창군": 55.6, "순천": 53.5, "안동": 57.3, "양산시": 58.8, "양평": 57.1, "여수": 44.1, "영광군": 58.6, "영덕": 51.5, "영월": 55.8, "영주": 50.8, "영천": 58.1, "완도": 56.3, "울릉도": 33.5, "울산": 60.0, "울진": 57.5, "원주": 58.5, "의령군": 56.6, "의성": 56.0, "이천": 56.3, "인제": 53.5, "인천": 56.5, "임실": 58.0, "장수": 55.2, "장흥": 59.3, "전주": 59.0, "정선군": 51.0, "정읍": 58.4, "제주": 50.5, "제천": 53.7, "진도군": 55.7, "진주": 59.7, "창원": 60.2, "천안": 58.0, "철원": 53.1, "청송군": 53.6, "청주": 59.1, "추풍령": 51.9, "춘천": 55.3, "충주": 55.9, "태백": 53.7, "통영": 57.9, "파주": 53.8, "포항": 59.3, "함양군": 57.8, "합천": 60.4, "해남": 56.9, "홍성": 57.2, "홍천": 55.3, "흑산도": 40.1};
+
+// ── 직종별 노임단가 (시중노임 2026.1.1 공표, 원/일) ── 경제성(노무비) 산출용
+const WAGE_2026 = {보통인부:172068, 특별인부:226122, 비계공:281939, 형틀목공:275790, 철근공:268187, 철공:239808, 철골공:252641, 용접공:282536, 콘크리트공:273540, 건설기계운전사:283297, 판넬조립공:243121, 방수공:228286, 미장공:277276, 도배공:227614, 타일공:290939, 도장공:263017, 조경공:235204};
+
+// ── 이동식(타이어) 크레인 시간당 기계손료 (기계경비산출표 2025, 톤→{손료 원/hr, 연료 ℓ/hr}) ── 경제성(경비) 산출용
+const CRANE_COST = {50:{son:88909,fuel:10.0}, 100:{son:159620,fuel:15.9}, 130:{son:219868,fuel:17.7}, 160:{son:294285,fuel:19.6}, 200:{son:308010,fuel:22.0}, 250:{son:443965,fuel:24.0}, 300:{son:612373,fuel:24.0}};
+// 전부 기계경비산출표 2025 이동식 타이어크레인(2104) 실제 시간당 손료·연료 (추정값 없음)
+
+// ── 켄텍 실적 man-day 계수 (직종별 인·일, 면적/모듈당) ── 노무비 산출용
+// 기초·1층 = 바닥면적(m²)당 / 코어 = 코어면적(m²)·1개층당 / 모듈 = 모듈 1개당
+const MANDAY = {
+  기초: {철근공:0.10225, 보통인부:0.04171, 형틀목공:0.01312, 콘크리트공:0.02876, 특별인부:0.01438},
+  '1층': {철근공:0.03389, 보통인부:0.03538, 철골공:0.0294, 비계공:0.01161, 특별인부:0.02224, 형틀목공:0.09829, 용접공:0.00399, 콘크리트공:0.01327},
+  코어: {철근공:0.00397, 보통인부:0.00555, 철골공:0.02004, 비계공:0.0079, 특별인부:0.01167, 형틀목공:0.01767, 용접공:0.00273, 콘크리트공:0.00207},
+  모듈: {철근공:1.6, 보통인부:0.4}
+};
+
+// 지역 드롭다운을 가동율 데이터로 채움 (가나다순)
+function populateRegions() {
+  const sel = $('i_지역');
+  if (!sel) return;
+  const names = Object.keys(REGION_GADONG).sort((a,b)=>a.localeCompare(b,'ko'));
+  sel.innerHTML = names.map(n => `<option value="${n}"${n==='천안'?' selected':''}>${n} (${REGION_GADONG[n]}%)</option>`).join('');
+}
+
+function onRegionChange() {
+  const sel = $('i_지역');
+  const name = sel.value;
+  if (!name || !REGION_GADONG[name]) return;
+  $('i_가동율').value = REGION_GADONG[name];
+  $('note_가동율').textContent = `${name} 기준 (기상청 2021~2025)`;
+  const badge = $('region-badge'); if (badge) badge.textContent = `📍 ${name} 기준`;
+  calc();
+}
+
+// 가동율 직접 수정 시
+function onGadongInput() {
+  $('note_가동율').textContent = '직접 입력값';
+  calc();
+}
+
+// ── 메인 계산 ─────────────────────────────────────────────────────────────
+function calc() {
+  const v = {
+    세대층:      +$('i_세대층').value      || 0,
+    층당세대:    +$('i_층당세대').value    || 0,
+    세대당모듈:  moduleTypes.reduce(function(s,t){ return s+(t.n||0); }, 0),
+    모듈중량:    Math.max.apply(null, moduleTypes.map(function(t){ return t.wt||0; })),
+    크레인종류:  +$('i_크레인종류').value  || 130,
+    크레인대수:  +$('i_크레인대수').value  || 1,
+    최하층속도:  +$('i_최하층속도').value  || 4,
+    기준층속도:  +$('i_기준층속도').value  || 6,
+    모듈당수직접합: +$('i_모듈당수직접합').value || 0,
+    수직접합속도:   +$('i_수직접합속도').value   || 0,
+    수평접합부:    +$('i_수평접합부').value    || 0,
+    수평접합속도:  +$('i_수평접합속도').value  || 0,
+    코어바닥면적:  +$('i_코어바닥면적').value  || 0,
+    코어선행일:    +$('i_코어선행일').value    || 0,
+    가동율:        Math.min(Math.max(+$('i_가동율').value || 58, 20), 100) / 100,  // 기상청 2021~2025 지역 가동율(0~1)
+  };
+  // 강봉 연결 방식 — 구조전용층 없음
+  v.총층수        = v.세대층;
+  v.총세대        = v.세대층 * v.층당세대;
+  v.총모듈        = v.총세대 * v.세대당모듈;
+  const 층당모듈수 = v.층당세대 * v.세대당모듈;
+
+  // ── 입력 하한 검증: 세대층·층당세대·세대당 모듈은 1 이상이어야 계산이 의미 있음 ──
+  const _warn = [];
+  if (v.세대층 < 1)     _warn.push('세대층(1 이상)');
+  if (v.층당세대 < 1)   _warn.push('층당 세대수(1 이상)');
+  if (v.세대당모듈 < 1) _warn.push('세대당 모듈수(모듈 타입에서 1개 이상)');
+  const warnEl = $('inputWarn');
+  if (_warn.length) {
+    if (warnEl) { warnEl.style.display = ''; warnEl.textContent = '⚠️ 입력 확인 필요: ' + _warn.join(', ') + ' — 이 값들을 채워야 공정표·경제성이 계산됩니다.'; }
+    const tb = $('total-badge'); if (tb) tb.textContent = '⚠️ 입력 확인 필요';
+    return;   // 비현실적 입력이면 잘못된 결과를 만들지 않고 중단
+  }
+  if (warnEl) warnEl.style.display = 'none';
+  v.일일설치속도  = v.크레인대수 * v.기준층속도;   // 기준층 기준 (대표값)
+  v.층당설치일_최하층 = ceil(층당모듈수 / Math.max(v.크레인대수 * v.최하층속도, 1));
+  v.층당설치일_기준층 = ceil(층당모듈수 / Math.max(v.일일설치속도, 1));
+  v.층당설치일    = v.층당설치일_기준층;            // 하위호환용
+  // 수직접합: 층당 수직접합 수 = 층당모듈수 × 모듈당 접합수(꼭지점 기둥 4개) → × 개당 소요일
+  v.층당수직접합수 = 층당모듈수 * v.모듈당수직접합;
+  v.층당강봉일    = (v.수직접합속도 > 0 && v.모듈당수직접합 > 0) ? Math.max(1, ceil(v.층당수직접합수 * v.수직접합속도)) : 0;
+  // 수평접합: 층당 접합부 수 (전체 시간 — 병행 모델에서 양중과 동시 진행)
+  v.층당수평접합일 = v.수평접합부 > 0 && v.수평접합속도 > 0
+    ? Math.max(1, ceil(v.수평접합부 * v.수평접합속도))
+    : 0;
+  v.층당접합일    = v.층당강봉일 + v.층당수평접합일;       // 표시·노무 기준(수직+수평 풀)
+  // ── 병행 모델: 양중+수직접합 과 수평접합을 동시에 진행 → 한 층 시간 = 둘 중 긴 쪽(max) ──
+  v.층당양중수직   = v.층당설치일_기준층 + v.층당강봉일;     // 양중 + 수직접합(양중에 합침)
+  v.층당소요일    = Math.max(v.층당양중수직, v.층당수평접합일);
+  // 총조립기간(공기): 1층(최하층) + 나머지(기준층), 각 층 = max(양중+수직, 수평)
+  const 최하층소요일_calc = Math.max(v.층당설치일_최하층 + v.층당강봉일, v.층당수평접합일);
+  const 기준층소요일_calc = Math.max(v.층당설치일_기준층 + v.층당강봉일, v.층당수평접합일);
+  v.총조립기간    = v.세대층 > 0
+    ? 최하층소요일_calc + Math.max(v.세대층 - 1, 0) * 기준층소요일_calc
+    : 0;
+
+  // 지하층 수
+  v.지하층수 = +$('i_지하층').value || 0;
+
+  // 토공사 기간 (광양 기가타운 실적 면적 비례: 155일 ÷ 476m² = 0.326일/m²)
+  v.층당모듈면적 = moduleTypes.reduce(function(s,t){ return s + (t.w||0)*(t.l||0)*(t.n||0); }, 0) * v.층당세대;
+  // 건물 1층 바닥면적: 토공·기초·저층 골조 비례 기준 (0이면 층당 모듈 면적으로 대체)
+  v.바닥면적     = +$('i_바닥면적').value || v.층당모듈면적;
+  // 토공 깊이계수: 켄텍 0.0414는 지하2층(약 7m) 굴착 포함값 → 지하 깊이에 비례 보정 (층당 약 3.5m)
+  // 지하없음 0.30(기초굴착만) · 지하1층 0.50 · 지하2층 1.00(켄텍 기준) · 지하3층 이상 1.00+(층수-2)×0.50
+  v.토공깊이계수 = v.지하층수 === 0 ? 0.30
+                 : v.지하층수 === 1 ? 0.50
+                 : v.지하층수 === 2 ? 1.00
+                 : 1.00 + (v.지하층수 - 2) * 0.50;
+  // 켄텍 토공 작업일 29일 ÷ 701m² = 0.0414일/m² × 깊이계수 → 달력 = 작업일 ÷ 지역 가동율
+  v.토공사기간   = Math.max(1, Math.ceil(v.바닥면적 * 0.0414 * v.토공깊이계수 / v.가동율));
+
+  // 코어 골조 (코어병행형) — 입력은 바닥면적, 켄텍 실측 거푸집÷데크 = 696÷475 = 1.465배로 거푸집 환산
+  v.코어골조면적 = v.코어바닥면적 * 1.4653;   // 바닥 → 거푸집 (켄텍 기준)
+  // 거푸집 면적 × 0.00809작업일/m²(켄텍 696→5.63작업일) ÷ 가동율
+  v.코어층당일  = Math.max(1, ceil(v.코어골조면적 * 0.00809 / v.가동율));
+  v.코어총기간  = v.코어층당일 * v.총층수;
+
+  // 입력 섹션 표시 갱신
+  $('r_총층수').textContent         = v.총층수;
+  $('r_총세대').textContent         = v.총세대;
+  $('r_총모듈').textContent         = v.총모듈;
+  $('r_층당모듈면적').textContent   = v.층당모듈면적.toFixed(1);
+  v.기초RC기간 = Math.max(1, Math.ceil(v.바닥면적 * 0.0203 / v.가동율));
+  $('r_토공사기간').textContent     = v.토공사기간;
+  $('r_기초RC기간').textContent     = v.기초RC기간;
+  const 지하골조_factor_disp = v.지하층수 === 0 ? 0
+    : v.지하층수 === 1 ? 0.097
+    : v.지하층수 === 2 ? 0.187
+    : 0.187 + (v.지하층수 - 2) * 0.090;
+  const 지하골조기간_real = v.지하층수 === 0 ? 0
+    : Math.max(1, Math.ceil(v.바닥면적 * 지하골조_factor_disp));
+  $('r_지하골조기간').textContent   = 지하골조기간_real;
+  const gDiv = $('g_지하골조');
+  if (gDiv) gDiv.style.display = v.지하층수 > 0 ? '' : 'none';
+
+  $('r_코어층당일').textContent         = v.코어층당일;
+  $('r_코어총기간').textContent         = v.코어총기간;
+  $('r_총조립기간').textContent         = v.총조립기간;
+
+  // 크레인 양중 적합성 검토 (양중 중량 = 모듈 중량 × 1.25)
+  (function() {
+    const 양중중량 = +(v.모듈중량 * 1.25).toFixed(2);
+    const el = $('r_크레인적합');
+    let bg, color, icon, msg;
+    if (양중중량 > v.크레인종류) {
+      bg = '#FFEBEE'; color = '#B71C1C'; icon = '⛔';
+      msg = '양중 불가';
+    } else {
+      bg = '#E8F5E9'; color = '#2E7D32'; icon = '✅';
+      msg = '양중 가능';
+    }
+    el.textContent = `${icon} ${msg}`;
+    el.style.background = bg;
+    el.style.color = color;
+  })();
+  // 공종 계산
+  const tasks = buildTasks(v);
+  const totalDays = max(...tasks.map(t => t.end)) + 1;
+
+  // 요약
+  const coreTask     = tasks.find(t => t.no === 4);
+  const assemblyTask = tasks.find(t => t.modBars);
+  $('s_총모듈').textContent  = v.총모듈;
+  $('s_일일속도').textContent = `크레인 ${v.크레인대수}대 × 최하층${v.최하층속도}/기준층${v.기준층속도}유닛 = ${v.크레인대수*v.최하층속도}/${v.일일설치속도}유닛/일`;
+  $('s_조립기간').textContent = assemblyTask ? assemblyTask.total : v.총조립기간;
+  $('s_코어').textContent    = coreTask ? coreTask.total : 0;
+  const totalReal = tasks.reduce((sum, t) => sum + t.real, 0);
+  $('s_총실작업').textContent = totalReal;
+  $('s_총기간').textContent  = totalDays;
+  $('total-badge').textContent = `총 공사기간 ${totalDays}일 (실작업 ${totalReal}일)`;
+
+  const startDate = getStartDate();
+  renderSchedule(tasks, totalDays, startDate);
+  renderGantt(tasks, totalDays, v, startDate);
+  renderMilestones(tasks, totalDays, startDate);
+  renderEconomics(v, tasks);
+}
+
+// ── 경제성(노무비+경비) 산출·렌더 ──────────────────────────────────────────
+// 노무비 = 켄텍 man-day 계수 × 물량 × 시중노임 / 경비 = 크레인 양중 시간 × (손료+연료+운전원)
+function renderEconomics(v, tasks) {
+  const 유가 = +$('i_유가').value || 1600;
+  const won = n => Math.round(n).toLocaleString();
+  // 태스크 실작업일 조회 (노무비는 실작업 기준 — 가동율 적용된 달력일이 아니라 work 우선)
+  const dur = nm => { const t = tasks.find(x => x.name.startsWith(nm)); return t ? (t.work != null ? t.work : t.real) : 0; };
+  // 평균 동시 인원 = man-day(인·일) ÷ 작업일
+  const avgPpl = (md, days) => days > 0 ? Math.round(md / days * 10) / 10 : 0;
+  // man-day 맵 → 작업조 내역 (직종별 인·일·평균인원·일당·소계)
+  const mandayCrew = (map, qty, days, scale) => {
+    scale = scale || 1;
+    return Object.keys(map).map(j => {
+      const md = map[j] * (qty || 0) * scale;
+      return { 직종: j, 인원: avgPpl(md, days), 작업일: days, manday: Math.round(md * 10) / 10,
+               일당: WAGE_2026[j] || 0, 소계: Math.round(md * (WAGE_2026[j] || 0)), 추정: false };
+    });
+  };
+  // 고정 인원 × 작업일 내역
+  const fixedCrew = (직종, 인원, days, 일당, 추정) =>
+    [{ 직종, 인원, 작업일: days, manday: Math.round(인원 * days * 10) / 10,
+       일당: Math.round(일당), 소계: Math.round(인원 * days * 일당), 추정: !!추정 }];
+
+  // 공종별 물량: 기초·1층 = 바닥면적 / 코어 = 코어면적×총층수 / 모듈 = 총모듈수
+  const 물량 = { 기초: v.바닥면적, '1층': v.바닥면적, 코어: v.코어골조면적 * v.총층수, 모듈: v.총모듈 };
+  const 표시명 = { 기초:'기초 RC', '1층':'1층·필로티 골조', 코어:'코어 골조', 모듈:'모듈 설치+접합' };
+  const rows = []; let laborSum = 0, equipSum = 0;
+  // 토공사: 경비만 (켄텍이 장비만 표기 → 노무비 없음). 굴착기 0.6㎥ 손료 26,463원/hr·연료 11.6ℓ/hr
+  const 토공작업일 = v.바닥면적 * 0.0414 * (v.토공깊이계수 || 1);  // 켄텍 토공 작업일 × 지하 깊이계수(가동율 적용 전)
+  const 토공경비 = 토공작업일 * (8 * (26463 + 11.6 * 유가) + WAGE_2026.건설기계운전사);
+  rows.push({ name: '토공사 (굴착)', labor: 0, equip: 토공경비, crew: [],
+    equipDetail: [{ 장비: '굴착기 0.6㎥', 대수: 1, 시간: '8hr/일',
+                    작업일: Math.round(토공작업일 * 10) / 10, 운전원: '건설기계운전사 1명' }] });
+  equipSum += 토공경비;
+  // 골조 노무비 (켄텍 man-day × 물량 × 시중노임)
+  let 코어노무 = 0;
+  for (const k of ['기초','1층','코어']) {
+    let cost = 0;
+    for (const j in MANDAY[k]) cost += MANDAY[k][j] * (물량[k] || 0) * (WAGE_2026[j] || 0);
+    if (k === '코어') 코어노무 = cost;
+    rows.push({ name: 표시명[k], labor: cost, equip: 0,
+                crew: mandayCrew(MANDAY[k], 물량[k] || 0, dur(표시명[k])) });
+    laborSum += cost;
+  }
+  // 모듈 노무비 = 양중(고정) + 접합(접합 작업일에 비례). 기본=켄텍값, 접합 늘면 접합분만 증가
+  // 켄텍 모듈 노무비를 양중:접합 = 2:1(작업일 비율)로 분할 → 접합분 × (현재 접합일 ÷ 기본 접합일)
+  const 모듈baseline = (MANDAY.모듈.철근공 * WAGE_2026.철근공 + MANDAY.모듈.보통인부 * WAGE_2026.보통인부) * v.총모듈;
+  const 층당모듈수_e = v.층당세대 * v.세대당모듈;
+  // 올림 전 원값으로 비율 산정 (반올림 왜곡 방지): 현재 접합량 ÷ 기본(모듈당 4개) 접합량 — 모두 층당 기준
+  const raw현재접합 = (층당모듈수_e * v.모듈당수직접합 * v.수직접합속도)
+                    + (v.수평접합부 * v.수평접합속도);
+  const raw기본접합 = 층당모듈수_e * 4 * v.수직접합속도;
+  const 접합배수 = raw기본접합 > 0 ? (raw현재접합 / raw기본접합) : 1;
+  const 모듈scale = (2/3 + (1/3) * 접합배수);
+  const 모듈노무 = 모듈baseline * 모듈scale;
+  rows.push({ name: 표시명.모듈, labor: 모듈노무, equip: 0,
+              crew: mandayCrew(MANDAY.모듈, v.총모듈, v.총조립기간, 모듈scale) });
+  laborSum += 모듈노무;
+  // ── 빈 공종 노무비 = 인원 × 공종 작업일(실작업, 우리 규모 비례) × 직종 일당 ──
+  const add노무 = (name, cost, crew) => { rows.push({ name, labor: cost, equip: 0, crew: crew || [] }); laborSum += cost; };
+  add노무('옥탑(코어 상부)', v.총층수 > 0 ? 코어노무 / v.총층수 : 0,
+    mandayCrew(MANDAY.코어, v.코어골조면적, dur('옥탑')));   // 켄텍 코어 1개 층분
+  add노무('베이스플레이트', 8 * dur('베이스플레이트') * WAGE_2026.특별인부,
+    fixedCrew('특별인부', 8, dur('베이스플레이트'), WAGE_2026.특별인부));  // OTKCRK 8명
+  add노무('지붕 트러스', 6 * dur('지붕 트러스') * WAGE_2026.철골공,
+    fixedCrew('철골공', 6, dur('지붕 트러스'), WAGE_2026.철골공));          // OTKCRK 6명
+  add노무('지붕 패널', 6 * dur('지붕 패널') * WAGE_2026.판넬조립공,
+    fixedCrew('판넬조립공', 6, dur('지붕 패널'), WAGE_2026.판넬조립공));    // OTKCRK 6명
+  add노무('방수시트', 2 * dur('방수시트') * WAGE_2026.방수공,
+    fixedCrew('방수공', 2, dur('방수시트'), WAGE_2026.방수공));             // OTKCRK 2명
+  // 마감: 마감 직종(미장·도배·타일·도장) 평균 일당 × 인원(추정 6) × 작업일 / 부대: 조경공·보통인부
+  const 마감일당 = (WAGE_2026.미장공 + WAGE_2026.도배공 + WAGE_2026.타일공 + WAGE_2026.도장공) / 4;
+  add노무('현장마감(외부접합·외장)', 6 * dur('현장마감') * 마감일당,
+    fixedCrew('마감공(미장·도배·타일·도장 평균)', 6, dur('현장마감'), 마감일당, true));
+  add노무('건축마감(공용부위)', 6 * dur('건축마감') * 마감일당,
+    fixedCrew('마감공(미장·도배·타일·도장 평균)', 6, dur('건축마감'), 마감일당, true));
+  add노무('부대공사(토목·조경)', 4 * dur('부대공사') * (WAGE_2026.조경공 + WAGE_2026.보통인부) / 2,
+    fixedCrew('조경공·보통인부 평균', 4, dur('부대공사'), (WAGE_2026.조경공 + WAGE_2026.보통인부) / 2, true));
+  // 경비: 이동식 크레인(모듈 양중) — 양중일 × 8hr × (손료 + 연료×유가) + 운전원 일당
+  const cr = CRANE_COST[v.크레인종류] || CRANE_COST[130];
+  const 양중일 = v.세대층 > 0 ? v.층당설치일_최하층 + Math.max(v.세대층 - 1, 0) * v.층당설치일_기준층 : 0;
+  const 크레인경비 = v.크레인대수 * 양중일 * (8 * (cr.son + cr.fuel * 유가) + WAGE_2026.건설기계운전사);
+  const 모듈행 = rows.find(r => r.name === '모듈 설치+접합'); 모듈행.equip = 크레인경비;
+  모듈행.equipDetail = [{ 장비: `이동식 크레인 ${v.크레인종류}t`, 대수: v.크레인대수, 시간: '8hr/일',
+                         작업일: 양중일, 운전원: `건설기계운전사 ${v.크레인대수}명` }];
+  equipSum += 크레인경비;
+  // 작업조(인부) 구성 모달용 데이터 저장
+  window._econData = { rows: rows };
+  const body = $('econBody');
+  if (body) {
+    body.innerHTML = rows.map(r =>
+      `<tr><td style="text-align:left">${r.name}</td><td class="num-col">${won(r.labor)}</td><td class="num-col">${r.equip ? won(r.equip) : '-'}</td><td class="num-col" style="font-weight:700">${won(r.labor + r.equip)}</td></tr>`
+    ).join('') +
+    `<tr class="total-row"><td style="text-align:left">합계</td><td class="num-col">${won(laborSum)}</td><td class="num-col">${won(equipSum)}</td><td class="num-col" style="font-weight:700">${won(laborSum + equipSum)}</td></tr>`;
+  }
+  const note = $('econNote');
+  if (note) note.innerHTML = `노무비 = 인원 × 공종 작업일 × 시중노임(2026.1.1) — 작업일이 우리 규모로 계산되어 자동 비례 · 골조·모듈=켄텍, 옥탑=켄텍 코어 1층분, 지붕·베이스·마감·부대=OTKCRK 인원+시중노임 직종(인원 일부 추정) · 경비 = 토공(굴착기)+크레인 ${v.크레인종류}t×${양중일}일`;
+}
+
+// ── 공기산정표 렌더 ──────────────────────────────────────────────────────
+function renderSchedule(tasks, totalDays, startDate) {
+  const tbody = $('schedBody');
+  tbody.innerHTML = '';
+  let rowNo = 0;
+  tasks.forEach(t => {
+    rowNo++;
+    const tr = document.createElement('tr');
+    const isCrit   = t.type === 'critical';
+    const isOrange = t.type === 'orange';
+    if (isCrit)   tr.className = 'critical-row';
+    if (isOrange) tr.className = 'orange-row';
+
+    const badge = '';
+    const critBadge = isCrit ? '<span class="critical-badge">CP</span>' : '';
+
+    const taskRefs = t.refs || [];
+
+    tr.innerHTML = `
+      <td class="no-col">${rowNo}</td>
+      <td class="task-name">${t.name}${badge}${critBadge}</td>
+      <td class="num-col">${t.real}</td>
+      <td class="num-col">${t.nw}</td>
+      <td class="num-col" style="font-weight:700">${t.total}</td>
+      <td class="num-col">D+${t.start}<br><small style="color:#777;font-size:10px">${fmtDate(offsetToDate(startDate, t.start))}</small></td>
+      <td class="num-col">D+${t.end}<br><small style="color:#777;font-size:10px">${fmtDate(offsetToDate(startDate, t.end))}</small></td>
+      <td class="note-col">${t.note}</td>
+    `;
+
+    // 근거 버튼은 innerHTML 대신 DOM으로 직접 생성 (따옴표 충돌 방지)
+    const noteCell = tr.lastElementChild;
+    if (taskRefs.length > 0) {
+      const btn = document.createElement('button');
+      btn.className = 'ref-btn';
+      btn.textContent = '📄 근거 보기';
+      btn.addEventListener('click', () => openRef(taskRefs, t.name));
+      noteCell.appendChild(btn);
+    } else {
+      const noRef = document.createElement('span');
+      noRef.style.cssText = 'font-size:10px; color:#bbb; margin-left:6px;';
+      noRef.textContent = '표준품셈/KCS';
+      noteCell.appendChild(noRef);
+    }
+    tbody.appendChild(tr);
+  });
+
+  // 합계행
+  const totalReal = tasks.reduce((sum, t) => sum + t.real, 0);
+  const totalNW   = tasks.reduce((sum, t) => sum + t.nw,   0);
+  const tr = document.createElement('tr');
+  tr.className = 'total-row';
+  tr.innerHTML = `
+    <td colspan="2" style="text-align:center">합계</td>
+    <td class="num-col">${totalReal}일</td>
+    <td class="num-col">${totalNW}일</td>
+    <td class="num-col">${totalDays}일</td>
+    <td colspan="3" style="text-align:center; font-size:11px; opacity:0.8">
+      실작업·비작업 = 전체 공종 합 · 총공사기간 = 크리티컬 패스 기준 달력일
+    </td>
+  `;
+  tbody.appendChild(tr);
+}
+
+// ── 바차트 렌더 ──────────────────────────────────────────────────────────
+// 일반 공종: 1공종 = 1행 (공기산정표와 동일)
+// 태스크7(모듈+강봉): 모듈 조립 행(빨강) + 강봉 연결 행(주황 ↳) 2행으로 분리 표시
+function renderGantt(tasks, totalDays, v, startDate) {
+  const container = $('ganttContainer');
+  container.innerHTML = '';
+
+  const PERIOD = 30;
+  const numPeriods = Math.ceil(totalDays / PERIOD) + 1;
+
+  // 상단 헤더 (월 레이블)
+  const header = document.createElement('div');
+  header.className = 'gantt-header';
+  for (let p = 0; p < numPeriods; p++) {
+    const tick = document.createElement('div');
+    tick.className = 'gantt-month';
+    const d = offsetToDate(startDate, p * PERIOD);
+    tick.textContent = d.getFullYear() + '.' + String(d.getMonth() + 1).padStart(2, '0');
+    header.appendChild(tick);
+  }
+  container.appendChild(header);
+
+  // ── 행 목록 구성 ──────────────────────────────────────────────────────
+  // 일반 태스크: 1행
+  // 태스크7(모듈+강봉): 모듈 조립 행 + 강봉 연결 행 2개 (공기산정표 행 구조 유지 + 강봉 시각화)
+  const ganttRows = [];
+  let ganttRowNo = 0;
+  tasks.forEach(t => {
+    if (t.modBars && t.modBars.length > 0) {
+      ganttRowNo++;
+      ganttRows.push({
+        noText:  ganttRowNo,
+        noClass: t.type === 'critical' ? 'critical' : 'normal',
+        label:   `모듈 설치 (크레인 ${v.크레인대수}대)`,
+        bars:    t.modBars,
+        parallel: false
+      });
+      if (t.boltBars && t.boltBars.length > 0) {
+        ganttRows.push({
+          noText:  '↳',
+          noClass: 'orange',
+          label:   `수평접합 (층당 ${v.수평접합부}접합부, 양중과 동시 진행)`,
+          bars:    t.boltBars,
+          parallel: false
+        });
+      }
+    } else {
+      ganttRowNo++;
+      const typeClass = t.type === 'critical' ? 'critical'
+                      : t.type === 'orange'   ? 'orange' : 'normal';
+      ganttRows.push({
+        noText:  ganttRowNo,
+        noClass: typeClass,
+        label:   t.name,
+        bars:    [t],
+        parallel: !!t.parallel
+      });
+    }
+  });
+
+  // ── 행 렌더 ──────────────────────────────────────────────────────────
+  ganttRows.forEach(row => {
+    const rowEl = document.createElement('div');
+    rowEl.className = 'gantt-row';
+
+    // 레이블 (번호 뱃지 + 공종명 + 병행 뱃지)
+    const label = document.createElement('div');
+    label.className = 'gantt-label';
+
+    const noEl = document.createElement('div');
+    noEl.className = `g-no ${row.noClass}`;
+    noEl.textContent = row.noText;
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'g-name';
+    nameSpan.title = row.label;
+    nameSpan.textContent = row.label;
+
+    label.appendChild(noEl);
+    label.appendChild(nameSpan);
+
+
+    // 트랙
+    const track = document.createElement('div');
+    track.className = 'gantt-track';
+
+    // 배경 구분선
+    for (let p = 0; p < numPeriods; p++) {
+      const line = document.createElement('div');
+      line.className = 'month-line';
+      line.style.left = ((p * PERIOD) / totalDays * 100) + '%';
+      track.appendChild(line);
+    }
+
+    // 막대 렌더
+    row.bars.forEach(seg => {
+      const bar = document.createElement('div');
+      bar.className = `gantt-bar ${seg.type || row.noClass}`;
+      if (row.parallel) bar.classList.add('parallel-bar');
+      const leftPct  = (seg.start / totalDays * 100).toFixed(2);
+      const widthPct = (seg.total / totalDays * 100).toFixed(2);
+      bar.style.left  = leftPct + '%';
+      bar.style.width = widthPct + '%';
+      bar.style.minWidth = '2px';
+      if (parseFloat(widthPct) > 3) {
+        bar.textContent = `${seg.total}일`;
+      }
+      bar.addEventListener('mouseenter', e => showTooltip(e, seg));
+      bar.addEventListener('mousemove',  e => moveTooltip(e));
+      bar.addEventListener('mouseleave', hideTooltip);
+      track.appendChild(bar);
+    });
+
+    rowEl.appendChild(label);
+    rowEl.appendChild(track);
+    container.appendChild(rowEl);
+  });
+
+  // 하단 눈금
+  const scale = document.createElement('div');
+  scale.className = 'gantt-scale';
+  for (let p = 0; p < numPeriods; p++) {
+    const tick = document.createElement('div');
+    tick.className = 'scale-tick';
+    const d = offsetToDate(startDate, p * PERIOD);
+    tick.textContent = String(d.getMonth() + 1).padStart(2, '0') + '월';
+    scale.appendChild(tick);
+  }
+  container.appendChild(scale);
+}
+
+// ── 마일스톤 렌더 ───────────────────────────────────────────────────────
+function renderMilestones(tasks, totalDays, startDate) {
+  const list = $('milestoneList');
+  list.innerHTML = '';
+
+  // 이름·속성 기반 탐색 (동적 태스크 번호 대응)
+  const assemblyTask  = tasks.find(t => t.modBars);
+  const lastModEnd    = assemblyTask ? assemblyTask.end : 0;
+  const 지하골조Task  = tasks.find(t => t.no === 3.5);
+  const 현장마감Task  = tasks.find(t => t.name.startsWith('현장마감'));
+  const 건축마감Task  = tasks.find(t => t.name.startsWith('건축마감'));
+  const 부대공사Task  = tasks.find(t => t.name.startsWith('부대공사'));
+  const ms = [
+    { label: '착공',                    day: 0 },
+    { label: '토공사 완료',             day: tasks.find(t=>t.no===2)?.end ?? 0 },
+    ...(지하골조Task ? [{ label: '지하층 골조 완료', day: 지하골조Task.end }] : []),
+    { label: '1층·필로티 골조 완료',    day: tasks.find(t=>t.no===3)?.end ?? 0 },
+    { label: '코어골조 완료',           day: tasks.find(t=>t.no===4)?.end ?? 0 },
+    { label: '모듈조립+접합 완료',      day: lastModEnd },
+    { label: '현장마감 완료',           day: 현장마감Task ? 현장마감Task.end : 0 },
+    { label: '건축마감 완료',           day: 건축마감Task ? 건축마감Task.end : 0 },
+    { label: '준공 (부대공사 완료)',     day: 부대공사Task ? 부대공사Task.end : totalDays - 1 },
+  ];
+
+  ms.forEach(m => {
+    const chip = document.createElement('div');
+    chip.className = 'ms-chip';
+    const dateStr = fmtDate(offsetToDate(startDate, m.day));
+    chip.innerHTML = `<div class="ms-dot"></div><span>${m.label}</span><span class="ms-day">D+${m.day} · ${dateStr}</span>`;
+    list.appendChild(chip);
+  });
+}
+
+// ── 툴팁 ────────────────────────────────────────────────────────────────
+function showTooltip(e, t) {
+  const tip = $('tooltip');
+  const sd = getStartDate();
+  const endDay = t.end !== undefined ? t.end : t.start + t.total - 1;
+  const realPart = t.real !== undefined
+    ? `실작업: ${t.real}일 | 비작업: ${t.nw}일 | 총: <strong>${t.total}일</strong>`
+    : `기간: <strong>${t.total}일</strong>`;
+  const notePart = t.note ? `<br><small style="opacity:0.8">${t.note}</small>` : '';
+  tip.innerHTML = `
+    <strong>${t.name}</strong><br>
+    ${realPart}<br>
+    ${fmtDate(offsetToDate(sd, t.start))} → ${fmtDate(offsetToDate(sd, endDay))}
+    ${notePart}
+  `;
+  tip.style.display = 'block';
+  moveTooltip(e);
+}
+function moveTooltip(e) {
+  const tip = $('tooltip');
+  tip.style.left = (e.clientX + 14) + 'px';
+  tip.style.top  = (e.clientY - 10) + 'px';
+}
+function hideTooltip() { $('tooltip').style.display = 'none'; }
+
+// ── 탭 전환 ─────────────────────────────────────────────────────────────
+// 설명(note-text) 보기/숨기기 토글
+function toggleNotes() {
+  const on = document.body.classList.toggle('show-notes');
+  const btn = document.getElementById('noteToggleBtn');
+  if (btn) btn.textContent = on ? '🔅 설명 숨기기' : '💡 설명 보기';
+}
+
+function switchTab(id) {
+  document.querySelectorAll('.tab-btn').forEach((b, i) => {
+    const ids = ['inputs','schedule','gantt'];
+    b.classList.toggle('active', ids[i] === id);
+  });
+  document.querySelectorAll('.tab-panel').forEach(p => {
+    p.classList.toggle('active', p.id === 'tab-' + id);
+  });
+}
+
+// ── 초기 실행 ────────────────────────────────────────────────────────────
+populateRegions();   // 지역 드롭다운을 가동율 데이터로 채움 (천안 기본 선택)
+renderModuleTable(); // 모듈 타입 테이블 먼저 렌더 → 내부에서 calc() 호출
+</script>
+</body>
+</html>

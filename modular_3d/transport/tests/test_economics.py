@@ -23,11 +23,11 @@ SHS = Section(name="SHS200x8", section_type="SHS",
 TR_LOWBED = Truck(name="저상24t", truck_type="lowbed",
                   max_length=12000, max_width=3000, max_height=4500, max_weight=24000,
                   vehicle_height_offset=700,
-                  curb_weight_kg=14000, trailer_length_mm=13000, active=True)
+                  curb_weight_kg=14000, active=True)
 TR_EXTEND = Truck(name="광폭28t", truck_type="extendable",
                   max_length=18000, max_width=3400, max_height=4500, max_weight=28000,
                   vehicle_height_offset=700,
-                  curb_weight_kg=16000, trailer_length_mm=14000, active=True)
+                  curb_weight_kg=16000, active=True)
 
 
 def _trip(truck, trip_no=1):
@@ -75,7 +75,7 @@ def test_per_km_aframe():
     tr = Truck(name="aframe24t", truck_type="aframe",
                max_length=12000, max_width=3000, max_height=4500, max_weight=24000,
                vehicle_height_offset=700,
-               curb_weight_kg=14000, trailer_length_mm=13000, active=True)
+               curb_weight_kg=14000, active=True)
     opts = EconomicsOptions(distance_km=50.0,
                             cost_mode="per_km", aframe_per_km_krw=9000.0)
     cost = compute_trip_cost(_trip(tr), opts)
@@ -139,3 +139,26 @@ def test_freight_col_mapping():
     assert freight_col(_tk(18000)) == "18톤"
     assert freight_col(_tk(25000)) == "25톤"
     assert freight_col(_tk(30000)) == "추레라"
+
+
+# ── C단계: 트레일러별 1회 고정비 (거리 무관) ───────────────
+def test_fixed_per_trip_distance_independent():
+    o1 = EconomicsOptions(distance_km=30, cost_mode="fixed_per_trip",
+                          lowbed_fixed_krw=600000)
+    o2 = EconomicsOptions(distance_km=300, cost_mode="fixed_per_trip",
+                          lowbed_fixed_krw=600000)
+    c1 = compute_trip_cost(_trip(TR_LOWBED), o1)
+    c2 = compute_trip_cost(_trip(TR_LOWBED), o2)
+    assert c1.cost_krw == 600000          # 저상 고정비
+    assert c2.cost_krw == 600000          # 거리 달라도 동일
+    assert c1.pricing_mode == "fixed_per_trip"
+    assert c1.rate_label == "1회 고정"
+
+
+def test_fixed_per_trip_by_truck_type():
+    opts = EconomicsOptions(cost_mode="fixed_per_trip",
+                            lowbed_fixed_krw=600000,
+                            extendable_fixed_krw=700000,
+                            aframe_fixed_krw=800000)
+    assert compute_trip_cost(_trip(TR_LOWBED), opts).cost_krw == 600000
+    assert compute_trip_cost(_trip(TR_EXTEND), opts).cost_krw == 700000

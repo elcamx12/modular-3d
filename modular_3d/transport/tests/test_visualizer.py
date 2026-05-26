@@ -22,8 +22,7 @@ SHS = Section(name="SHS200x8", section_type="SHS",
               width=200, height=200, thickness=8, weight_per_m=47.9)
 TR = Truck(name="저상24t", truck_type="lowbed",
            max_length=12000, max_width=3000, max_height=4500, max_weight=24000,
-           vehicle_height_offset=700, curb_weight_kg=14000,
-           trailer_length_mm=13000, active=True)
+           vehicle_height_offset=700, curb_weight_kg=14000, active=True)
 SP = SpacingParams()
 
 

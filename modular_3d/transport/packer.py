@@ -1,8 +1,17 @@
-"""모듈·패널 → 운송 회차 산정 (FFD 빈 패킹).
+"""모듈·패널 → 운송 회차 산정.
 
-운송프로그램 원본(`src/packer.py`, Song-Jung-Hun/-3-) 이식 + Phase 2 확장.
+[Phase 8 — 2026-05-26 신규 패커 통합]
+- 메인 진입점 `pack_items()` 는 *신규 패커* (packer_meta.pack_all_seeds + balance_trips) 호출.
+- `recheck_trip_with_truck()` 도 신규 안전 검사 모듈(packer_safety.can_place) 사용.
+- 기존 FFD 함수들(`_pack_modules` / `_pack_horizontal_stacked` / `_pack_dependent_panels` 등)
+  은 *deprecated* 상태로 본 파일에 남겨둠 — `_snapshots/2026-05-26_운송_FFD/packer.py`
+  와 동일 동작. 신규 패커가 의존하는 헬퍼만 *현역*: `Trip`, `PackResult`,
+  `_effective_cargo_limit`, `_diagnose_blocked`, `_dependent_max_thickness`,
+  `_dependent_free_inner_dims`, `_can_stack_on_dependent`, `_eff_truck_width`,
+  `_max_*_per_truck` (recheck 진단용).
+- 사용자 명시 OK 후 deprecated 함수 정리 예정 (Phase 11).
 
-[원본과의 차이 — Phase 2 변경점]
+[원본과의 차이 — Phase 2 변경점, 보존]
 - **A-1 일반화**: `_pack_lshape_panels` → `_pack_dependent_panels`. 운송프로그램
   원본의 `kind="lshape"` (벽 1면 종속) 분기를 폐기하고, `Panel.wall_segments`
   리스트의 길이/내용에 따라 0/1/2/3/4 면 종속 + 부분 벽 모두 동일 함수에서
@@ -16,10 +25,10 @@
 - **B-5 정정 (ppr 재계산)**: 원본은 빈 첫 패널의 길이로 ppr 을 고정. 사양이
   다른 패널이 혼적되면 잘못된 ppr 이 남음. 우리는 bin 내 패널을 합집합으로
   재계산: `ppr = floor((usable + gap) / (max(len) + gap))`.
-- **B-13 옵션화 (적층 길이 베이스 기준 토글)**: 원본 `_can_stack_on_lshape` 의
-  길이 검사는 트럭 유효 길이까지 허용 (코드 주석에 "L자 개별 길이에 제한 없음"
-  명시된 의도된 단순화). 우리는 `strict_stack_length=True` 일 때만 베이스
-  길이 이내로 엄격 검사. 기본은 원본 정책 유지.
+- **B-13 (적층 길이 단순화)**: 원본 `_can_stack_on_lshape` 의 길이 검사는
+  트럭 유효 길이까지 허용 (코드 주석에 "L자 개별 길이에 제한 없음" 명시된
+  의도된 단순화). 이 정책을 그대로 따른다. (옛 strict_stack_length 토글은
+  실사용처가 없어 2026-05-26 제거.)
 - **B-14 정밀도 (적층 L자 벽 두께)**: A-1 일반화로 자동 해결 — wall_segments
   각각의 thickness/height 가 정확히 반영됨.
 - **B-25 정정 (cargo vs total 분리)**: Trip.cargo_weight = 화물 합산 (적층
@@ -34,7 +43,7 @@ from typing import List, Optional, Union
 
 from .limits import can_carry
 from .models import (
-    Module, Panel, RoadClass, SpacingParams, Truck, WallSegment,
+    Module, Panel, SiteLimit, SpacingParams, Truck, WallSegment,
 )
 
 
@@ -47,7 +56,6 @@ class Trip:
     trip_no: int
     truck: Truck
     items: List[Item] = field(default_factory=list)
-    wide_check: bool = False
     blocked_reason: Optional[str] = None
     panels_per_row: int = 1
     n_layers: int = 1
@@ -55,6 +63,12 @@ class Trip:
     usable_length_mm: float = 0.0
     # 종속 패널 회차: stacked_items[i] = items[i] 위에 올린 Panel 또는 None
     stacked_items: list = field(default_factory=list)
+    # Phase 2 신규 — 새 패커의 자세·자리·좌표 메타 (역호환 — 기본값 빈 리스트)
+    # 기존 코드는 placements 없이도 동작. 새 패커 Phase 8 통합 시 채워짐.
+    placements: list = field(default_factory=list)
+    # 자세 혼적 회차의 UI 표시 라벨 (계획서 § 12.1)
+    has_mixed_posture: bool = False
+    standing_count: int = 0
 
     @property
     def cargo_weight(self) -> float:
@@ -186,31 +200,26 @@ def _can_stack_on_dependent(
     base: Panel,
     truck: Truck,
     sp: SpacingParams,
-    strict_stack_length: bool = False,
 ) -> bool:
     """cand 패널을 base(종속 floor) 위에 적층 가능한가?
 
     조건:
-      ① 폭/길이: cand 가 base 의 wall_segments 가 점유한 영역을 피해 안쪽
-         빈 공간에 들어가야 함. strict_stack_length=False (B-13 단순화 정책
-         유지) 면 길이 검사는 트럭 유효 길이까지 허용.
-      ② 높이: base 단독 점유 높이와 (base 바닥 + gap + cand 점유 높이) 중
+      ① 폭: cand 가 base 의 wall_segments 가 점유한 영역을 피해 안쪽 빈
+         공간(폭)에 들어가야 함.
+      ② 길이: 트럭 유효 길이까지 허용 (B-13 단순화 정책).
+      ③ 높이: base 단독 점유 높이와 (base 바닥 + gap + cand 점유 높이) 중
          큰 값이 트럭 내공 높이를 넘지 않아야 함.
     """
-    free_w, free_l = _dependent_free_inner_dims(base, sp)
+    free_w, _free_l = _dependent_free_inner_dims(base, sp)
 
     # ① 폭
     if free_w <= 0 or cand.width > free_w:
         return False
 
-    # ② 길이
-    if strict_stack_length:
-        if free_l <= 0 or cand.length > free_l:
-            return False
-    else:
-        usable = truck.max_length - 2 * sp.truck_edge_clearance_mm
-        if cand.length > usable:
-            return False
+    # ② 길이 — 트럭 유효 길이까지 허용 (B-13 단순화 정책)
+    usable = truck.max_length - 2 * sp.truck_edge_clearance_mm
+    if cand.length > usable:
+        return False
 
     # ③ 높이
     inner_h = truck.max_height - truck.vehicle_height_offset
@@ -221,9 +230,60 @@ def _can_stack_on_dependent(
     return cargo_h <= inner_h
 
 
+# ── 폭 여유(양쪽 side_overhang_mm) 반영 유효 적재 폭 ─────────────
+def _eff_truck_width(truck: Truck, sp: SpacingParams) -> float:
+    """화물이 트럭 폭보다 양쪽으로 각 side_overhang_mm 까지 튀어나와 결박
+    가능하므로, 폭 검사에 쓰는 유효 폭 = 트럭 폭 + 2×여유. (2026-05-26)"""
+    return truck.max_width + 2.0 * sp.side_overhang_mm
+
+
+# ── 실효 화물 한도 (현장 GVW + 트럭 적재능력 동시 반영) ─────────
+def _effective_cargo_limit(truck: Truck, site: SiteLimit) -> float:
+    """이 트럭에 실을 수 있는 화물 합산 무게 상한.
+
+    = min(트럭 적재능력, 현장 GVW − 차체)
+    - 현장 GVW 가 None(해당없음)이면 트럭 적재능력만 사용.
+    - 현장 GVW − 차체 ≤ 0 (차체만으로도 현장 한도 초과)이면 0 반환
+      → 이 트럭은 어떤 화물도 못 실음.
+
+    2026-05-26 (A) 패치 — 패킹 시 회차 누적 GVW 가 현장 한도를
+    넘는 버그(can_carry 가 1개당 GVW 만 검사) 수정용. 패킹/recheck
+    의 무게 검사를 모두 이 헬퍼로 통일한다.
+    """
+    truck_cap = truck.max_weight
+    if site.max_gvw_kg is None:
+        return truck_cap
+    gvw_room = site.max_gvw_kg - (truck.curb_weight_kg or 0.0)
+    if gvw_room <= 0:
+        return 0.0
+    return min(truck_cap, gvw_room)
+
+
+# ── 막힘 사유 진단 (가장 적합한 후보 트럭의 위반 사유) ─────
+def _diagnose_blocked(item, trucks: List[Truck], site: SiteLimit) -> str:
+    """item 이 어떤 트럭으로도 못 실릴 때, "가장 적합한" 트럭의 위반 사유로
+    구체 막힘 사유를 만든다. 가장 적합 = can_carry 위반 사유 수가 가장 적은
+    트럭. 그 트럭으로도 막힌 이유들이 핵심 제약."""
+    if not trucks:
+        return "호환 트럭 없음"
+    best_truck: Optional[Truck] = None
+    best_reasons: tuple = ()
+    for tr in trucks:
+        r = can_carry(item, tr, site)
+        if r.ok:
+            continue
+        if best_truck is None or len(r.reasons) < len(best_reasons):
+            best_truck = tr
+            best_reasons = r.reasons
+    if best_truck is None:
+        return "원인 분석 실패"
+    return (f"트럭 '{best_truck.name}' 기준 — "
+            + " / ".join(best_reasons))
+
+
 # ── 트럭 단일사양 최대 적재 헬퍼 (recheck 진단용) ─────────────────
 def _max_modules_per_truck(module: Module, truck: Truck, spacing: SpacingParams) -> int:
-    if module.width > truck.max_width:
+    if module.width > _eff_truck_width(truck, spacing):
         return 0
     if module.height + truck.vehicle_height_offset > truck.max_height:
         return 0
@@ -238,7 +298,7 @@ def _max_modules_per_truck(module: Module, truck: Truck, spacing: SpacingParams)
 def _max_floor_panels_per_truck(
     panel: Panel, truck: Truck, sp: SpacingParams
 ) -> tuple[int, int, int]:
-    if panel.width > truck.max_width:
+    if panel.width > _eff_truck_width(truck, sp):
         return 0, 0, 0
     usable_len = truck.max_length - 2 * sp.truck_edge_clearance_mm
     if panel.length > usable_len:
@@ -257,7 +317,7 @@ def _max_floor_panels_per_truck(
 
 def _max_dependent_per_truck(panel: Panel, truck: Truck, sp: SpacingParams) -> int:
     """단일사양 종속 floor 1트럭 기저 배치 최대 매수 (적층 미포함)."""
-    if panel.width > truck.max_width:
+    if panel.width > _eff_truck_width(truck, sp):
         return 0
     if _dependent_max_thickness(panel) + truck.vehicle_height_offset > truck.max_height:
         return 0
@@ -285,11 +345,9 @@ def _closest_fit_truck(ok_trucks: List[Truck], ref_length: float, ref_weight: fl
 def _pack_modules(
     modules: List[Module],
     trucks: List[Truck],
-    road: RoadClass,
+    site: SiteLimit,
     spacing: SpacingParams,
     start_trip_no: int = 1,
-    strict_weight: bool = False,
-    strict_length: bool = False,
 ) -> tuple[List[Trip], list]:
     if not modules:
         return [], []
@@ -304,20 +362,18 @@ def _pack_modules(
     for m in modules:
         ok_trucks = [
             tr for tr in compat
-            if can_carry(m, tr, road, strict_weight=strict_weight,
-                         strict_length=strict_length).ok
-            and m.width <= tr.max_width
+            if can_carry(m, tr, site).ok
+            and m.width <= _eff_truck_width(tr, spacing)
             and m.height + tr.vehicle_height_offset <= tr.max_height
             and m.length <= tr.max_length - 2 * spacing.truck_edge_clearance_mm
         ]
         if not ok_trucks:
-            blocked.append((m, "모듈 규격이 모든 트럭/도로 한도 초과"))
+            blocked.append((m, _diagnose_blocked(m, compat, site)))
             continue
         best = _closest_fit_truck(ok_trucks, m.length, m.weight)
         usable = best.max_length - 2 * spacing.truck_edge_clearance_mm
         trips.append(Trip(
             trip_no=next_no, truck=best, items=[m],
-            wide_check=m.is_wide(),
             panels_per_row=1, n_layers=1,
             used_length_mm=m.length, usable_length_mm=usable,
         ))
@@ -337,13 +393,11 @@ def _recompute_ppr(items: list, sp: SpacingParams, usable_len: float) -> int:
 def _pack_horizontal_stacked(
     panels: List[Panel],
     trucks: List[Truck],
-    road: RoadClass,
+    site: SiteLimit,
     sp: SpacingParams,
     start_trip_no: int,
     label: str,
     compat_fn,
-    strict_weight: bool = False,
-    strict_length: bool = False,
 ) -> tuple[List[Trip], list]:
     """플로어/벽 패널 공용 FFD — 무게 내림차순, 눕혀서 적층, 혼적 허용."""
     if not panels:
@@ -356,13 +410,12 @@ def _pack_horizontal_stacked(
     valid: list = []
     for p in panels:
         ok = [tr for tr in compat
-              if can_carry(p, tr, road, strict_weight=strict_weight,
-                           strict_length=strict_length).ok
-              and p.width <= tr.max_width]
+              if can_carry(p, tr, site).ok
+              and p.width <= _eff_truck_width(tr, sp)]
         if ok:
             valid.append((p, ok))
         else:
-            blocked.append((p, "운송 가능 트럭 없음"))
+            blocked.append((p, _diagnose_blocked(p, compat, site)))
     if not valid:
         return [], blocked
 
@@ -389,7 +442,7 @@ def _pack_horizontal_stacked(
             stack_h = new_layers * max_thick + max(new_layers - 1, 0) * sp.panel_gap_mm
             if stack_h > inner_h:
                 continue
-            if b["total_cargo"] + p.weight > tr.max_weight:
+            if b["total_cargo"] + p.weight > _effective_cargo_limit(tr, site):
                 continue
             b["items"].append(p)
             b["total_cargo"] += p.weight
@@ -426,21 +479,17 @@ def _pack_horizontal_stacked(
     return trips, blocked
 
 
-def _pack_floor_panels(panels, trucks, road, sp, start_trip_no,
-                       strict_weight=False, strict_length=False):
+def _pack_floor_panels(panels, trucks, site, sp, start_trip_no):
     return _pack_horizontal_stacked(
-        panels, trucks, road, sp, start_trip_no,
+        panels, trucks, site, sp, start_trip_no,
         "플로어 패널", _floor_panel_compatible_trucks,
-        strict_weight=strict_weight, strict_length=strict_length,
     )
 
 
-def _pack_wall_panels(panels, trucks, road, sp, start_trip_no,
-                      strict_weight=False, strict_length=False):
+def _pack_wall_panels(panels, trucks, site, sp, start_trip_no):
     return _pack_horizontal_stacked(
-        panels, trucks, road, sp, start_trip_no,
+        panels, trucks, site, sp, start_trip_no,
         "벽체 패널", _wall_panel_compatible_trucks,
-        strict_weight=strict_weight, strict_length=strict_length,
     )
 
 
@@ -448,13 +497,10 @@ def _pack_wall_panels(panels, trucks, road, sp, start_trip_no,
 def _pack_dependent_panels(
     panels: List[Panel],
     trucks: List[Truck],
-    road: RoadClass,
+    site: SiteLimit,
     sp: SpacingParams,
     start_trip_no: int,
     stacking_candidates: Optional[List[Panel]] = None,
-    strict_stack_length: bool = False,
-    strict_weight: bool = False,
-    strict_length: bool = False,
 ) -> tuple[List[Trip], list, List[Panel]]:
     """A-1 일반화: wall_segments 가 있는 모든 floor 패널 + 원본 lshape 통합.
 
@@ -474,13 +520,12 @@ def _pack_dependent_panels(
     valid: list = []
     for p in panels:
         ok = [tr for tr in compat
-              if can_carry(p, tr, road, strict_weight=strict_weight,
-                           strict_length=strict_length).ok
-              and p.width <= tr.max_width]
+              if can_carry(p, tr, site).ok
+              and p.width <= _eff_truck_width(tr, sp)]
         if ok:
             valid.append((p, ok))
         else:
-            blocked.append((p, "운송 가능 트럭 없음"))
+            blocked.append((p, _diagnose_blocked(p, compat, site)))
     if not valid:
         return [], blocked, sc
 
@@ -498,10 +543,9 @@ def _pack_dependent_panels(
                 for i, (base, slot) in enumerate(zip(b["base_items"], b["stacked_items"])):
                     if slot is not None:
                         continue
-                    if not _can_stack_on_dependent(p, base, b["truck"], sp,
-                                                    strict_stack_length=strict_stack_length):
+                    if not _can_stack_on_dependent(p, base, b["truck"], sp):
                         continue
-                    if b["total_weight"] + p.weight > b["truck"].max_weight:
+                    if b["total_weight"] + p.weight > _effective_cargo_limit(b["truck"], site):
                         continue
                     b["stacked_items"][i] = p
                     b["total_weight"] += p.weight
@@ -520,11 +564,11 @@ def _pack_dependent_panels(
                 gap = sp.panel_gap_mm if b["base_items"] else 0.0
                 if b["used_length"] + gap + p.length > usable:
                     continue
-                if p.width > tr.max_width:
+                if p.width > _eff_truck_width(tr, sp):
                     continue
                 if _dependent_max_thickness(p) + tr.vehicle_height_offset > tr.max_height:
                     continue
-                if b["total_weight"] + p.weight > tr.max_weight:
+                if b["total_weight"] + p.weight > _effective_cargo_limit(tr, site):
                     continue
                 b["base_items"].append(p)
                 b["stacked_items"].append(None)
@@ -538,7 +582,7 @@ def _pack_dependent_panels(
             ok_for_new = [
                 tr for tr in ok_trucks
                 if (p.length <= tr.max_length - 2 * sp.truck_edge_clearance_mm
-                    and p.width <= tr.max_width
+                    and p.width <= _eff_truck_width(tr, sp)
                     and _dependent_max_thickness(p) + tr.vehicle_height_offset <= tr.max_height)
             ]
             if not ok_for_new:
@@ -561,10 +605,9 @@ def _pack_dependent_panels(
                 for i, (base, slot) in enumerate(zip(b["base_items"], b["stacked_items"])):
                     if slot is not None:
                         continue
-                    if not _can_stack_on_dependent(cand, base, b["truck"], sp,
-                                                    strict_stack_length=strict_stack_length):
+                    if not _can_stack_on_dependent(cand, base, b["truck"], sp):
                         continue
-                    if b["total_weight"] + cand.weight > b["truck"].max_weight:
+                    if b["total_weight"] + cand.weight > _effective_cargo_limit(b["truck"], site):
                         continue
                     b["stacked_items"][i] = cand
                     b["total_weight"] += cand.weight
@@ -608,11 +651,12 @@ def _panel_overcount_reason(
     inner_h = new_truck.max_height - new_truck.vehicle_height_offset
     usable_len = new_truck.max_length - 2 * spacing.truck_edge_clearance_mm
 
-    # 원인 ① 패널 폭 > 트럭 폭
-    if sample.width > new_truck.max_width:
+    # 원인 ① 패널 폭 > 트럭 폭 + 양쪽 여유
+    eff_w = _eff_truck_width(new_truck, spacing)
+    if sample.width > eff_w:
         return (
-            f"❌ 패널 폭이 트럭 폭보다 넓습니다\n"
-            f"  • 패널 폭 {sample.width:.0f}mm > 트럭 최대 폭 {new_truck.max_width:.0f}mm"
+            f"❌ 패널 폭이 트럭 적재 폭(여유 포함)보다 넓습니다\n"
+            f"  • 패널 폭 {sample.width:.0f}mm > 트럭 폭+양쪽여유 {eff_w:.0f}mm"
         )
     # 원인 ② 패널 길이 > 트럭 유효 길이
     if ppr == 0 or sample.length > usable_len:
@@ -646,9 +690,8 @@ def _panel_overcount_reason(
 
 
 def recheck_trip_with_truck(
-    trip: Trip, new_truck: Truck, road: RoadClass,
+    trip: Trip, new_truck: Truck, site: SiteLimit,
     spacing: SpacingParams = SpacingParams(),
-    strict_weight: bool = False, strict_length: bool = False,
 ) -> tuple[bool, str, Optional[Trip]]:
     """주어진 trip 의 화물을 new_truck 에 그대로 실을 수 있나 검사."""
     if not trip.items:
@@ -670,18 +713,26 @@ def recheck_trip_with_truck(
 
     # 각 아이템 4 조건 검사
     for item in list(trip.items) + [s for s in trip.stacked_items if s is not None]:
-        r = can_carry(item, new_truck, road,
-                      strict_weight=strict_weight, strict_length=strict_length)
+        r = can_carry(item, new_truck, site)
         if not r.ok:
-            return False, "❌ 도로/트럭 한도 초과\n  • " + "\n  • ".join(r.reasons), None
+            return False, "❌ 현장/트럭 한도 초과\n  • " + "\n  • ".join(r.reasons), None
 
     # B-3: 적층 무게 포함한 총 화물 합산
+    # (A 패치 2026-05-26) 트럭 적재한도와 현장 GVW(차체+화물) 누적 둘 다 검사.
     total_cargo = trip.cargo_weight
     if total_cargo > new_truck.max_weight:
         return False, (
             f"❌ 중량 초과(적층 포함)\n"
             f"  • 화물 합계 {total_cargo:.0f}kg > 트럭 적재한도 {new_truck.max_weight:.0f}kg"
         ), None
+    if site.max_gvw_kg is not None:
+        gvw = total_cargo + (new_truck.curb_weight_kg or 0.0)
+        if gvw > site.max_gvw_kg:
+            return False, (
+                f"❌ 총중량 초과(현장 GVW, 적층 포함)\n"
+                f"  • 차체 {new_truck.curb_weight_kg:.0f} + 화물 {total_cargo:.0f} = "
+                f"{gvw:.0f}kg > 현장 한도 {site.max_gvw_kg:.0f}kg"
+            ), None
 
     usable = new_truck.max_length - 2 * spacing.truck_edge_clearance_mm
     n = len(trip.items)
@@ -700,7 +751,6 @@ def recheck_trip_with_truck(
             ), None
         new_trip = Trip(
             trip_no=trip.trip_no, truck=new_truck, items=list(trip.items),
-            wide_check=any(isinstance(i, Module) and i.is_wide() for i in trip.items),
             panels_per_row=n, n_layers=1,
             used_length_mm=total_len, usable_length_mm=usable,
         )
@@ -748,81 +798,65 @@ def recheck_trip_with_truck(
     return True, "OK", new_trip
 
 
-# ── 메인 진입점 ───────────────────────────────────────────────────
+# ── 메인 진입점 (Phase 8 신규 패커) ───────────────────────────────
 def pack_items(
     modules: List[Module],
     panels: List[Panel],
     trucks: List[Truck],
-    road: RoadClass,
+    site: SiteLimit,
     spacing: SpacingParams = SpacingParams(),
-    strict_weight: bool = False,
-    strict_length: bool = False,
-    strict_stack_length: bool = False,
+    *,
+    use_v2: bool = True,
+    economics=None,
 ) -> PackResult:
-    """모듈·패널 → 회차 산정.
+    """모듈·패널 → 회차 산정 — Best-Fit + 다중 시드 + VND + 무게중심 보정.
 
-    1) 모듈 (1 트럭 = 1 모듈)
-    2) 종속 floor (wall_segments 있음) + 원본 lshape — 우선 배치 + 적층 시도
-    3) 남은 floor (순수)
-    4) 남은 wall (독립 벽)
+    [Phase 4 V2 도입 — 2026-05-27]
+    use_v2=True (기본) 면 pack_all_seeds_v2 사용.
 
-    [엄격 모드 옵션]
-    - strict_weight/length: limits.can_carry 의 GVW·전장 정밀화.
-    - strict_stack_length: 적층 길이 검사를 베이스 길이로 엄격 (B-13).
+    [비용 옵션 — 2026-05-27 단일 진실원 통합]
+    economics: EconomicsOptions 인스턴스 (UI 의 _read_economics_options() 결과).
+               None 이면 기본값 (freight_table 모드 + 기본 단가).
+    cost_mode 와 단가는 economics 에서 직접 추출.
+
+    Args:
+        modules: 모듈 리스트
+        panels: 패널 리스트
+        trucks: 사용 가능 트럭 목록 (active=False 자동 제외)
+        site: 현장 운송 제한
+        spacing: 간격 파라미터
+        use_v2: V2 메타 패커 사용 여부 (기본 True)
+        economics: EconomicsOptions — UI 입력값 (None 면 기본)
+
+    Returns:
+        PackResult — trips + blocked
     """
-    trips: List[Trip] = []
-    blocked: list = []
-    next_no = 1
+    from .packer_balance import balance_trips
+    from .economics import EconomicsOptions
 
-    # 분류
-    dependent_panels = [p for p in panels
-                        if (p.kind == "floor" and p.wall_segments)
-                        or p.kind == "lshape"]
-    floor_panels = [p for p in panels if p.kind == "floor" and not p.wall_segments]
-    wall_panels = [p for p in panels if p.kind == "wall"]
+    if economics is None:
+        economics = EconomicsOptions()
 
-    # 1) 모듈
-    mod_trips, mod_blocked = _pack_modules(
-        modules, trucks, road, spacing, start_trip_no=next_no,
-        strict_weight=strict_weight, strict_length=strict_length,
-    )
-    trips.extend(mod_trips)
-    blocked.extend(mod_blocked)
-    next_no += len(mod_trips)
-
-    # 2) 종속 패널 + 적층 후보 (floor + wall)
-    stacking_candidates = floor_panels + wall_panels
-    dep_trips, dep_blocked, remaining = _pack_dependent_panels(
-        dependent_panels, trucks, road, spacing, next_no,
-        stacking_candidates=stacking_candidates if stacking_candidates else None,
-        strict_stack_length=strict_stack_length,
-        strict_weight=strict_weight, strict_length=strict_length,
-    )
-    trips.extend(dep_trips)
-    blocked.extend(dep_blocked)
-    next_no += len(dep_trips)
-
-    rem_floor = [p for p in remaining if p.kind == "floor"]
-    rem_wall = [p for p in remaining if p.kind == "wall"]
-
-    # 3) 순수 floor
-    fl_trips, fl_blocked = _pack_floor_panels(
-        rem_floor, trucks, road, spacing, next_no,
-        strict_weight=strict_weight, strict_length=strict_length,
-    )
-    trips.extend(fl_trips)
-    blocked.extend(fl_blocked)
-    next_no += len(fl_trips)
-
-    # 4) 독립 wall
-    wl_trips, wl_blocked = _pack_wall_panels(
-        rem_wall, trucks, road, spacing, next_no,
-        strict_weight=strict_weight, strict_length=strict_length,
-    )
-    trips.extend(wl_trips)
-    blocked.extend(wl_blocked)
-
-    return PackResult(trips=trips, blocked=blocked)
+    items: List[Item] = list(modules) + list(panels)
+    cost_mode = economics.cost_mode
+    if use_v2:
+        from .packer_meta import pack_all_seeds_v2
+        best, _meta = pack_all_seeds_v2(
+            items, trucks, site, spacing,
+            cost_mode=cost_mode,
+            eco_options=economics,
+            apply_vnd=True,
+        )
+    else:
+        from .packer_meta import pack_all_seeds
+        best, _meta = pack_all_seeds(
+            items, trucks, site, spacing,
+            cost_mode=cost_mode,
+            eco_options=economics,
+            apply_vnd=True,
+        )
+    balance_trips(best.trips, spacing)
+    return best
 
 
 __all__ = [

@@ -1,12 +1,13 @@
 """Phase 1 단위 테스트 — catalog_io.py.
 
 [검증 포인트]
-- 패키지 내장 trucks/roads 로드 + 항목 수 (5종/3종).
+- 패키지 내장 trucks 로드 + 항목 수 (5종).
 - A-frame 트럭이 active=False 인지 확인.
 - active_only=True 필터가 4종만 반환.
 - 프로젝트 오버라이드 save → load 라운드트립 (tmp_path 사용).
 - 프로젝트 항목이 같은 name 의 내장 항목을 덮어쓰는지.
-- validate_truck/validate_road 가 잘못된 dict 에 에러 메시지 반환.
+- validate_truck 이 잘못된 dict 에 에러 메시지 반환.
+- (도로 카탈로그는 2026-05-26 폐지 — 관련 테스트 제거됨.)
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ import json
 import pytest
 
 from modular_3d.transport import catalog_io as cio
-from modular_3d.transport.models import Truck, RoadClass
+from modular_3d.transport.models import Truck
 
 
 # ─────────────────────────── 내장 로드 ───────────────────────────
@@ -43,15 +44,6 @@ def test_load_all_trucks_active_filter():
     assert all(t.active for t in active_t)
 
 
-def test_load_builtin_roads_count():
-    roads = cio.load_builtin_roads()
-    assert len(roads) == 3
-    names = {r.name for r in roads}
-    assert any("광로" in n for n in names)
-    assert any("일반도로" in n for n in names)
-    assert any("이면도로" in n for n in names)
-
-
 # ─────────────────────────── 프로젝트 오버라이드 ───────────────────────────
 def test_load_project_trucks_empty_when_no_dir(tmp_path):
     assert cio.load_project_trucks(tmp_path) == []
@@ -61,7 +53,7 @@ def test_save_then_load_project_truck_roundtrip(tmp_path):
     custom = Truck(
         name="사용자 정의 30톤", truck_type="lowbed",
         max_length=14000, max_width=3000, max_height=4500, max_weight=30000,
-        curb_weight_kg=15000, trailer_length_mm=13000, active=True,
+        curb_weight_kg=15000, active=True,
         note="사용자 추가",
     )
     saved_path = cio.save_project_truck(custom, project_root=tmp_path)
@@ -84,7 +76,6 @@ def test_project_overrides_builtin(tmp_path):
         max_height=target.max_height,
         max_weight=99999,  # 의도적 다른 값
         curb_weight_kg=target.curb_weight_kg,
-        trailer_length_mm=target.trailer_length_mm,
         active=target.active,
     )
     cio.save_project_truck(override, project_root=tmp_path)
@@ -108,15 +99,6 @@ def test_save_project_truck_replaces_existing(tmp_path):
     assert loaded[0].max_length == 12000
 
 
-def test_save_then_load_project_road_roundtrip(tmp_path):
-    r = RoadClass(name="사용자 도로", max_length=20000, max_width=3500,
-                  max_height=4500, max_weight=45000)
-    cio.save_project_road(r, project_root=tmp_path)
-    loaded = cio.load_project_roads(tmp_path)
-    assert len(loaded) == 1
-    assert loaded[0].name == "사용자 도로"
-
-
 # ─────────────────────────── validate ───────────────────────────
 def test_validate_truck_ok():
     data = dict(name="ok", truck_type="lowbed",
@@ -129,12 +111,6 @@ def test_validate_truck_bad_type():
                 max_length=10000, max_width=3000, max_height=4500, max_weight=20000)
     errs = cio.validate_truck(data)
     assert errs and "truck_type" in errs[0]
-
-
-def test_validate_road_bad_dim():
-    data = dict(name="r", max_length=-1, max_width=3000, max_height=4500, max_weight=40000)
-    errs = cio.validate_road(data)
-    assert errs
 
 
 # ─────────────────────────── JSON 파일 깨짐 에러 메시지 ───────────────────────────

@@ -5,10 +5,10 @@ modular_3d 안에 병합한 결과물이다. 우리 씬의 부재 데이터를 �
 입력으로 변환·패킹·시각화·운임계산까지 수행한다.
 
 [디렉토리]
-- data/                 — 트럭·도로 한도 카탈로그 (JSON)
+- data/                 — 트럭 카탈로그 (JSON)
 - models.py             — 데이터클래스 (Phase 1)
 - catalog_io.py         — 카탈로그 로드/저장 (Phase 1)
-- limits.py             — 도로 한도 검사 (Phase 2)
+- limits.py             — 현장 제한(SiteLimit) + 트럭 한도 검사 (Phase 2)
 - packer.py             — FFD 빈팩 (Phase 2)
 - adapter.py            — 우리 씬 → 운송 입력 변환 (Phase 3)
 - wall_classifier.py    — 비내력벽 외부/내부 자동판별 (Phase 3)

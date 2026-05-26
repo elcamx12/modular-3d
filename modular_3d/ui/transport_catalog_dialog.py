@@ -14,7 +14,8 @@
 원본 내장 항목은 절대 변경되지 않는다.
 
 [C-2 결정]
-도로 한도(RoadClass) 는 UI 편집 차단. 본 다이얼로그는 트럭 탭만 제공.
+본 다이얼로그는 트럭 카탈로그만 관리한다. (도로 등급 카탈로그는 2026-05-26
+폐지 — 현장 운송 제한이 프로젝트 설정으로 대체.)
 
 [검증 (B-15)]
 폼 입력값 → `validate_truck` 또는 `Truck(**data)` 호출 시 ValueError 메시지
@@ -49,7 +50,7 @@ from modular_3d.transport.models import Truck, _TRUCK_TYPES
 _HEADERS = [
     "출처", "이름", "종류",
     "최대길이(mm)", "최대폭(mm)", "최대높이(mm)", "최대중량(kg)",
-    "차체중량(kg)", "트레일러길이(mm)",
+    "차체중량(kg)",
     "활성",
 ]
 
@@ -106,7 +107,6 @@ class _TruckEditDialog(QDialog):
         self._max_height = _mk_spin(99_999, "mm"); self._max_height.setValue(3000)
         self._max_weight = _mk_dspin(200_000, "kg"); self._max_weight.setValue(25000)
         self._curb_weight = _mk_dspin(200_000, "kg")
-        self._trailer_length = _mk_spin(999_999, "mm")
         self._height_offset = _mk_dspin(5000, "mm"); self._height_offset.setValue(700)
         self._active_cb = QCheckBox("패킹 후보로 사용 (active)")
         self._active_cb.setChecked(True)
@@ -117,7 +117,6 @@ class _TruckEditDialog(QDialog):
         lay.addRow("최대 높이:", self._max_height)
         lay.addRow("최대 중량:", self._max_weight)
         lay.addRow("차체 자중 (curb):", self._curb_weight)
-        lay.addRow("트레일러 길이:", self._trailer_length)
         lay.addRow("차체 높이 오프셋:", self._height_offset)
         lay.addRow(self._active_cb)
         lay.addRow("비고:", self._note_edit)
@@ -147,7 +146,6 @@ class _TruckEditDialog(QDialog):
         self._max_height.setValue(int(t.max_height))
         self._max_weight.setValue(float(t.max_weight))
         self._curb_weight.setValue(float(t.curb_weight_kg))
-        self._trailer_length.setValue(int(t.trailer_length_mm))
         self._height_offset.setValue(float(t.vehicle_height_offset))
         self._active_cb.setChecked(bool(t.active))
         self._note_edit.setText(t.note or "")
@@ -162,7 +160,6 @@ class _TruckEditDialog(QDialog):
             "max_weight": float(self._max_weight.value()),
             "vehicle_height_offset": float(self._height_offset.value()),
             "curb_weight_kg": float(self._curb_weight.value()),
-            "trailer_length_mm": float(self._trailer_length.value()),
             "active": bool(self._active_cb.isChecked()),
             "note": self._note_edit.text().strip(),
         }
@@ -227,8 +224,7 @@ class TransportCatalogDialog(QDialog):
         root = QVBoxLayout(self)
         info = QLabel(
             "🔒 내장 트럭은 읽기 전용 — [복제] 로 사용자 트럭 생성 가능.  "
-            "📁 프로젝트 트럭은 편집·삭제 가능.  "
-            "도로 한도는 코드 JSON 만 — UI 편집 불가."
+            "📁 프로젝트 트럭은 편집·삭제 가능."
         )
         info.setWordWrap(True)
         info.setStyleSheet("color: #555; padding: 4px;")
@@ -285,14 +281,14 @@ class TransportCatalogDialog(QDialog):
                 src, t.name, t.truck_type,
                 f"{int(t.max_length):,}", f"{int(t.max_width):,}",
                 f"{int(t.max_height):,}", f"{int(t.max_weight):,}",
-                f"{int(t.curb_weight_kg):,}", f"{int(t.trailer_length_mm):,}",
+                f"{int(t.curb_weight_kg):,}",
                 "✓" if t.active else "—",
             ]
             for col, v in enumerate(vals):
                 item = QTableWidgetItem(v)
                 if src.startswith("🔒"):
                     item.setForeground(QBrush(QColor("#7a7a7a")))
-                if col >= 3 and col <= 8:
+                if col >= 3 and col <= 7:
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self._table.setItem(row, col, item)
         self._update_buttons_enabled()

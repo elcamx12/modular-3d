@@ -1,11 +1,11 @@
-"""Phase 9 통합(E2E) 테스트 — 씬 → 어댑터 → 패커 → 운임 / 캐시 / 수동 시뮬.
+"""Phase 9 통합(E2E) 테스트 — 씬 → 어댑터 → 패커 → 운임 / 캐시.
 
 [검증 시나리오]
 1. 풀 파이프라인: 씬(모듈 2개) → build_transport_input → pack_items →
    compute_economics. 회차 수·총중량·운임 일관성 검증.
 2. 캐시 E2E: TransportCache.get_or_compute_pack 2회 호출 시 입력 동일하면
-   동일 PackResult 객체 재사용(캐시 hit), 도로 변경 시 재계산(miss).
-3. 수동 시뮬 E2E: 운송 객체 → run_manual_sim 성공/실패 경로.
+   동일 PackResult 객체 재사용(캐시 hit), 현장 제한 변경 시 재계산(miss).
+(시나리오 3 수동 시뮬 E2E — 수동 시뮬레이션 기능 제거로 함께 삭제됨.)
 
 [픽스처 재사용]
 test_adapter 의 stub AnalysisModel/DesignResult + 씬 모듈 헬퍼를 그대로 import
@@ -17,8 +17,7 @@ from modular_3d.model.core import Scene
 from modular_3d.transport.adapter import TransportOptions, build_transport_input
 from modular_3d.transport.cache import TransportCache
 from modular_3d.transport.economics import EconomicsOptions, compute_economics
-from modular_3d.transport.manual_sim import ManualSimInput, run_manual_sim
-from modular_3d.transport.models import RoadClass, SpacingParams, Truck
+from modular_3d.transport.models import SiteLimit, SpacingParams, Truck
 from modular_3d.transport.packer import pack_items
 
 # test_adapter 의 stub 헬퍼 재사용 (DRY)
@@ -40,9 +39,9 @@ def _trucks():
     ]
 
 
-def _road():
-    return RoadClass(name="1급", max_length=16700, max_width=3000,
-                     max_height=4000, max_weight=40000)
+def _site():
+    # 현장 제한: GVW 40t, 폭 3000, 높이 4000 (옛 '1급 도로' 한도를 현장 제한으로).
+    return SiteLimit(max_gvw_kg=40000, max_width_mm=3000, max_height_mm=4000)
 
 
 def _build_two_module_scene():
@@ -62,7 +61,7 @@ def test_full_pipeline_scene_to_economics():
     ti = build_transport_input(scene, am, dr, "3종", TransportOptions())
     assert len(ti.modules) == 2
 
-    pack = pack_items(ti.modules, ti.panels, _trucks(), _road(), SpacingParams())
+    pack = pack_items(ti.modules, ti.panels, _trucks(), _site(), SpacingParams())
     # 모듈 1 트럭 = 1 모듈 정책 → 회차 2
     assert pack.total_trips == 2
     assert pack.module_trips == 2
@@ -83,7 +82,7 @@ def test_cache_hit_and_invalidate():
     scene, am, dr = _build_two_module_scene()
     cache = TransportCache()
     opts = TransportOptions()
-    trucks, road, sp = _trucks(), _road(), SpacingParams()
+    trucks, road, sp = _trucks(), _site(), SpacingParams()
     design = dr
 
     pack1 = cache.get_or_compute_pack(
@@ -93,11 +92,10 @@ def test_cache_hit_and_invalidate():
     # 동일 입력 → 같은 객체 (캐시 hit)
     assert pack1 is pack2
 
-    # 도로 변경 → pack_fp 변경 → 재계산 (다른 객체)
-    road2 = RoadClass(name="2급", max_length=13000, max_width=2500,
-                      max_height=4000, max_weight=20000)
+    # 현장 제한 변경 → pack_fp 변경 → 재계산 (다른 객체)
+    site2 = SiteLimit(max_gvw_kg=20000, max_width_mm=2500, max_height_mm=4000)
     pack3 = cache.get_or_compute_pack(
-        scene, am, design, "3종", opts, trucks, road2, sp)
+        scene, am, design, "3종", opts, trucks, site2, sp)
     assert pack3 is not pack1
 
 
@@ -119,65 +117,4 @@ def test_cache_invalidate_from_levels():
     assert cache.design_results == {"3종": "d"}
 
 
-# ── 시나리오 3: 수동 시뮬 E2E ─────────────────────────────
-def test_manual_sim_ok_and_fail():
-    scene, am, dr = _build_two_module_scene()
-    ti = build_transport_input(scene, am, dr, "3종", TransportOptions())
-    mod = ti.modules[0]
-
-    # 25t 저상 트럭 — 모듈 1개 가능
-    ok_res = run_manual_sim(ManualSimInput(
-        items=[mod], truck=_trucks()[0], road=_road(), spacing=SpacingParams()))
-    assert ok_res.ok
-    assert ok_res.trip is not None
-    assert 0 < ok_res.weight_utilization <= 100
-
-    # 빈 화물 → 실패
-    empty = run_manual_sim(ManualSimInput(
-        items=[], truck=_trucks()[0], road=_road(), spacing=SpacingParams()))
-    assert not empty.ok
-    assert "비어" in empty.reason
-
-
-def test_manual_sim_mixed_module_panel_rejected():
-    """모듈 + 패널 혼적 → 거부 (원본 정책)."""
-    from modular_3d.transport.models import Module, Panel, Section
-    sec = Section(name="S", section_type="SHS", width=100, height=100,
-                  thickness=6, weight_per_m=17.0)
-    mod = Module(name="M", width=2500, length=6000, height=3000,
-                 column_section=sec, beam_section=sec, extra_weight_kg=500)
-    pan = Panel(name="P", kind="floor", width=2500, length=6000,
-                thickness=150, beam_section=sec, extra_weight_kg=500)
-    res = run_manual_sim(ManualSimInput(
-        items=[mod, pan], truck=_trucks()[0], road=_road(), spacing=SpacingParams()))
-    assert not res.ok
-    assert "모듈" in res.reason and "패널" in res.reason
-
-
-def test_manual_sim_length_overflow_rejected():
-    """모듈 단일행 길이 초과 → 거부 (모듈은 적층 안 함)."""
-    scene, am, dr = _build_two_module_scene()
-    ti = build_transport_input(scene, am, dr, "3종", TransportOptions())
-    mod = ti.modules[0]
-    res = run_manual_sim(ManualSimInput(
-        items=[mod] * 5, truck=_trucks()[0], road=_road(), spacing=SpacingParams()))
-    assert not res.ok
-    assert "길이" in res.reason or "중량" in res.reason
-
-
-def test_manual_sim_panels_multilayer_ok():
-    """[B1] floor 패널 여러 매가 단일행엔 안 들어가도 다단 적재로 OK.
-
-    이전 단일행 단순화 구현이면 '길이 초과'로 잘못 거부했을 케이스.
-    """
-    from modular_3d.transport.models import Panel, Section
-    sec = Section(name="S", section_type="SHS", width=100, height=100,
-                  thickness=6, weight_per_m=17.0)
-    # length 6000 × 3매 = 단일행 18200mm > 유효 12600mm 이지만 2열×다단으로 적재 가능
-    panels = [Panel(name=f"F{i}", kind="floor", width=2400, length=6000,
-                    thickness=150, beam_section=sec, extra_weight_kg=300)
-              for i in range(3)]
-    res = run_manual_sim(ManualSimInput(
-        items=panels, truck=_trucks()[0], road=_road(), spacing=SpacingParams()))
-    assert res.ok
-    assert res.trip is not None
+# (시나리오 3 수동 시뮬 E2E — 수동 시뮬레이션 기능 제거(2026-05-26)로 함께 제거)

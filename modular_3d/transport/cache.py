@@ -23,7 +23,7 @@
   merged_*) 직렬화 → SHA-256.
 - classify_fp: scene_fp + (gap_mm, eps_mm, segment_size_mm, include_floor_panels).
 - ti_fp: seg_fp(policy, n) + classify_fp + transport_options_hash.
-- pack_fp: ti_fp + trucks_fp + road + spacing.
+- pack_fp: ti_fp + trucks_fp + site(현장 제한) + spacing.
 """
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .adapter import TransportInput, TransportOptions
 from .economics import EconomicsOptions, EconomicsResult, compute_economics
-from .models import RoadClass, SpacingParams, Truck
+from .models import SiteLimit, SpacingParams, Truck
 from .packer import PackResult, pack_items
 
 
@@ -95,7 +95,6 @@ def compute_seg_fp(design_fp: str, n_segments: int) -> str:
 def compute_ti_fp(seg_fp: str, classify_fp: str, options: TransportOptions) -> str:
     opt = {
         "include_cantilever": options.include_cantilever,
-        "cantilever_packing_mode": options.cantilever_packing_mode,
         "wall_classifier_enabled": options.wall_classifier_enabled,
         "interior_wall_unit_weight": options.interior_wall_unit_weight,
         "exterior_wall_unit_weight": options.exterior_wall_unit_weight,
@@ -116,7 +115,7 @@ def compute_trucks_fp(trucks: Iterable[Truck]) -> str:
             "name": t.name, "type": t.truck_type,
             "L": t.max_length, "W": t.max_width, "H": t.max_height,
             "Wt": t.max_weight, "offset": t.vehicle_height_offset,
-            "curb": t.curb_weight_kg, "tlen": t.trailer_length_mm,
+            "curb": t.curb_weight_kg,
             "active": t.active,
         })
     items.sort(key=lambda x: x["name"])
@@ -124,16 +123,33 @@ def compute_trucks_fp(trucks: Iterable[Truck]) -> str:
 
 
 def compute_pack_fp(
-    ti_fp: str, trucks_fp: str, road: RoadClass, spacing: SpacingParams,
-    strict_weight: bool, strict_length: bool, strict_stack_length: bool,
+    ti_fp: str, trucks_fp: str, site: SiteLimit, spacing: SpacingParams,
+    economics=None,
 ) -> str:
-    road_dict = {"name": road.name, "L": road.max_length, "W": road.max_width,
-                 "H": road.max_height, "Wt": road.max_weight}
+    """패킹 캐시 키 — 입력 변경 시 자동 무효화.
+
+    [2026-05-27] economics 옵션 (cost_mode, 단가, 거리) 도 포함 — 사용자가
+    UI 에서 운임 방식 / 단가 / 거리를 바꾸면 *패킹도 재계산*. 종전엔 economics
+    가 빠져 있어 운임만 갱신되고 트럭 선정이 stale 한 상태로 남았음.
+    """
+    site_dict = {"gvw": site.max_gvw_kg, "W": site.max_width_mm,
+                 "H": site.max_height_mm}
     sp = {"gap": spacing.panel_gap_mm, "edge": spacing.truck_edge_clearance_mm,
           "lstack": spacing.lshape_stack_gap_mm}
-    flags = {"sw": strict_weight, "sl": strict_length, "ssl": strict_stack_length}
+    eco_dict = {}
+    if economics is not None:
+        eco_dict = {
+            "mode": economics.cost_mode,
+            "dist": economics.distance_km,
+            "lkm": economics.lowbed_per_km_krw,
+            "ekm": economics.extendable_per_km_krw,
+            "akm": economics.aframe_per_km_krw,
+            "lf": economics.lowbed_fixed_krw,
+            "ef": economics.extendable_fixed_krw,
+            "af": economics.aframe_fixed_krw,
+        }
     return _sha256(ti_fp + "|" + trucks_fp + "|"
-                   + json.dumps({"road": road_dict, "sp": sp, "flags": flags},
+                   + json.dumps({"site": site_dict, "sp": sp, "eco": eco_dict},
                                 sort_keys=True))
 
 
@@ -230,12 +246,10 @@ class TransportCache:
         policy: str,
         options: TransportOptions,
         trucks: List[Truck],
-        road: RoadClass,
+        site: SiteLimit,
         spacing: SpacingParams,
         classifier_opts=None,
-        strict_weight: bool = False,
-        strict_length: bool = False,
-        strict_stack_length: bool = False,
+        economics: Optional[EconomicsOptions] = None,
     ) -> PackResult:
         """파이프라인 [5]→[7] 진입점.
 
@@ -290,20 +304,16 @@ class TransportCache:
             )
             self.invalidate_from(7)
 
-        # pack_fp
+        # pack_fp — economics 포함 (UI 비용 옵션 변경 시 자동 재계산)
         trucks_fp = compute_trucks_fp(trucks)
-        new_pack_fp = compute_pack_fp(
-            self.ti_fp, trucks_fp, road, spacing,
-            strict_weight, strict_length, strict_stack_length,
-        )
+        new_pack_fp = compute_pack_fp(self.ti_fp, trucks_fp, site, spacing,
+                                        economics=economics)
         if new_pack_fp != self.pack_fp or self.pack_result is None:
             self.pack_fp = new_pack_fp
             self.pack_result = pack_items(
                 self.transport_input.modules, self.transport_input.panels,
-                trucks, road, spacing,
-                strict_weight=strict_weight,
-                strict_length=strict_length,
-                strict_stack_length=strict_stack_length,
+                trucks, site, spacing,
+                economics=economics,
             )
             self.invalidate_from(8)
         return self.pack_result
