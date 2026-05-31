@@ -44,7 +44,8 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 datas += [
     ('modular_3d/transport/data/trucks.json', 'modular_3d/transport/data'),
     ('modular_3d/transport/data/README.md', 'modular_3d/transport/data'),
-    ('modular_3d/transport/references', 'modular_3d/transport/references'),
+    # [2026-05-31] transport/references 항목 제거 — 실제 폴더 없음(코드 미참조,
+    #   git 미추적 유령 경로). 존재하면 PyInstaller 가 'Unable to find' 로 빌드 실패.
     ('modular_3d/카탈로그/material_prices.json', 'modular_3d/카탈로그'),
     # [2026-05-27 평가 탭 Phase R] 공정표 HTML + refs PNG 동결 빌드 포함.
     # QWebEngineView 가 QUrl.fromLocalFile 로 HTML 로드 → 옆 refs/ 의 PNG·index.json 도 필요.
