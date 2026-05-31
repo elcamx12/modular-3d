@@ -126,6 +126,7 @@ def main():
         if '__pycache__' not in p.parts
         and '_snapshot_원본' not in str(p)
         and '_refactor_tools' not in p.parts
+        and '팀원코드' not in p.parts   # 병합 대조용 임시 클론(별도 .git) 제외
     ]
 
     out_lines = ['# 인벤토리 (자동 생성)\n']
