@@ -1,0 +1,158 @@
+{
+  "version": 1,
+  "n_floors": 3,
+  "components": [
+    {
+      "id": 1,
+      "comp_type": "module",
+      "position": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rotation": 0,
+      "dimensions": {
+        "width": 3400.0,
+        "depth": 3400.0,
+        "height": 3400.0
+      },
+      "anchor": 0,
+      "group_id": 1,
+      "floor_index": 0,
+      "sub_index": 0,
+      "anchor_edge_id": 0,
+      "mid_beam_level": 0,
+      "merge_with_panel": false,
+      "merged_fp_id": null,
+      "merged_wall_ids": [],
+      "parent_id": 0,
+      "joint_records": [],
+      "openings": [],
+      "beam_section_type": "shs"
+    },
+    {
+      "id": 2,
+      "comp_type": "floor_panel",
+      "position": [
+        0.0,
+        0.0,
+        3420.0
+      ],
+      "rotation": 0,
+      "dimensions": {
+        "width": 3400.0,
+        "depth": 3400.0,
+        "height": 200.0
+      },
+      "anchor": 0,
+      "group_id": 2,
+      "floor_index": 1,
+      "sub_index": 0,
+      "anchor_edge_id": 0,
+      "mid_beam_level": 0,
+      "merge_with_panel": false,
+      "merged_fp_id": null,
+      "merged_wall_ids": [],
+      "parent_id": 0,
+      "joint_records": [
+        {
+          "target_comp_id": 3,
+          "target_xy": [
+            100.0,
+            100.0
+          ],
+          "target_z": 3320.0,
+          "corner_idx": 0
+        },
+        {
+          "target_comp_id": 3,
+          "target_xy": [
+            3300.0,
+            100.0
+          ],
+          "target_z": 3320.0,
+          "corner_idx": 1
+        },
+        {
+          "target_comp_id": 4,
+          "target_xy": [
+            3300.0,
+            3300.0
+          ],
+          "target_z": 3320.0,
+          "corner_idx": 2
+        },
+        {
+          "target_comp_id": 4,
+          "target_xy": [
+            100.0,
+            3300.0
+          ],
+          "target_z": 3320.0,
+          "corner_idx": 3
+        }
+      ],
+      "openings": [],
+      "beam_section_type": "shs"
+    },
+    {
+      "id": 3,
+      "comp_type": "struct_wall",
+      "position": [
+        0.0,
+        0.0,
+        3420.0
+      ],
+      "rotation": 0,
+      "dimensions": {
+        "width": 3400.0,
+        "depth": 200.0,
+        "height": 3400.0,
+        "merge": 1.0
+      },
+      "anchor": 0,
+      "group_id": 3,
+      "floor_index": 1,
+      "sub_index": 0,
+      "anchor_edge_id": 0,
+      "mid_beam_level": 0,
+      "merge_with_panel": true,
+      "merged_fp_id": 2,
+      "merged_wall_ids": [],
+      "parent_id": 0,
+      "joint_records": [],
+      "openings": [],
+      "beam_section_type": "shs"
+    },
+    {
+      "id": 4,
+      "comp_type": "module",
+      "position": [
+        0.0,
+        0.0,
+        3420.0
+      ],
+      "rotation": 0,
+      "dimensions": {
+        "width": 3400.0,
+        "depth": 3400.0,
+        "height": 3400.0
+      },
+      "anchor": 0,
+      "group_id": 4,
+      "floor_index": 1,
+      "sub_index": 0,
+      "anchor_edge_id": 0,
+      "mid_beam_level": 0,
+      "merge_with_panel": false,
+      "merged_fp_id": null,
+      "merged_wall_ids": [],
+      "parent_id": 0,
+      "joint_records": [],
+      "openings": [],
+      "beam_section_type": "shs"
+    }
+  ],
+  "rooms": [],
+  "joint_overrides": []
+}

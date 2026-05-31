@@ -23,6 +23,7 @@ from modular_3d.model import (
     Vertical3Module,
     Core, CoreSlab,
     _rotate_local_to_world,
+    make_local_to_world,
 )
 from modular_3d.analysis.constants import (
     NODE_MERGE_TOL_MM, LINE_COLINEAR_TOL, OVERLAP_TOL_MM,
@@ -30,6 +31,7 @@ from modular_3d.analysis.constants import (
     CORE_TRUSS_GRID_MM,
     MODULE_HEIGHT_MM, MODULE_JOINT_GAP_MM, FLOOR_HEIGHT,
 )
+from modular_3d.카탈로그.geometry import CORE_WALL_DEFAULT_THICKNESS_MM
 from modular_3d.analysis._utils import round_key as _round_key
 
 
@@ -80,6 +82,11 @@ class AnalysisMember:
     is_split_sub: bool = False
     # sub 일 때만 비-None — 원본 부재 ID 추적.
     parent_member_id: Optional[int] = None
+    # [2026-05-31 단면 설계 수렴] 단면 설계 탭이 그룹 선정 단면을 write-back 한 결과.
+    #   - SHSSection / HSection 객체. None 이면 미설계 → ops_builder._section_props 가
+    #     공칭(치수 기반 SHS / 공칭 H)으로 계산(하위호환).
+    #   - 설정되면 그 단면의 A·I·J 로 강성이 계산되어 재해석에 반영(수렴).
+    design_section: Optional[object] = None
 
     def __repr__(self):
         return (f"Member({self.id}, {self.kind}, {self.n1}->{self.n2}, "
@@ -197,9 +204,7 @@ def _extract_module(comp: Module) -> _LocalExtract:
     rot = comp.rotation
     pos = comp.position
 
-    def to_world(lx, ly, lz):
-        return _rotate_local_to_world(lx - ax, ly - ay, lz, rot, pos)
-
+    to_world = make_local_to_world(ax, ay, rot, pos)
     corner_xys = [
         (half_s, half_s),
         (w - half_s, half_s),
@@ -263,9 +268,7 @@ def _extract_floor_panel(comp: FloorPanel) -> _LocalExtract:
     rot = comp.rotation
     pos = comp.position
 
-    def to_world(lx, ly, lz):
-        return _rotate_local_to_world(lx - ax, ly - ay, lz, rot, pos)
-
+    to_world = make_local_to_world(ax, ay, rot, pos)
     corner_xys = [
         (half_s, half_s),
         (w - half_s, half_s),
@@ -304,9 +307,7 @@ def _extract_struct_wall(comp: StructWall) -> _LocalExtract:
     rot = comp.rotation
     pos = comp.position
 
-    def to_world(lx, ly, lz):
-        return _rotate_local_to_world(lx - ax, ly - ay, lz, rot, pos)
-
+    to_world = make_local_to_world(ax, ay, rot, pos)
     corner_xys = [(half_s, half_d), (w - half_s, half_d)]
     z_levels = [0.0, h - s]
 
@@ -354,9 +355,7 @@ def _extract_cantilever_beam(comp: CantileverBeam) -> _LocalExtract:
     rot = comp.rotation
     pos = comp.position
 
-    def to_world(lx, ly, lz):
-        return _rotate_local_to_world(lx - ax, ly - ay, lz, rot, pos)
-
+    to_world = make_local_to_world(ax, ay, rot, pos)
     p1 = to_world(0, half_s, 0)
     p2 = to_world(w, half_s, 0)
     k1, k2 = _round_key(p1), _round_key(p2)
@@ -383,9 +382,7 @@ def _extract_cantilever_slab(comp: CantileverSlab) -> _LocalExtract:
     rot = comp.rotation
     pos = comp.position
 
-    def to_world(lx, ly, lz):
-        return _rotate_local_to_world(lx - ax, ly - ay, lz, rot, pos)
-
+    to_world = make_local_to_world(ax, ay, rot, pos)
     # 해석 모델은 모두 끝점 x=w 로 두어 캔틸레버보(같은 직선상에 별도 컴포넌트
     # 로 존재 가능, 길이 w)와 완전 겹침이 성립하도록 한다. 시각화(model.py)에서
     # 끝변만 x=w-half_s 로 안쪽 이동하는 처리는 단면 돌출 표시용일 뿐, 해석 부재
@@ -416,9 +413,7 @@ def _extract_mid_beam(comp: MidBeam) -> _LocalExtract:
     rot = comp.rotation
     pos = comp.position
 
-    def to_world(lx, ly, lz):
-        return _rotate_local_to_world(lx - ax, ly - ay, lz, rot, pos)
-
+    to_world = make_local_to_world(ax, ay, rot, pos)
     p1 = to_world(0, half_s, 0)
     p2 = to_world(w, half_s, 0)
     k1, k2 = _round_key(p1), _round_key(p2)
@@ -437,9 +432,7 @@ def _extract_mid_column(comp: MidColumn) -> _LocalExtract:
     rot = comp.rotation
     pos = comp.position
 
-    def to_world(lx, ly, lz):
-        return _rotate_local_to_world(lx - ax, ly - ay, lz, rot, pos)
-
+    to_world = make_local_to_world(ax, ay, rot, pos)
     p1 = to_world(half_s, half_s, 0.0)
     p2 = to_world(half_s, half_s, h - s)
     k1, k2 = _round_key(p1), _round_key(p2)
@@ -478,9 +471,7 @@ def _extract_vertical_module(comp: Vertical3Module) -> _LocalExtract:
     rot = comp.rotation
     pos = comp.position
 
-    def to_world(lx, ly, lz):
-        return _rotate_local_to_world(lx - ax, ly - ay, lz, rot, pos)
-
+    to_world = make_local_to_world(ax, ay, rot, pos)
     corner_xys = [
         (half_s, half_s),
         (w - half_s, half_s),
@@ -582,9 +573,7 @@ def _extract_core(comp: Core) -> _LocalExtract:
     rot = comp.rotation
     pos = comp.position
 
-    def to_world(lx, ly, lz):
-        return _rotate_local_to_world(lx - ax, ly - ay, lz, rot, pos)
-
+    to_world = make_local_to_world(ax, ay, rot, pos)
     half_t = t / 2.0
     # [정책 2026-05-18 코어벽 상단 = 코어 본체 상단(z=h)]
     # 이전엔 모듈 천장보 z(=h - SECTION_W_MM)와 맞췄으나, 그러면 코어슬래브
@@ -697,7 +686,8 @@ def _extract_core_slab(comp: CoreSlab) -> _LocalExtract:
     W = float(comp.dimensions['width'])
     D = float(comp.dimensions['depth'])
     t = float(comp.dimensions.get('thickness', 180.0))
-    t_wall = float(comp.dimensions.get('wall_thickness', 300.0))
+    t_wall = float(comp.dimensions.get('wall_thickness',
+                                       CORE_WALL_DEFAULT_THICKNESS_MM))
 
     inset = t_wall / 2.0
     W_inner = max(W - t_wall, 100.0)
@@ -707,9 +697,7 @@ def _extract_core_slab(comp: CoreSlab) -> _LocalExtract:
     rot = comp.rotation
     pos = comp.position
 
-    def to_world(lx, ly, lz):
-        return _rotate_local_to_world(lx - ax, ly - ay, lz, rot, pos)
-
+    to_world = make_local_to_world(ax, ay, rot, pos)
     # [2026-05-18 R09 정렬 정책 — 옵션 B]
     # 이전: z_top_local = t (슬래브 윗면).
     # 문제: 슬래브 두께 t 가 모듈 조인트 갭(20mm) 과 다르면 frame 노드 z 가
@@ -804,31 +792,6 @@ def _merge_duplicate_members(model: AnalysisModel) -> None:
 
 
 # ── 부재 통합 / 부분겹침 검출 ───────────────────────────────
-
-def _segments_colinear(p1, p2, q1, q2, tol):
-    d1 = p2 - p1
-    d2 = q2 - q1
-    n1 = np.linalg.norm(d1)
-    n2 = np.linalg.norm(d2)
-    if n1 < 1e-9 or n2 < 1e-9:
-        return False
-    u1 = d1 / n1
-    u2 = d2 / n2
-    if np.linalg.norm(np.cross(u1, u2)) > tol:
-        return False
-    dq = q1 - p1
-    if np.linalg.norm(dq) < 1e-9:
-        return True
-    return np.linalg.norm(np.cross(dq / np.linalg.norm(dq), u1)) <= tol
-
-
-def _project(u, origin, pt):
-    return float(np.dot(pt - origin, u))
-
-
-def _round1(v: float) -> int:
-    """좌표값을 1mm 단위 정수로 반올림."""
-    return int(round(float(v)))
 
 
 # 플로어패널 꼭지점 ↔ 모듈 기둥/보/캔틸레버 매칭 허용오차.
@@ -1380,8 +1343,11 @@ def _consolidate_dependent_nodes(model: AnalysisModel, scene: Scene) -> None:
                 if dxy > 1.0:
                     continue
                 dz = abs(float(c_a[2] - c_b[2]))
-                if dz < 5.0 or dz > 500.0:
-                    continue   # 같은 z(모서리) 는 케이스 4 가 처리, 너무 멀면 제외
+                # 같은 z(< MIN) 모서리는 케이스 4 가 처리, 너무 먼 페어(> MAX)는 제외.
+                CORE_VERTICAL_DZ_MIN_MM = 5.0
+                CORE_VERTICAL_DZ_MAX_MM = 500.0
+                if dz < CORE_VERTICAL_DZ_MIN_MM or dz > CORE_VERTICAL_DZ_MAX_MM:
+                    continue
                 pairs.append((nid_a, nid_b))
 
     # 4) 코어벽 모서리 (같은 group_id 같은 floor_index 다른 cid)

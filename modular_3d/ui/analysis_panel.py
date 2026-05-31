@@ -17,9 +17,9 @@ from collections import defaultdict
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
-    QTreeWidget, QTreeWidgetItem, QTextEdit, QLabel, QComboBox,
+    QTreeWidget, QTreeWidgetItem, QLabel, QComboBox,
     QTableWidget, QTableWidgetItem, QRadioButton, QButtonGroup,
-    QSplitter, QHeaderView, QAbstractItemView, QCheckBox,
+    QSplitter, QHeaderView, QAbstractItemView,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont, QColor, QBrush, QStandardItem, QStandardItemModel
@@ -77,15 +77,8 @@ _COMP_TYPE_ORDER = [
 ]
 
 
-def _alpha_label(i: int) -> str:
-    """0→a, 1→b, … 25→z, 26→aa, 27→ab …  컴포넌트 위치 인덱스 라벨."""
-    s = ''
-    i = int(i)
-    while True:
-        s = chr(ord('a') + (i % 26)) + s
-        i = i // 26 - 1
-        if i < 0:
-            return s
+from modular_3d._utils.format import alpha_label as _alpha_label
+
 
 
 def _role_ko_order_key(name: str) -> int:
@@ -151,27 +144,27 @@ def _group_label_ko(gname: str) -> str:
 # (2026-05-13) 케이스 표시명 ↔ 내부 키 매핑.
 # 콤보박스에 사용자 친화 하중조합 표기. 내부 키는 ops_solver.solve_all_cases
 # 의 dict 키와 일치해야 함.
+# [2026-05-30] 실제 KDS 하중조합으로 확장. 지진·풍 조합은 ± 양방향을 내부에서
+# 포락(envelope)하므로 항목 자체는 하나. 내부 키는 ops_solver.solve_all_cases
+# 의 반환 dict 키와 정확히 일치해야 한다.
 CASE_DISPLAY_MAP = {
-    'ENVELOPE': '지배조합 (5케이스 envelope)',   # 2026-05-19 작업 5
-    'D+L': '1.2D + 1.6L (중력)',
-    'Ex':  '1.2D + 1.0L + 1.0Ex (X 지진)',
-    'Ey':  '1.2D + 1.0L + 1.0Ey (Y 지진)',
-    'Wx':  '1.2D + 1.0L + 1.0Wx (X 풍하중)',
-    'Wy':  '1.2D + 1.0L + 1.0Wy (Y 풍하중)',
+    'ENVELOPE': '지배조합 (전체 조합 envelope)',
+    '1.4D':  '1.4D (자중 단독)',
+    'D+L':   '1.2D + 1.6L (중력)',
+    'Ex':    '1.2D + 1.0L ± 1.0Ex (X 지진)',
+    'Ey':    '1.2D + 1.0L ± 1.0Ey (Y 지진)',
+    'Wx':    '1.2D + 1.0L ± 1.0Wx (X 풍하중)',
+    'Wy':    '1.2D + 1.0L ± 1.0Wy (Y 풍하중)',
+    'Ex_OT': '0.9D ± 1.0Ex (X 지진 전도방지)',
+    'Ey_OT': '0.9D ± 1.0Ey (Y 지진 전도방지)',
+    'Wx_OT': '0.9D ± 1.0Wx (X 풍 전도방지)',
+    'Wy_OT': '0.9D ± 1.0Wy (Y 풍 전도방지)',
 }
 # 표시명 → 내부 키 역매핑 (사용자 선택 시).
 CASE_DISPLAY_TO_KEY = {v: k for k, v in CASE_DISPLAY_MAP.items()}
 
-# 비활성(추후 구현) 항목 — KDS 41 12 00(건축물 설계하중) 추가 하중조합.
-CASE_DISABLED_ITEMS = [
-    '1.4D (자중 단독) — 추후 구현',
-    '0.9D + 1.0Ex (X 지진 전도 방지) — 추후 구현',
-    '0.9D + 1.0Ey (Y 지진 전도 방지) — 추후 구현',
-    '0.9D + 1.0Wx (X 풍 전도 방지) — 추후 구현',
-    '0.9D + 1.0Wy (Y 풍 전도 방지) — 추후 구현',
-    '1.2D + 1.6L + 0.5S (설하중 동시) — 추후 구현',
-    '1.2D + 1.0L + 0.2S + 1.0Ex (설+지진) — 추후 구현',
-]
+# [2026-05-30] 설하중 포함 조합은 콤보에서 완전히 제외(표기조차 안 함).
+CASE_DISABLED_ITEMS: list = []
 
 
 class AnalysisPanel(QWidget):
@@ -183,14 +176,12 @@ class AnalysisPanel(QWidget):
     members_selected = pyqtSignal(list)
     # 케이스 콤보박스 변경 시 (케이스명) emit — controls 가 좌측 변형 형상 갱신에 사용 (Phase 4-B)
     case_changed = pyqtSignal(str)
-    # 컨투어 종류 변경 — controls 가 viewer 색칠 갱신
-    contour_changed = pyqtSignal(str)
+    # [2026-05-30] 컨투어 종류 콤보·자유도 색 토글 제거 — 관련 시그널도 삭제.
+    #   (응력비 색칠은 물량 탭 ratio_view_changed 가 별개로 담당 — 유지.)
     # 물량산출 탭에서 정책/탭 전환 시 — viewer 색상 모드 갱신용
     # ('off' | 'ratio:1종' | 'ratio:2종' | 'ratio:3종')
     ratio_view_changed = pyqtSignal(str)
     # [2026-05-13 접합부조정탭] 다이어프램 토글은 JointEditPanel 로 이동.
-    # (Phase 9) 자유도 묶음 색을 DOF 수별로 분리 표시 토글.
-    dof_color_toggle = pyqtSignal(bool)
     # (2026-05-19) 기둥 층구간 분할 수 변경 — controls 가 재산정 트리거.
     column_segments_changed = pyqtSignal(int)
     # (2026-05-19 Phase 6) 정책 라디오 변경 — 운송탭 캐시 무효화 트리거.
@@ -208,6 +199,8 @@ class AnalysisPanel(QWidget):
         # 물량산출 탭용 자료 (build_all_reports 결과)
         self._quantity_reports: Dict[str, object] = {}    # 정책 → QuantityReport
         self._current_policy: str = '1종'
+        # [P6b] 단면 설계 -1-1 변형 라벨(comp_id→'모듈A-1-1'). 비면 기본 'A-1' 사용.
+        self._section_type_labels: Dict[int, str] = {}
 
         root = QVBoxLayout(self)
         root.setContentsMargins(4, 4, 4, 4)
@@ -224,46 +217,27 @@ class AnalysisPanel(QWidget):
         case_row.addWidget(self._case_combo, stretch=1)
         root.addWidget(self._case_row_widget)
 
-        # ── 컨투어 종류 (Phase 4-C) ────────────────────────
-        self._contour_row_widget = QWidget()
-        contour_row = QHBoxLayout(self._contour_row_widget)
-        contour_row.setContentsMargins(0, 0, 0, 0)
-        contour_row.addWidget(QLabel("컨투어:"))
-        self._contour_combo = QComboBox()
-        self._contour_combo.addItems([
-            "끄기", "축력비 N/Pn", "휨모멘트비 M/Mn",
-            "조합응력비 N/Pn+M/Mn", "변위 |u| (양단 노드 평균)",
-        ])
-        self._contour_combo.currentTextChanged.connect(self._on_contour_changed)
-        contour_row.addWidget(self._contour_combo, stretch=1)
-        root.addWidget(self._contour_row_widget)
-
-        # ── 시각화 토글 ─────────────────────────────────
-        self._toggle_row_widget = QWidget()
-        toggle_row = QHBoxLayout(self._toggle_row_widget)
-        toggle_row.setContentsMargins(0, 0, 0, 0)
-        self._dof_color_cb = QCheckBox("자유도 색")
-        self._dof_color_cb.setToolTip(
-            "자유도 묶음을 DOF 수별로 분리 색상 표시 "
-            "(1·2·3·6 DOF)."
-        )
-        self._dof_color_cb.toggled.connect(self.dof_color_toggle.emit)
-        toggle_row.addWidget(self._dof_color_cb)
-        toggle_row.addStretch(1)
-        root.addWidget(self._toggle_row_widget)
+        # [2026-05-30] 컨투어 종류 콤보·자유도 색 토글 제거(사용자 요청).
+        #   - 좌측 3D 뷰의 컨투어 색칠 기능 자체를 더 이상 노출하지 않는다.
+        #   - 물량 탭의 응력비 색칠(ratio_view_changed)은 별개 경로라 그대로 유지.
 
         self._tabs = QTabWidget()
+        # [2026-05-30 폭 분리 핵심] QTabWidget(내부 QStackedLayout)의 최소 폭은
+        # 기본적으로 *모든 페이지 중 가장 넓은 페이지*(=물량산출)로 잡힌다. 그러면
+        # 부재 내부력 탭을 봐도 패널이 물량 폭 밑으로 못 줄어 두 탭 폭이 같아진다.
+        # 가로 정책을 Ignored 로 두면 탭 위젯의 폭 힌트를 부모가 무시 → 각 탭에서
+        # setMinimumWidth(_fit_*)로 준 폭이 그대로 적용되어 구조해석/물량 폭이 분리.
+        from PyQt5.QtWidgets import QSizePolicy as _QSP
+        self._tabs.setSizePolicy(_QSP.Ignored, _QSP.Expanding)
         root.addWidget(self._tabs)
 
-        # ── 탭 1: 요약 ─────────────────────────────────
-        self._summary_text = QTextEdit()
-        self._summary_text.setReadOnly(True)
-        mono = QFont("Consolas")
-        mono.setPointSize(9)
-        self._summary_text.setFont(mono)
-        self._tabs.addTab(self._summary_text, "요약")
+        # [2026-05-30] '요약' 탭 제거 — 구조해석 탭에는 '부재별 내부력' 하나만
+        # 남으므로, 탭 헤더(QTabBar)를 숨겨 탭 없이 표(트리)만 보이게 한다.
+        # (물량·운송 탭은 별도 메인 탭에서 set_visible_subtabs 로 노출되며,
+        #  그 맥락에서는 헤더가 어차피 단일 탭이라 시각적 영향 없음.)
+        self._tabs.tabBar().hide()
 
-        # ── 탭 2: 부재별 내부력 (ops 모델 트리만, 다이어그램은 좌측 3D 뷰로 통합) ──
+        # ── 탭: 부재별 내부력 (ops 모델 트리만, 다이어그램은 좌측 3D 뷰로 통합) ──
         member_page = QWidget()
         member_lay = QVBoxLayout(member_page)
         member_lay.setContentsMargins(0, 0, 0, 0)
@@ -280,8 +254,14 @@ class AnalysisPanel(QWidget):
         tf = QFont("Consolas")
         tf.setPointSize(9)
         self._tree.setFont(tf)
+        # [2026-05-30] 숫자 4 컬럼은 ResizeToContents(내용 최소폭), 첫 컬럼
+        # (부재명)은 Stretch. 트리 폭이 컬럼 합보다 조금 넓어도(테두리·여백
+        # 슬랙) 부재명 칸이 그 슬랙을 흡수해 *트리 안쪽 우측 여백이 안 생긴다*.
+        # 폭 산정은 sizeHintForColumn(내용 기반, Stretch 무관)이라 부재명 칸이
+        # 과도하게 커지지 않고 최소폭 + 작은 슬랙 수준에 머문다.
         hdr = self._tree.header()
-        for c in range(5):
+        hdr.setSectionResizeMode(0, QHeaderView.Stretch)
+        for c in range(1, 5):
             hdr.setSectionResizeMode(c, QHeaderView.ResizeToContents)
         hdr.setStretchLastSection(False)
         self._tree.setUniformRowHeights(True)
@@ -338,7 +318,9 @@ class AnalysisPanel(QWidget):
         라 기존 호출부(3 플래그) 도 그대로 호환. 운송 sub-탭이 아직 생성되지
         않은 환경(WebEngine 미설치 등)에서도 self._tabs.count() 안쪽만 처리.
         """
-        flags = [show_summary, show_member, show_quantity, show_transport]
+        # [2026-05-30] '요약' 탭 제거 — 실제 탭은 [부재별 내부력, 물량산출, 운송].
+        # show_summary 인자는 호출부 호환 위해 유지하되 무시한다(요약 탭 없음).
+        flags = [show_member, show_quantity, show_transport]
         # self._tabs.count() 가 더 적으면 (운송탭 미생성 등) 그 범위만 처리
         n = min(len(flags), self._tabs.count())
         for i in range(n):
@@ -355,6 +337,20 @@ class AnalysisPanel(QWidget):
                 if flags[i]:
                     self._tabs.setCurrentIndex(i)
                     break
+        # [2026-05-30] 폭 분리 — 진입한 메인 탭의 내용폭으로 패널 폭을 재고정.
+        #   구조해석(부재 트리) / 물량 은 각자 fit 으로 min==max 고정,
+        #   운송은 자유 폭이라 고정 해제(최대폭 풀기).
+        if show_member:
+            self._fit_panel_to_tree()
+        elif show_quantity:
+            self._fit_panel_to_quantity()
+        elif show_transport:
+            # 운송은 splitter 가 폭을 관리 — 패널·부모 pane 고정 모두 해제.
+            self.setMaximumWidth(16777215)   # QWIDGETSIZE_MAX
+            par = self.parentWidget()
+            if par is not None:
+                par.setMaximumWidth(16777215)
+                par.setMinimumWidth(0)
 
     def set_visualization_controls_visible(self, show: bool) -> None:
         """[2026-05-27] 상단 *하중조합 / 컨투어 / 자유도 색* 위젯 + 탭바 일괄 hide.
@@ -362,15 +358,12 @@ class AnalysisPanel(QWidget):
         운송 sub-탭에선 이 컨트롤들이 의미 없어 사용자가 제거 요청. 다른 탭(구조
         해석·물량) 복귀 시 show=True 로 다시 표시.
         """
-        for attr in ("_case_row_widget", "_contour_row_widget", "_toggle_row_widget"):
+        # [2026-05-30] 컨투어·자유도 행 제거 — 하중조합 행만 남음.
+        for attr in ("_case_row_widget",):
             w = getattr(self, attr, None)
             if w is not None:
                 w.setVisible(show)
-        # sub-탭 헤더(QTabBar) — 운송만 보일 땐 "운송" 라벨 의미 없어서 함께 hide
-        if hasattr(self, "_tabs") and self._tabs is not None:
-            tb = self._tabs.tabBar()
-            if tb is not None:
-                tb.setVisible(show)
+        # sub-탭 헤더(QTabBar)는 요약 탭 제거 후 항상 숨김 상태이므로 별도 토글 불필요.
 
     def _build_quantity_tab(self):
         """물량산출 탭 위젯 구성."""
@@ -392,7 +385,14 @@ class AnalysisPanel(QWidget):
             radio_row.addWidget(rb)
         radio_row.addStretch(1)
         self._policy_group.buttonClicked.connect(self._on_policy_changed)
-        lay.addLayout(radio_row)
+        # [P5c] 단면 선택은 단면 설계 탭(스코프×입도)으로 일원화 → 물량 탭 정책
+        # 라디오는 숨긴다(삭제 대신 컨테이너 숨김 = 가역). P5b 단일 출처에서 reports 는
+        # 정책 무관 동일하므로 _current_policy 기본값('1종')으로 조회해도 정상 동작.
+        from PyQt5.QtWidgets import QWidget as _QW
+        self._policy_row_widget = _QW()
+        self._policy_row_widget.setLayout(radio_row)
+        self._policy_row_widget.setVisible(False)
+        lay.addWidget(self._policy_row_widget)
 
         # (2026-05-19) 기둥 층구간 분할 입력칸 — 1 이면 분할 없음.
         # 사용자가 K 를 입력 + 적용 → DP 로 강재 중량 최소 분할.
@@ -572,9 +572,19 @@ class AnalysisPanel(QWidget):
         self.members_selected.emit(list(cids))
 
     def _on_transport_blocked(self, n: int) -> None:
-        """운송 불가 항목 알림 — Phase 9 진단 UI 에서 확장."""
-        # 현재는 silent (진단 영역에 이미 표시됨)
-        pass
+        """운송 불가 항목 알림 — 사용자 시야로 격상.
+
+        진단 영역에도 사유가 표시되지만 사용자가 즉시 못 보는 경우가 많아
+        상단 상태바에 카운트만 짧게 띄운다. 자세한 사유는 진단 sub-탭에서.
+        """
+        try:
+            sb = self.window().statusBar() if self.window() else None
+            if sb is not None:
+                sb.showMessage(
+                    f'운송 결과 — 실을 수 없는 항목 {n}개. 진단 탭에서 사유 확인.',
+                    8000)
+        except Exception:
+            pass
 
     # ── 외부 API ────────────────────────────────────────
 
@@ -597,8 +607,8 @@ class AnalysisPanel(QWidget):
         self._comp_labels = comp_labels
         self._scene = scene
 
-        # 탭 1
-        self._summary_text.setPlainText(report_text)
+        # [2026-05-30] '요약' 탭 제거 — report_text 는 더 이상 표시하지 않는다
+        # (인자는 호출부 호환 위해 유지). 부재별 내부력 트리만 채운다.
 
         # (2026-05-13) 콤보박스는 초기 _populate_case_combo_initial 가 이미
         # 모든 활성 5 + 비활성 항목을 만들었으므로 별도 갱신 불필요.
@@ -612,8 +622,8 @@ class AnalysisPanel(QWidget):
 
         # 탭 2: AnalysisMember 트리
         self._fill_member_tree_ops(analysis_model, comp_labels, active)
-        # 부재력 있으면 부재 탭 디폴트로
-        self._tabs.setCurrentIndex(1 if active is not None else 0)
+        # [2026-05-30] 요약 탭 제거로 부재별 내부력이 첫 탭(인덱스 0).
+        self._tabs.setCurrentIndex(0)
 
     def _populate_case_combo_initial(self):
         """콤보박스 초기 항목 — 활성 5 종 + 비활성 추가 조합 (KDS 향후 구현용)."""
@@ -624,16 +634,16 @@ class AnalysisPanel(QWidget):
             item.setData(key, _Qt.UserRole)
             item.setFlags(item.flags() | _Qt.ItemIsEnabled | _Qt.ItemIsSelectable)
             model.appendRow(item)
-        # 구분 항목 (비활성, 표시만)
-        sep_item = QStandardItem('─── 추후 구현 ───')
-        sep_item.setFlags(_Qt.NoItemFlags)
-        model.appendRow(sep_item)
-        # 비활성 항목 — 선택 불가
-        for label in CASE_DISABLED_ITEMS:
-            item = QStandardItem(label)
-            item.setData('', _Qt.UserRole)
-            item.setFlags(_Qt.NoItemFlags)   # 비활성
-            model.appendRow(item)
+        # 비활성(추후 구현) 항목이 있을 때만 구분선 + 비활성 항목 추가.
+        if CASE_DISABLED_ITEMS:
+            sep_item = QStandardItem('─── 추후 구현 ───')
+            sep_item.setFlags(_Qt.NoItemFlags)
+            model.appendRow(sep_item)
+            for label in CASE_DISABLED_ITEMS:
+                item = QStandardItem(label)
+                item.setData('', _Qt.UserRole)
+                item.setFlags(_Qt.NoItemFlags)   # 비활성
+                model.appendRow(item)
         self._case_combo.setModel(model)
         self._case_combo.setCurrentIndex(0)
 
@@ -661,19 +671,48 @@ class AnalysisPanel(QWidget):
         # 좌측 변형 형상 갱신 + 물량 재산정용 시그널.
         self.case_changed.emit(case_name)
 
-    def _on_case_changed(self, case_name: str):
-        """레거시 — currentTextChanged 호환 시그니처. 현재 호출 자리 없음."""
-        if not self._all_results or self._model is None:
-            return
-        res = self._all_results.get(case_name)
-        if res is None:
-            return
-        self._ops_results = res
-        self._fill_member_tree_ops(self._model, self._comp_labels, res)
-        self.case_changed.emit(case_name)
+    def _order_top_labels(self, scene, comp_meta, label_tname, keys):
+        """최상위 라벨 정렬 — 종속 부재 라벨을 부모 독립부재 라벨 바로 뒤에 둔다.
 
-    def _on_contour_changed(self, kind: str):
-        self.contour_changed.emit(kind)
+        [2026-05-30] 예: '모듈A-2 캔틸레버보1' 은 '모듈A-2' 바로 아래에 나열.
+        - 부모-종속 관계는 group_id 로 역추적: sub_index>0(종속)인 부재의
+          같은 group_id 본체(sub_index==0)가 부모이고, 그 본체의 라벨을 쓴다.
+        - 독립/기타 라벨: (자기 타입순서, 라벨, 0, '').
+        - 종속 라벨: (부모 타입순서, 부모라벨, 1, 종속라벨) → 부모 직후 묶임.
+        구조해석 탭(부재별 내부력)·물량 탭(응력비) 두 트리가 공유.
+        """
+        label_cids: Dict[str, list] = defaultdict(list)
+        for _cid, meta in comp_meta.items():
+            label_cids[meta[0]].append(_cid)
+
+        def _parent_label_of(lbl):
+            for _cid in label_cids.get(lbl, []):
+                comp = scene.components.get(_cid) if scene is not None else None
+                if comp is None:
+                    continue
+                if int(getattr(comp, 'sub_index', 0)) == 0:
+                    return None   # 독립 부재 본체
+                gid = int(getattr(comp, 'group_id', 0) or 0)
+                if not gid:
+                    return None
+                for c2id, c2 in scene.components.items():
+                    if (int(getattr(c2, 'group_id', 0) or 0) == gid
+                            and int(getattr(c2, 'sub_index', 0)) == 0):
+                        pmeta = comp_meta.get(c2id)
+                        if pmeta is not None:
+                            return pmeta[0]
+                return None
+            return None
+
+        def _key(lbl):
+            parent = _parent_label_of(lbl)
+            if parent is None:
+                return (_comp_type_order_key(label_tname.get(lbl, '')),
+                        lbl, 0, '')
+            return (_comp_type_order_key(label_tname.get(parent, '')),
+                    parent, 1, lbl)
+
+        return sorted(keys, key=_key)
 
     def _fill_member_tree_ops(self, model, comp_labels, ops_results=None):
         """ops 모델용 부재 트리 — 가독성 개선 (2026-05-18).
@@ -714,7 +753,12 @@ class AnalysisPanel(QWidget):
             tname = TYPE_NAMES.get(comp.comp_type, str(comp.comp_type))
             by_type[tname].append((cid, comp))
 
-        # comp_meta[cid] = (xy_label, floor_num, type_name)
+        # comp_meta[cid] = (top_label, floor_num, type_name)
+        # [2026-05-30 D3] 독립 부재(모듈/패널/벽/수직)는 classify_component_types
+        # 의 '모듈A-1' 라벨, 종속/기타 부재는 기존 방식(타입+xy 알파벳)으로
+        # 최상위 라벨을 만든다.
+        from modular_3d.model.type_naming import classify_component_types
+        type_labels = classify_component_types(scene)
         comp_meta: Dict[int, tuple] = {}
         for tname, items in by_type.items():
             xy_set = sorted({(int(round(float(c.position[0]))),
@@ -727,7 +771,13 @@ class AnalysisPanel(QWidget):
                 xy = (int(round(float(c.position[0]))),
                       int(round(float(c.position[1]))))
                 z = int(round(float(c.position[2])))
-                comp_meta[cid] = (xy_to_label[xy], z_to_floor[z], tname)
+                # [P6b] 단면 설계 변형 라벨(있으면 'A-1-1') 우선, 없으면 기존 'A-1'.
+                top_label = (self._section_type_labels.get(cid)
+                             or type_labels.get(cid))
+                if top_label is None:
+                    # 종속/기타 — 기존 'a모듈' 형식(알파벳 + 타입명).
+                    top_label = f"{xy_to_label[xy]}{tname}"
+                comp_meta[cid] = (top_label, z_to_floor[z], tname)
 
         # (2026-05-19 수정) 물량 탭(_fill_ratio_table) 이 같은 메타를 재사용
         # 하도록 인스턴스 속성으로 저장 — "a모듈" 이라는 라벨이 두 탭에서
@@ -740,8 +790,10 @@ class AnalysisPanel(QWidget):
         # 수직 3 층 모듈은 cid 하나가 3 entries 로 펼쳐짐 — 부재 평균 z
         # 가 어느 층 슬롯(0~FLOOR_HEIGHT / FLOOR_HEIGHT~2H / 2H~3H) 에
         # 속하느냐로 1·2·3 층 분류.
-        top_groups: Dict[tuple, list] = defaultdict(list)
-        for cid, (xy_label, floor, tname) in comp_meta.items():
+        top_groups: Dict[str, list] = defaultdict(list)
+        label_tname: Dict[str, str] = {}
+        for cid, (top_label, floor, tname) in comp_meta.items():
+            label_tname[top_label] = tname
             comp = scene.components.get(cid)
             mid_list = list(model.comp_to_members.get(cid, []))
             if (comp is not None
@@ -761,27 +813,23 @@ class AnalysisPanel(QWidget):
                     f_idx = max(1, int((avg_z + 1.0) / FLOOR_HEIGHT) + 1)
                     by_floor_sub[f_idx].append(mid)
                 for f_idx, mids in by_floor_sub.items():
-                    top_groups[(tname, xy_label)].append(
-                        (f_idx, cid, mids))
+                    top_groups[top_label].append((f_idx, cid, mids))
             else:
-                top_groups[(tname, xy_label)].append(
-                    (floor, cid, mid_list))
+                top_groups[top_label].append((floor, cid, mid_list))
 
-        sorted_top = sorted(
-            top_groups.keys(),
-            key=lambda k: (_comp_type_order_key(k[0]), k[1]),
-        )
+        sorted_top = self._order_top_labels(
+            scene, comp_meta, label_tname, top_groups.keys())
 
         # ── 3) 트리 구성 ─────────────────────────────────
-        for (tname, xy_label) in sorted_top:
-            top_text = f"{xy_label}{tname}"
+        for top_label in sorted_top:
+            top_text = top_label
             top_item = QTreeWidgetItem([top_text, '', '', '', ''])
             top_item.setData(0, Qt.UserRole, None)
             f = top_item.font(0); f.setBold(True); top_item.setFont(0, f)
 
-            for floor, cid, mid_list in sorted(top_groups[(tname, xy_label)],
+            for floor, cid, mid_list in sorted(top_groups[top_label],
                                                 key=lambda e: (e[0], e[1])):
-                comp_text = f"{floor}층 {xy_label}{tname}"
+                comp_text = f"{top_label} {floor}층"
                 comp_item = QTreeWidgetItem([comp_text, '', '', '', ''])
                 comp_item.setData(0, Qt.UserRole, None)
 
@@ -819,8 +867,7 @@ class AnalysisPanel(QWidget):
                         # 호버 정보창용 풀이름 캐시 (Phase 4) —
                         # 예: "1층 a모듈 / 기둥 #123"
                         self._member_full_label[mid] = (
-                            f"{floor}층 {xy_label}{tname} / "
-                            f"{role_ko} #{mid}")
+                            f"{top_label} {floor}층 / {role_ko} #{mid}")
                         # 수치 컬럼 우측 정렬
                         for c in range(1, 5):
                             leaf.setTextAlignment(
@@ -913,6 +960,14 @@ class AnalysisPanel(QWidget):
             return f"부재 #{mid}"
         return f"{m.role} #{mid}"
 
+    def set_section_type_labels(self, labels) -> None:
+        """[P6b] 단면 설계 -1-1 변형 라벨(comp_id→'모듈A-1-1') 주입.
+
+        다음 트리 채우기부터 top_label 이 이 라벨로 오버라이드된다(없으면 기본 'A-1').
+        빈 dict/ None 이면 기존 동작(단면 설계 미실행) — 완전 가역.
+        """
+        self._section_type_labels = dict(labels or {})
+
     def get_current_policy(self) -> str:
         """현재 물량산출 라디오 정책. 초기 상태 폴백은 '1종'."""
         return getattr(self, '_current_policy', None) or '1종'
@@ -1004,7 +1059,11 @@ class AnalysisPanel(QWidget):
                 w = fm.horizontalAdvance(lab.text()) + 12
                 max_w = max(max_w, w)
         panel_min = max(380, max_w + 12)
+        # [2026-05-30] 물량 탭도 자기 pane 폭을 내용폭으로 강제 고정 → 구조해석
+        # 탭과 폭 분리(서로 다른 pane). minimumWidth 는 바닥용으로 같이 지정.
+        self.setMaximumWidth(16777215)
         self.setMinimumWidth(panel_min)
+        self._force_pane_width(panel_min)
         self.updateGeometry()
 
     def _fit_panel_to_tree(self):
@@ -1017,32 +1076,52 @@ class AnalysisPanel(QWidget):
         - 빈 트리: 최소 200 px 정도로 작게 유지.
         - 내용 있음: 각 컬럼 ResizeToContents 폭 합 + 인덴트·여백.
         """
-        # 컬럼별 ResizeToContents 폭은 setHeader 시점에 갱신되지만,
-        # 확실하게 다시 한번 강제.
-        for c in range(self._tree.columnCount()):
-            self._tree.resizeColumnToContents(c)
-        col_total = sum(self._tree.columnWidth(c)
+        # [2026-05-30] 컬럼0(부재명)은 Stretch 라 columnWidth 가 도크 폭에 따라
+        # 변하므로, 폭 산정에는 *내용 기반* sizeHintForColumn 을 쓴다(Stretch 무관).
+        #   col_total = 각 컬럼 내용폭 합 + 트리 테두리 + (세로 스크롤바 보일 때만).
+        #   임의 여백 없이 1px 잘림 방지용 안전치 4 만.
+        col_total = sum(self._tree.sizeHintForColumn(c)
                         for c in range(self._tree.columnCount()))
-        # 인덴트·프레임·세로 스크롤바 여유.
-        frame_pad = 2 * self._tree.frameWidth() + 24
+        frame_pad = 2 * self._tree.frameWidth()
         vbar = self._tree.verticalScrollBar()
         if vbar is not None and vbar.isVisible():
             frame_pad += vbar.sizeHint().width()
         tree_min = max(200, col_total + frame_pad)
-        # 패널 자체 minimumWidth = 트리 minWidth + 레이아웃 마진.
         self._tree.setMinimumWidth(tree_min)
-        panel_min = tree_min + 12
+        panel_min = tree_min + 8   # root 좌우 마진(4+4)
+        # [2026-05-30] minimumWidth 만으로는 *이미 넓어진* 패널이 안 줄어든다
+        # (최소폭은 바닥일 뿐). 그래서 부모 우측 pane 의 폭 자체를 측정한
+        # 내용폭으로 *강제 고정*(_force_pane_width)해 실제로 그 폭이 되게 한다.
+        # 구조해석·물량은 서로 다른 pane 이라 이렇게 하면 폭이 분리된다.
+        self.setMaximumWidth(16777215)
         self.setMinimumWidth(panel_min)
+        self._force_pane_width(panel_min)
         self.updateGeometry()
+
+    def _force_pane_width(self, w: int):
+        """부모 우측 pane 의 폭을 내용폭 w 로 강제 고정.
+
+        [2026-05-30] AnalysisPanel 은 main_3d 의 _analysis_right_pane /
+        _quantity_right_pane (QHBoxLayout 의 비-stretch 우측 칸)에 reparent 되어
+        들어간다. minimumWidth 만으로는 이미 넓어진 폭이 안 줄어 두 탭 폭이
+        같아 보였다(직전 증상). 부모 pane 에 setFixedWidth 를 걸어 실제 폭을
+        내용폭으로 못 박는다. 각 탭이 자기 fit 에서 자기 pane 을 고정 → 분리.
+        """
+        par = self.parentWidget()
+        if par is None:
+            return
+        # pane 은 minimumWidth(380) 가 박혀 있으므로 먼저 풀고 고정.
+        par.setMinimumWidth(0)
+        par.setFixedWidth(int(w))
+
 
     def clear(self):
         """패널 내용을 비운다."""
         self._store = None
         self._model = None
-        self._summary_text.clear()
         self._tree.clear()
 
-    # ── 탭 2: 부재 트리 (ops 모델 단일 소스) ───────────────
+    # ── 부재 트리 (ops 모델 단일 소스) ───────────────
 
     def _on_tree_item_changed(self, current, _previous):
         """트리 선택 변경 → 단일 부재 / 그룹 모두 처리.
@@ -1236,8 +1315,7 @@ class AnalysisPanel(QWidget):
 
         mc: MaterialCost. 단가 미입력(0) 이면 단가칸을 '미입력' 으로 표시.
         """
-        def _won(v):
-            return f"{v:,.0f}"
+        from modular_3d._utils.format import won as _won
         rows = [
             ("강재(각형강관)", f"{mc.steel_ton:.4f} ton",
              (f"{mc.steel_unit:,.0f} 원/ton" if mc.steel_unit else "미입력"),
@@ -1287,6 +1365,9 @@ class AnalysisPanel(QWidget):
 
         comp_meta: Dict[int, tuple] = dict(getattr(self, '_comp_meta', {}) or {})
         if not comp_meta:
+            # [D4] _comp_meta 미생성 폴백 — 구조해석탭과 동일한 라벨 규칙으로 직접 생성.
+            from modular_3d.model.type_naming import classify_component_types
+            type_labels = classify_component_types(scene)
             for tname, items in by_type.items():
                 xy_set = sorted({(int(round(float(c.position[0]))),
                                   int(round(float(c.position[1]))))
@@ -1300,11 +1381,15 @@ class AnalysisPanel(QWidget):
                     xy = (int(round(float(c.position[0]))),
                           int(round(float(c.position[1]))))
                     z = int(round(float(c.position[2])))
-                    comp_meta[cid] = (xy_to_label[xy], z_to_floor[z], tname)
+                    top_label = (type_labels.get(cid)
+                                 or f"{xy_to_label[xy]}{tname}")
+                    comp_meta[cid] = (top_label, z_to_floor[z], tname)
 
-        # ── 2) top_groups[(tname, xy_label)] — 구조해석탭과 동일 ──
-        top_groups: Dict[tuple, list] = defaultdict(list)
-        for cid, (xy_label, floor, tname) in comp_meta.items():
+        # ── 2) top_groups[top_label] — 구조해석탭과 동일 ──
+        top_groups: Dict[str, list] = defaultdict(list)
+        label_tname: Dict[str, str] = {}
+        for cid, (top_label, floor, tname) in comp_meta.items():
+            label_tname[top_label] = tname
             comp = scene.components.get(cid)
             mid_list = list(model.comp_to_members.get(cid, []))
             if (comp is not None
@@ -1322,27 +1407,23 @@ class AnalysisPanel(QWidget):
                     f_idx = max(1, int((avg_z + 1.0) / FLOOR_HEIGHT) + 1)
                     by_floor_sub[f_idx].append(mid)
                 for f_idx, mids in by_floor_sub.items():
-                    top_groups[(tname, xy_label)].append(
-                        (f_idx, cid, mids))
+                    top_groups[top_label].append((f_idx, cid, mids))
             else:
-                top_groups[(tname, xy_label)].append(
-                    (floor, cid, mid_list))
+                top_groups[top_label].append((floor, cid, mid_list))
 
-        sorted_top = sorted(
-            top_groups.keys(),
-            key=lambda k: (_comp_type_order_key(k[0]), k[1]),
-        )
+        sorted_top = self._order_top_labels(
+            scene, comp_meta, label_tname, top_groups.keys())
 
         # ── 3) 트리 빌드 — 구조해석탭과 동일 ─────────────────
-        for (tname, xy_label) in sorted_top:
-            top_text = f"{xy_label}{tname}"
+        for top_label in sorted_top:
+            top_text = top_label
             top_item = QTreeWidgetItem([top_text, '', '', '', ''])
             top_item.setData(0, Qt.UserRole, None)
             f = top_item.font(0); f.setBold(True); top_item.setFont(0, f)
 
-            for floor, cid, mid_list in sorted(top_groups[(tname, xy_label)],
+            for floor, cid, mid_list in sorted(top_groups[top_label],
                                                 key=lambda e: (e[0], e[1])):
-                comp_text = f"{floor}층 {xy_label}{tname}"
+                comp_text = f"{top_label} {floor}층"
                 comp_item = QTreeWidgetItem([comp_text, '', '', '', ''])
                 comp_item.setData(0, Qt.UserRole, None)
 

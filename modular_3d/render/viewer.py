@@ -539,6 +539,21 @@ class Viewer3D:
             mesh.parent = None
             self.canvas.update()
 
+    def set_rooms_visible(self, visible: bool):
+        """모든 실 색면 메시의 표시/숨김 토글.
+
+        [정책 2026-05-28] 접합부설계·구조해석·물량 탭은 와이어프레임만 의미가
+        있어 실 색면이 공중에 떠 보이면 혼란스럽다. 그 탭 진입 시 숨기고,
+        배치설계·정의 탭(실 편집)에서 다시 표시. 메시는 유지(재생성 불필요).
+        """
+        if not hasattr(self, '_room_visuals'):
+            self._room_visuals = {}
+            return
+        for mesh in self._room_visuals.values():
+            if mesh is not None:
+                mesh.visible = bool(visible)
+        self.canvas.update()
+
     # ── 개구부 고스트 (2026-05-24 3단계) ─────────────────────
     # 개구부 배치/이동 미리보기 — 반투명 박스(부재 고스트와 별개).
 
@@ -2330,12 +2345,13 @@ class Viewer3D:
         self._member_highlight.visible = True
         self.canvas.update()
 
-    def update_pinned_members(self, segments_with_colors):
+    def update_pinned_members(self, segments_with_colors, width=5.0):
         """Phase 9 — 슬롯별 클릭 고정 부재 강조 갱신.
 
         segments_with_colors: list of ((c1, c2), (r, g, b, a))
           c1, c2 는 3D 월드 좌표(np.ndarray shape=(3,)), 색은 0~1 RGBA.
         빈 리스트면 비주얼 invisible.
+        width: 선 두께(기본 5.0). [9-3] 단면설계 하이라이트는 더 굵게 호출.
         """
         if not segments_with_colors:
             self._pinned_member_lines.visible = False
@@ -2349,7 +2365,7 @@ class Viewer3D:
         self._pinned_member_lines.set_data(
             pos=np.asarray(pts, dtype=np.float32),
             color=np.asarray(cols, dtype=np.float32),
-            connect='segments', width=5.0,
+            connect='segments', width=float(width),
         )
         self._pinned_member_lines.visible = True
         self.canvas.update()

@@ -15,3 +15,25 @@ def xy_bbox(comp):
     """
     bmin, bmax = comp.get_bounding_box()
     return float(bmin[0]), float(bmin[1]), float(bmax[0]), float(bmax[1])
+
+
+# 표준 1층 높이 (수직3층모듈 등 관통 층수 추정용).
+MODULE_FLOOR_HEIGHT_MM = 3000.0
+
+
+def module_floor_span(comp):
+    """모듈이 점유하는 [시작층, 끝층] (inclusive).
+
+    - 일반 모듈: (f, f)
+    - 수직3층모듈: height 로 관통 층수 추정.
+
+    공정표·평가 어댑터 양쪽에서 사용 — 함정: 출력이 1층 인덱스가 아닌
+    floor_index(0-base) 기준. 호출 측에서 환산 필요하면 별도 처리.
+    """
+    from modular_3d.model import Vertical3Module
+    f0 = int(getattr(comp, "floor_index", 0))
+    if isinstance(comp, Vertical3Module):
+        h = float(comp.dimensions.get("height", 0.0))
+        k = max(1, int(round(h / MODULE_FLOOR_HEIGHT_MM)))
+        return f0, f0 + k - 1
+    return f0, f0

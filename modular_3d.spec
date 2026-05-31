@@ -1,10 +1,23 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
+import sys
 from PyInstaller.utils.hooks import collect_submodules
 from PyInstaller.utils.hooks import collect_all
 
 datas = []
 binaries = []
 hiddenimports = []
+
+# [2026-05-27 _ctypes DLL load failed 수정]
+# venv 가 Anaconda Python(modular312) 위에 올라가 있어 _ctypes.pyd 가
+# conda 환경의 Library\bin\ffi-8.dll 에 의존. PyInstaller 가 자동으로
+# 못 잡으므로 명시 포함. sys.base_prefix 가 conda env 루트를 가리킴.
+_conda_bin = os.path.join(sys.base_prefix, 'Library', 'bin')
+if os.path.isdir(_conda_bin):
+    for _dll in os.listdir(_conda_bin):
+        if _dll.lower().endswith('.dll'):
+            binaries.append((os.path.join(_conda_bin, _dll), '.'))
+
 hiddenimports += collect_submodules('modular_3d')
 # [Phase 9] 운송 모듈 명시 hiddenimports — collect_submodules 가 잡지만 안전망.
 #   WebEngine 임베드 + 부트스트랩 동결 호환 (운송프로그램병합준비.md Phase 9 점검).
@@ -37,6 +50,12 @@ datas += [
     # QWebEngineView 가 QUrl.fromLocalFile 로 HTML 로드 → 옆 refs/ 의 PNG·index.json 도 필요.
     ('modular_3d/schedule/모듈러주택_공정표.html', 'modular_3d/schedule'),
     ('modular_3d/schedule/refs', 'modular_3d/schedule/refs'),
+    # [2026-05-31 병합] three.js 뷰어 HTML 템플릿 — Path(__file__).parent 로 read_text.
+    #   누락 시 동결 빌드에서 'template missing' → 운송/배치 3D 뷰어가 깨진다.
+    ('modular_3d/render/viewer_three_template.html', 'modular_3d/render'),
+    ('modular_3d/ui/alignment/alignment_view_three_template.html', 'modular_3d/ui/alignment'),
+    # [2026-05-31 병합] 모듈 정의 라이브러리 — main_3d 가 __file__ 기준 로드.
+    ('modular_3d/definition_library/definitions.json', 'modular_3d/definition_library'),
 ]
 
 
@@ -64,7 +83,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -77,7 +96,7 @@ coll = COLLECT(
     a.binaries,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name='modular_3d',
 )

@@ -282,17 +282,6 @@ def _diagnose_blocked(item, trucks: List[Truck], site: SiteLimit) -> str:
 
 
 # ── 트럭 단일사양 최대 적재 헬퍼 (recheck 진단용) ─────────────────
-def _max_modules_per_truck(module: Module, truck: Truck, spacing: SpacingParams) -> int:
-    if module.width > _eff_truck_width(truck, spacing):
-        return 0
-    if module.height + truck.vehicle_height_offset > truck.max_height:
-        return 0
-    usable = truck.max_length - 2 * spacing.truck_edge_clearance_mm
-    if module.length > usable:
-        return 0
-    n_len = max(int((usable + spacing.panel_gap_mm) // (module.length + spacing.panel_gap_mm)), 1)
-    n_wt = math.floor(truck.max_weight / module.weight) if module.weight > 0 else n_len
-    return min(n_len, n_wt)
 
 
 def _max_floor_panels_per_truck(
@@ -479,18 +468,6 @@ def _pack_horizontal_stacked(
     return trips, blocked
 
 
-def _pack_floor_panels(panels, trucks, site, sp, start_trip_no):
-    return _pack_horizontal_stacked(
-        panels, trucks, site, sp, start_trip_no,
-        "플로어 패널", _floor_panel_compatible_trucks,
-    )
-
-
-def _pack_wall_panels(panels, trucks, site, sp, start_trip_no):
-    return _pack_horizontal_stacked(
-        panels, trucks, site, sp, start_trip_no,
-        "벽체 패널", _wall_panel_compatible_trucks,
-    )
 
 
 # ── A-1 종속 floor 패널 (L자/ㄷ자/3면/4면/부분벽 통합) ─────────────
@@ -635,9 +612,6 @@ def _pack_dependent_panels(
 
 
 # ── recheck (트럭 교체) ───────────────────────────────────────────
-def _trip_cargo_weight_with_extra(trip: Trip, extra: float = 0.0) -> float:
-    """B-3 정정: stacked_items 무게를 포함한 화물 합."""
-    return trip.cargo_weight + extra
 
 
 def _panel_overcount_reason(
@@ -807,6 +781,7 @@ def pack_items(
     spacing: SpacingParams = SpacingParams(),
     *,
     use_v2: bool = True,
+    use_bb: bool = True,
     economics=None,
 ) -> PackResult:
     """모듈·패널 → 회차 산정 — Best-Fit + 다중 시드 + VND + 무게중심 보정.
@@ -833,12 +808,25 @@ def pack_items(
     """
     from .packer_balance import balance_trips
     from .economics import EconomicsOptions
+    from .packer_core import clear_module_truck_cache
 
     if economics is None:
         economics = EconomicsOptions()
 
-    items: List[Item] = list(modules) + list(panels)
+    # 새 운송 계산 — 모듈 트럭 캐시 초기화 (stale 방지)
+    clear_module_truck_cache()
+
     cost_mode = economics.cost_mode
+
+    if use_bb:
+        # Phase 5 — 패널 BB + 모듈 V2 단순 매핑 분리 처리
+        return _pack_items_bb(
+            modules, panels, trucks, site, spacing,
+            cost_mode=cost_mode, economics=economics,
+        )
+
+    # Legacy 경로 — 통합 V2/V1
+    items: List[Item] = list(modules) + list(panels)
     if use_v2:
         from .packer_meta import pack_all_seeds_v2
         best, _meta = pack_all_seeds_v2(
@@ -857,6 +845,134 @@ def pack_items(
         )
     balance_trips(best.trips, spacing)
     return best
+
+
+def _build_trip_from_placements(
+    trip_no: int, truck: Truck, sub_panels: List[Panel],
+    placements: list, spacing: SpacingParams,
+) -> Trip:
+    """BLF Placement 결과 → Trip 객체 변환.
+
+    Phase 5-I — pack_one_seed_v2 호출 폐기. BLF 가 산출한 좌표/자세 그대로 사용.
+    items / used_length_mm / has_mixed_posture / standing_count 등 파생 필드 계산.
+    """
+    from .packer_types import Posture as _Posture
+    used_len = 0.0
+    standing_count = 0
+    has_mixed = False
+    items_list: List[Item] = []
+    for p in placements:
+        items_list.append(p.item)
+        # 화물 길이 누적 (LYING 길이, STANDING 도 length)
+        item_len = float(getattr(p.item, "length", 0.0))
+        used_len += item_len
+        if p.posture == _Posture.STANDING:
+            standing_count += 1
+    if standing_count > 0 and standing_count < len(placements):
+        has_mixed = True
+    usable_len = truck.max_length - 2.0 * spacing.truck_edge_clearance_mm
+    trip = Trip(
+        trip_no=trip_no,
+        truck=truck,
+        items=items_list,
+        usable_length_mm=usable_len,
+        used_length_mm=used_len,
+        placements=list(placements),
+        has_mixed_posture=has_mixed,
+        standing_count=standing_count,
+    )
+    return trip
+
+
+def _pack_items_bb(
+    modules: List[Module], panels: List[Panel], trucks: List[Truck],
+    site: SiteLimit, spacing: SpacingParams, cost_mode: str, economics,
+) -> PackResult:
+    """Phase 5 — 모듈은 V2 단순 매핑 (모듈만), 패널은 분기한정 (BB).
+
+    두 결과 합쳐 PackResult 반환.
+    """
+    from .packer_balance import balance_trips
+    from .packer_bb import pack_panels_bb
+
+    # ── 1단계 — 모듈만 V2 호출 (패널 0개) ──
+    # V2 의 모듈 빠른 경로 (캐시) 활용. 4.5m 합산 예외도 V2 가 처리.
+    module_trips: List[Trip] = []
+    if modules:
+        from .packer_meta import pack_all_seeds_v2
+        m_pack, _ = pack_all_seeds_v2(
+            list(modules), trucks, site, spacing,
+            cost_mode=cost_mode, eco_options=economics, apply_vnd=False,
+        )
+        module_trips = list(m_pack.trips)
+
+    # ── 2단계 — 패널만 BB ──
+    panel_trips: List[Trip] = []
+    if panels:
+        bb_result, _bb_cost, bb_stats = pack_panels_bb(
+            panels, trucks, site, spacing, cost_mode, economics,
+        )
+        try:
+            import sys
+            sys.stderr.write(
+                f"[BB] nodes={bb_stats.get('nodes', 0)} "
+                f"bans={bb_stats.get('bans', 0)} "
+                f"bound_cuts={bb_stats.get('bound_cuts', 0)} "
+                f"memo_hits={bb_stats.get('memo_hits', 0)} "
+                f"initial={bb_stats.get('initial_cost', 0):.0f}원 "
+                f"final={bb_stats.get('final_cost', 0):.0f}원\n"
+            )
+        except Exception:
+            pass
+        # BB 결과 → Trip 변환 (Phase 5-I — BLF Placement 직접 사용)
+        # pack_one_seed_v2 호출 폐기. BLF 가 산출한 Placement 그대로 사용.
+        start_trip_no = len(module_trips) + 1
+        for offset, (pattern, truck, placements) in enumerate(bb_result):
+            trip_no = start_trip_no + offset
+            sub_panels = [panels[i] for i in pattern]
+            new_trip = _build_trip_from_placements(
+                trip_no, truck, sub_panels, placements, spacing,
+            )
+            panel_trips.append(new_trip)
+
+    # ── 합치기 ──
+    all_trips = list(module_trips) + list(panel_trips)
+    # trip_no 재할당
+    for new_no, trip in enumerate(all_trips, start=1):
+        trip.trip_no = new_no
+
+    result = PackResult(trips=all_trips, blocked=[])
+
+    # 디버그 — balance_trips 전후 좌표 비교 (BB_TRACE 환경/UI 활성 시)
+    from . import packer_bb as _bb
+    if _bb._trace_enabled():
+        _bb._trace_write("=== PLACEMENTS_BEFORE_BALANCE ===")
+        for trip in result.trips:
+            _bb._trace_write(f"TRIP {trip.trip_no} truck={trip.truck.name}")
+            for pi, pm in enumerate(trip.placements):
+                nm = getattr(pm.item, "name", "?")
+                _bb._trace_write(
+                    f"  PRE #{pi} item={nm} posture={pm.posture.name} "
+                    f"truck_xyz=({pm.truck_xyz[0]:.0f},{pm.truck_xyz[1]:.0f},"
+                    f"{pm.truck_xyz[2]:.0f})"
+                )
+
+    balance_trips(result.trips, spacing)
+
+    if _bb._trace_enabled():
+        _bb._trace_write("=== PLACEMENTS_AFTER_BALANCE ===")
+        for trip in result.trips:
+            _bb._trace_write(f"TRIP {trip.trip_no} truck={trip.truck.name}")
+            for pi, pm in enumerate(trip.placements):
+                nm = getattr(pm.item, "name", "?")
+                _bb._trace_write(
+                    f"  POST #{pi} item={nm} posture={pm.posture.name} "
+                    f"truck_xyz=({pm.truck_xyz[0]:.0f},{pm.truck_xyz[1]:.0f},"
+                    f"{pm.truck_xyz[2]:.0f})"
+                )
+        # balance_trips 까지 출력 완료 — 이제 파일 close
+        _bb._trace_close()
+    return result
 
 
 __all__ = [

@@ -10,7 +10,6 @@
 기존 `from modular_3d.model import X` 는 본 __init__.py 의 re-export 로 그대로 동작.
 """
 from modular_3d.model.core import *  # noqa: F401, F403
-from modular_3d.model.room import Room  # noqa: F401
 from modular_3d.model.core import (  # noqa: F401
     AppState, ComponentType,
     BeamData, ColumnData, SlabData,

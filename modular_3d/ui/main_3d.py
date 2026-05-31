@@ -58,9 +58,14 @@ class _TransportBridge(QObject):
 
 from modular_3d.model import Scene, ComponentType, TYPE_NAMES
 from modular_3d.render.viewer import Viewer3D
+# UI 마이그레이션 M2 (2026-05-28) — Strangler 어댑터로 교체. 같은 인터페이스라
+# 기존 호출 코드는 한 줄도 안 건드림. 자세한 결정은 UI_마이그레이션/05_M2_설계.md.
+from modular_3d.render.viewer_strangler import ViewerStrangler
 from modular_3d.ui.ui_panel import DimensionInputPanel, StatusBarManager
 from modular_3d.ui.analysis_panel import AnalysisPanel
-from modular_3d.ui.alignment_view import AlignmentDockPanel
+from modular_3d.ui.alignment.alignment_view import AlignmentDockPanel
+# UI 마이그레이션 M3-b — three.js 2D 평면 뷰 어댑터.
+from modular_3d.ui.alignment.alignment_dock_three import AlignmentDockPanelThree
 from modular_3d.ui.controls import Controller
 from modular_3d.ui.palette_panel import PalettePanel
 from modular_3d.ui.design_props_panel import DesignPropertiesPanel
@@ -80,15 +85,20 @@ TAB_DEFINE = 0      # 모듈 정의 탭 (신규)
 TAB_DESIGN = 1      # 배치 설계 탭 (기존 디자인 탭)
 TAB_JOINT_EDIT = 2
 TAB_ANALYSIS = 3
-TAB_QUANTITY = 4
-TAB_TRANSPORT = 5
+# [2026-05-31 단면 설계 탭 신설] 구조해석과 물량 사이. 이후 인덱스 +1.
+TAB_SECTION = 4
+TAB_QUANTITY = 5
+TAB_TRANSPORT = 6
 # [2026-05-27 공정표 이식] 옛 이름 TAB_JOINT_AIR → TAB_SCHEDULE 로 변경.
 # 외부 코드에서 참조하는 경우를 위해 옛 이름은 별칭으로 유지.
-TAB_SCHEDULE = 6
+TAB_SCHEDULE = 7
 TAB_JOINT_AIR = TAB_SCHEDULE  # deprecated alias
 # [2026-05-27 평가 탭 이식] 옛 이름 TAB_FINAL → TAB_EVALUATION 으로 변경.
-TAB_EVALUATION = 7
+TAB_EVALUATION = 8
 TAB_FINAL = TAB_EVALUATION  # deprecated alias
+# [2026-05-31] 비교 탭 신설 — 저장된 .case.json 들을 가로로 나란히 비교.
+# 팀원 원본은 8 이었으나 우리 단면설계 탭(4) 삽입으로 뒤 인덱스가 +1 → 9.
+TAB_COMPARE = 9
 
 
 class MainWindow(QMainWindow):
@@ -115,9 +125,14 @@ class MainWindow(QMainWindow):
         self._definition_library = DefinitionLibrary(path=_deflib_path)
 
         # ── 3D 뷰어 (탭 간 공유 위젯) ─────────────────────
-        self._viewer = Viewer3D()
-        self._canvas_widget = self._viewer.get_native_widget()
+        # UI 마이그레이션 M2 — ViewerStrangler 가 Viewer3D + ViewerThree 를 모두
+        # 보유하며 모든 변경 메서드를 broadcast. 기존 호출 코드는 인터페이스
+        # 동일이라 그대로 동작. _canvas_widget 은 여전히 vispy 위젯 (이벤트필터
+        # 호환). three.js 위젯은 _three_widget 으로 따로 마운트.
+        self._viewer = ViewerStrangler()
+        self._canvas_widget = self._viewer.vispy.get_native_widget()
         self._canvas_widget.setFocusPolicy(Qt.StrongFocus)
+        self._three_widget = self._viewer.three.get_native_widget()
 
         # ── 변형 형상 컨트롤 (해석·물량 탭에서만 표시) ──
         self._deformed_widget = self._build_deformed_widget()
@@ -143,19 +158,15 @@ class MainWindow(QMainWindow):
         # 실제 접합은 유지, 와이어프레임 결합선만 켜고/끔.
         self._joint_panel.rule_visibility_changed.connect(
             self._viewer.set_rule_visibility)
-        # [2026-05-25 접합부 변경] 편집 모드/변경/복귀 시그널 배선.
-        self._joint_edit_mode = False
-        self._joint_add_mode = False
-        self._joint_add_first = None
-        self._joint_add_cands = []      # 첫 점 선택 후 접합 가능 후보점들
-        self._joint_add_snap = None     # 현재 마우스가 스냅한 후보(x,y,z,comp)
-        self._joint_selected = None
-        self._joint_om = None
-        self._joint_am = None
-        self._joint_panel.edit_mode_toggled.connect(self._on_joint_edit_mode)
-        self._joint_panel.joint_change_requested.connect(self._on_joint_change)
-        self._joint_panel.joint_revert_requested.connect(self._on_joint_revert)
-        self._joint_panel.add_mode_toggled.connect(self._on_joint_add_mode)
+        # [2026-05-27 3-B Phase 3] 접합부 핸들러 18개 + 상태 변수 9개를
+        # JointEditController 로 분리. self.window 로 main 참조.
+        from modular_3d.ui.main_3d_joint import JointEditController
+        self._joint_ctrl = JointEditController(self)
+        # [2026-05-25 접합부 변경] 편집 모드/변경/복귀 시그널 배선 — controller 로.
+        self._joint_panel.edit_mode_toggled.connect(self._joint_ctrl._on_joint_edit_mode)
+        self._joint_panel.joint_change_requested.connect(self._joint_ctrl._on_joint_change)
+        self._joint_panel.joint_revert_requested.connect(self._joint_ctrl._on_joint_revert)
+        self._joint_panel.add_mode_toggled.connect(self._joint_ctrl._on_joint_add_mode)
         # 접합부 설계 탭 '저장' — 배치 설계 탭 저장과 동일(접합 변경 포함).
         self._joint_panel.save_requested.connect(self._on_scene_save)
         # 구조해석/물량 탭 우측: AnalysisPanel (서브탭 [요약][내부력][물량산출])
@@ -175,6 +186,10 @@ class MainWindow(QMainWindow):
         # ── 디자인 탭 우측 가운데 2D F5 캔버스 (탭 간 공유) ──
         # F5 도크는 만들지 않고, 패널 알맹이만 디자인 탭에 직접 박는다.
         self._f5_panel = AlignmentDockPanel(self._controller)
+        # UI 마이그레이션 M3-b — three.js 2D 뷰 (vispy 옆 세로 분할 마운트).
+        # AlignmentCanvas.paintEvent 끝 후크에 자기 sync 등록.
+        self._f5_panel_three = AlignmentDockPanelThree()
+        self._f5_panel_three.attach_to(self._f5_panel.canvas)
         # Controller 에 패널 참조 주입 — 키 콜백/저장/불러오기 wiring
         if hasattr(self._controller, 'set_f5_dock'):
             self._controller.set_f5_dock(None, self._f5_panel)
@@ -198,14 +213,10 @@ class MainWindow(QMainWindow):
         # 직접 연결되어 3D 재생성이 정상 동작한다.
 
         # ── 좌측 팔레트 (디자인 탭 전용) ─────────────────
-        # 코어 슬래브 버튼 콜백 — 컨트롤러(F5Mixin)의 메서드 직접 주입.
-        _regen_cb = getattr(self._controller, 'regenerate_all_core_slabs', None)
         self._palette = PalettePanel(
             on_select=self._on_palette_select,
-            on_regen_core_slabs=_regen_cb,
             on_room_draw=self._on_room_draw,
-            on_room_mode_toggle=self._on_room_mode_toggle,
-            on_opening_mode_toggle=self._on_opening_mode_toggle,
+            on_detail_mode_toggle=self._on_detail_mode_toggle,
             on_opening_add=self._on_opening_add,
             on_wall_place=self._on_wall_place,
         )
@@ -226,68 +237,8 @@ class MainWindow(QMainWindow):
         # 있도록 라이브러리 주입(메인↔컨트롤러 공유 인스턴스).
         self._controller._definition_library = self._definition_library
 
-        # ── 메인 탭 위젯 ────────────────────────────────
-        self._tabs = QTabWidget()
-        self._tab_design = self._build_design_tab()
-        # [2026-05-13 접합부조정탭] 디자인 ↔ 구조해석 사이에 접합부 조정 탭 신설.
-        # 와이어프레임은 _draw_from_spec 코드 그대로 공유(중복 코드 금지). solve
-        # 미실행. 자세한 정책은 접합부조정탭_계획서.md.
-        self._tab_joint_edit = self._build_joint_edit_tab()
-        self._tab_analysis = self._build_analysis_tab()
-        self._tab_quantity = self._build_quantity_tab()
-        # (2026-05-13 UI 개편) 시나리오 탭 제거 — 저장/불러오기 기능은 디자인 탭으로.
-        # 새 탭: 운송 / 공기 및 접합부 / 최종평가. 내부 내용은 비워둠.
-        # Phase 6: 운송 탭은 placeholder 대신 운송 전용 center+right 페이지.
-        self._tab_transport = self._build_transport_tab_layout()
-        # [2026-05-27 공정표 이식 Phase A] placeholder → 팀원 HTML 임베드.
-        # 공정표_이식_계획서.md 참조. 변수명을 _tab_schedule 로 통일하고,
-        # 외부 호환을 위해 _tab_joint_air 는 별칭으로 유지.
-        from .schedule_panel import SchedulePanel
-        self._tab_schedule = SchedulePanel()
-        # [2026-05-27 평가 탭 Phase L] 공정표 calc() 결과 캐시.
-        # SchedulePanel 의 ScheduleBridge 시그널을 받아 self._schedule_payload 에 저장.
-        # 평가 탭이 진입 시 이 캐시를 어댑터에 넘긴다.
-        self._schedule_payload: dict = {}
-        self._tab_schedule.bridge().schedule_payload_pushed.connect(
-            self._on_schedule_payload_pushed
-        )
-        self._tab_joint_air = self._tab_schedule  # deprecated alias
-        # [2026-05-27 평가 탭 이식 Phase J] placeholder → EvaluationPanel.
-        # 평가탭_구축_계획서.md 참조. 변수명 _tab_evaluation 통일, 별칭 유지.
-        from .evaluation_panel import EvaluationPanel
-        self._tab_evaluation = EvaluationPanel()
-        self._tab_evaluation.save_case_requested.connect(self._on_evaluation_save_case)
-        self._tab_final = self._tab_evaluation  # deprecated alias
-        self._tabs.addTab(self._define_tab, '모듈 정의')
-        self._tabs.addTab(self._tab_design, '배치 설계')
-        self._tabs.addTab(self._tab_joint_edit, '접합부 설계')
-        self._tabs.addTab(self._tab_analysis, '구조해석')
-        self._tabs.addTab(self._tab_quantity, '물량')
-        self._tabs.addTab(self._tab_transport, '운송')
-        self._tabs.addTab(self._tab_schedule, '공정표')
-        self._tabs.addTab(self._tab_evaluation, '평가')
-        self._tabs.currentChanged.connect(self._on_tab_changed)
-        self.setCentralWidget(self._tabs)
-
-        # [Phase 7] 파일 메뉴 — 운송 카탈로그 관리 진입점.
-        # AnalysisPanel 의 _transport_tab 이 다이얼로그를 띄움. 트랜스포트 탭에
-        # 들어가지 않아도 메뉴에서 카탈로그를 열 수 있도록 노출.
-        self._build_menu_bar()
-
-        # [Phase 7] 운송탭에 프로젝트 루트 전달 — trucks.json 저장 위치 결정.
-        # _parent (my_project) 디렉토리 아래 transport_config/ 가 생성됨.
-        try:
-            tt = getattr(self._analysis_panel, '_transport_tab', None)
-            if tt is not None and hasattr(tt, 'set_project_root'):
-                tt.set_project_root(_parent)
-            # [Phase C — 2026-05-26] 운송 계산 완료 → center pane 3D 도식 갱신.
-            if tt is not None and hasattr(tt, 'transport_pack_updated'):
-                tt.transport_pack_updated.connect(self._on_transport_pack_updated)
-            # [Phase E — 2026-05-26] 회차표 행 클릭 → 3D 도식에서 해당 회차 강조.
-            if tt is not None and hasattr(tt, 'transport_trip_clicked'):
-                tt.transport_trip_clicked.connect(self._on_transport_trip_clicked)
-        except Exception:
-            pass
+        # ── 메인 탭 위젯 + 시그널 연결 ──────────────────
+        self._setup_tabs()
 
         # 초기 탭 진입 — 배치 설계 탭(기존 디자인)으로 시작. 정의 탭은 index 0
         # 이지만 시작 화면은 익숙한 배치 설계로 둔다. setCurrentIndex 가
@@ -301,6 +252,74 @@ class MainWindow(QMainWindow):
 
         # 캔버스에 포커스
         self._canvas_widget.setFocus()
+
+    # ── 메인 탭 위젯 구성 (1864→1700 다이어트, 2026-05-27) ────
+    def _setup_tabs(self) -> None:
+        """메인 탭 위젯 생성·시그널 연결·메뉴바·운송 wiring 일괄.
+
+        호출 시점 함정: __init__ 의 위젯·controller 생성이 모두 끝난 *후* 에
+        호출해야 한다. self._analysis_panel, self._define_tab, self._build_*_tab
+        의 의존 attr 가 모두 준비되어 있어야 함.
+        """
+        self._tabs = QTabWidget()
+        self._tab_design = self._build_design_tab()
+        # [2026-05-13 접합부조정탭] 디자인 ↔ 구조해석 사이에 접합부 조정 탭 신설.
+        self._tab_joint_edit = self._build_joint_edit_tab()
+        self._tab_analysis = self._build_analysis_tab()
+        # [2026-05-31 단면 설계 탭] 구조해석과 물량 사이.
+        self._tab_section = self._build_section_design_tab()
+        self._tab_quantity = self._build_quantity_tab()
+        # Phase 6: 운송 탭은 placeholder 대신 운송 전용 center+right 페이지.
+        self._tab_transport = self._build_transport_tab_layout()
+        # [2026-05-27 공정표 이식 Phase A] 팀원 HTML 임베드. _tab_joint_air 별칭 유지.
+        from .schedule_panel import SchedulePanel
+        self._tab_schedule = SchedulePanel()
+        # [2026-05-27 평가 탭 Phase L] 공정표 calc() 결과 캐시.
+        self._schedule_payload: dict = {}
+        self._tab_schedule.bridge().schedule_payload_pushed.connect(
+            self._on_schedule_payload_pushed
+        )
+        self._tab_joint_air = self._tab_schedule  # deprecated alias
+        # [2026-05-27 평가 탭 이식 Phase J] EvaluationPanel. _tab_final 별칭 유지.
+        from .evaluation_panel import EvaluationPanel
+        self._tab_evaluation = EvaluationPanel()
+        self._tab_evaluation.save_case_requested.connect(self._on_evaluation_save_case)
+        # 정책(1/2/3종) 변경을 평가 탭에도 push — 활성일 때만 즉시 재계산.
+        if hasattr(self._analysis_panel, 'policy_changed'):
+            self._analysis_panel.policy_changed.connect(
+                self._on_policy_changed_for_evaluation)
+        self._tab_final = self._tab_evaluation  # deprecated alias
+        # [2026-05-31] 비교 탭 — 저장된 .case.json 들을 가로 4 개까지 나열.
+        from .compare_panel import ComparePanel
+        self._tab_compare = ComparePanel()
+        self._tabs.addTab(self._define_tab, '모듈 정의')
+        self._tabs.addTab(self._tab_design, '배치 설계')
+        self._tabs.addTab(self._tab_joint_edit, '접합부 설계')
+        self._tabs.addTab(self._tab_analysis, '구조해석')
+        self._tabs.addTab(self._tab_section, '단면 설계')
+        self._tabs.addTab(self._tab_quantity, '물량')
+        self._tabs.addTab(self._tab_transport, '운송')
+        self._tabs.addTab(self._tab_schedule, '공정표')
+        self._tabs.addTab(self._tab_evaluation, '종합')
+        self._tabs.addTab(self._tab_compare, '비교')
+        self._tabs.currentChanged.connect(self._on_tab_changed)
+        self.setCentralWidget(self._tabs)
+        # [Phase 7] 파일 메뉴 — 운송 카탈로그 진입점.
+        self._build_menu_bar()
+        # [Phase 7] 운송탭에 프로젝트 루트 전달 + 신호 wiring (운송 탭 객체가
+        # 늦게 만들어지는 케이스 대비 try/except 보호).
+        try:
+            tt = getattr(self._analysis_panel, '_transport_tab', None)
+            if tt is not None and hasattr(tt, 'set_project_root'):
+                tt.set_project_root(_parent)
+            # [Phase C — 2026-05-26] 운송 계산 완료 → center pane 3D 도식 갱신.
+            if tt is not None and hasattr(tt, 'transport_pack_updated'):
+                tt.transport_pack_updated.connect(self._on_transport_pack_updated)
+            # [Phase E — 2026-05-26] 회차표 행 클릭 → 3D 도식에서 해당 회차 강조.
+            if tt is not None and hasattr(tt, 'transport_trip_clicked'):
+                tt.transport_trip_clicked.connect(self._on_transport_trip_clicked)
+        except Exception:
+            pass
 
     # ── 상단 메뉴바 — 프로젝트 설정 ──────────────────────
     def _build_menu_bar(self) -> None:
@@ -336,6 +355,13 @@ class MainWindow(QMainWindow):
             tt = getattr(self._analysis_panel, '_transport_tab', None)
             if tt is not None and hasattr(tt, 'apply_project_settings'):
                 tt.apply_project_settings(self._project_settings)
+            # [2026-05-31] 공정표 탭도 즉시 갱신 — 착공일·지역 변경이 바차트
+            # 날짜 라벨과 비작업일 보정에 바로 반영되도록.
+            try:
+                if hasattr(self._tab_schedule, 'apply_project_settings'):
+                    self._tab_schedule.apply_project_settings(self._project_settings)
+            except Exception as e:
+                dprint('SCHEDULE', f'[SCHEDULE] 프로젝트 설정 푸시 실패: {e}')
 
     def _open_transport_catalog(self) -> None:
         """파일 메뉴 진입점 — AnalysisPanel 의 _transport_tab 에 위임."""
@@ -371,18 +397,43 @@ class MainWindow(QMainWindow):
             comps = list(self._scene.components.values()) if hasattr(self._scene, 'components') else []
             n_floors = self._f5_panel.floors if getattr(self, '_f5_panel', None) else 1
             scene_state = scene_to_state_dict(self._scene, n_floors)
+            # [2026-05-31] 어댑터 시그니처에 맞춰 인자 정정.
+            # quantity_reports / current_policy / transport_pack / transport_eco /
+            # schedule_payload — 탭 진입 핸들러와 동일한 키.
+            quantity_reports = getattr(self._analysis_panel, '_quantity_reports', None) or None
+            current_policy = getattr(self._analysis_panel, '_current_policy', '3종')
+            transport_pack = getattr(self, '_last_transport_pack', None)
+            transport_tab = getattr(self._analysis_panel, '_transport_tab', None)
+            transport_eco = getattr(transport_tab, '_last_eco', None) if transport_tab is not None else None
             evaluation_data = build_evaluation_data(
                 components=comps,
                 project_settings=self._project_settings,
-                design_results=getattr(self._controller, '_design_results', None),
-                transport_result=getattr(self, '_last_transport_pack', None),
+                quantity_reports=quantity_reports,
+                current_policy=current_policy,
+                transport_pack=transport_pack,
+                transport_eco=transport_eco,
                 schedule_payload=getattr(self, '_schedule_payload', None) or None,
             )
+            # [2026-05-31 v2] 비교탭 표시용 — 전체 배치 fit-all 캡처.
+            # (main_3d 에 typing.Optional 미import → 지역 annotation 생략)
+            layout_png_bytes = None
+            try:
+                from PyQt5.QtCore import QBuffer, QIODevice
+                pm = self._capture_layout_full_pixmap()
+                if pm is not None and not pm.isNull():
+                    buf = QBuffer()
+                    buf.open(QIODevice.WriteOnly)
+                    pm.save(buf, "PNG")
+                    layout_png_bytes = bytes(buf.data())
+                    buf.close()
+            except Exception as e:
+                dprint('EVALUATION', f'[EVALUATION] 평면도 캡처 실패(저장): {e}')
             save_case(
                 path=path,
                 scene_state=scene_state,
                 project_settings=self._project_settings,
                 evaluation_data=evaluation_data,
+                layout_png_bytes=layout_png_bytes,
             )
             QMessageBox.information(
                 self, "평가 결과 저장",
@@ -434,9 +485,43 @@ class MainWindow(QMainWindow):
         self._design_left_pane = QWidget()
         self._design_left_lay = QVBoxLayout(self._design_left_pane)
         self._design_left_lay.setContentsMargins(0, 0, 0, 0)
+        # UI 마이그레이션 M2 — Strangler 세로 분할: 상단 vispy(탭 전환마다 reparent)
+        # / 하단 three.js(영구 부착). 다른 탭 진입 시 vispy 만 빠져나가고 three.js 는
+        # 디자인 탭에 그대로 남는다(보이지 않을 뿐). 비율 1:1 시작.
+        self._design_left_split = QSplitter(Qt.Vertical)
+        self._design_left_top = QWidget()    # vispy 자리 (탭 전환 시 reparent 대상)
+        self._design_left_top_lay = QVBoxLayout(self._design_left_top)
+        self._design_left_top_lay.setContentsMargins(0, 0, 0, 0)
+        self._design_left_split.addWidget(self._design_left_top)
+        self._design_left_split.addWidget(self._three_widget)
+        self._design_left_split.setStretchFactor(0, 0)
+        self._design_left_split.setStretchFactor(1, 1)
+        # M8-b — vispy 3D 표시 제거: 상단(vispy 자리) 0, 하단 three.js 전체.
+        self._design_left_split.setSizes([0, 800])
+        self._design_left_split.setChildrenCollapsible(True)
+        self._design_left_lay.addWidget(self._design_left_split, stretch=1)
+        # [2026-05-30 B3] 3D 뷰 바로 아래 z축 단면(수평 평면 절단) 슬라이더.
+        self._design_left_lay.addWidget(self._build_section_slider())
         self._design_right_pane = QWidget()
+        # M3-b 마운트는 빌더 끝에서 _design_right_lay 안에 세로 분할 추가
+        # (코드는 아래에서 _design_right_lay 정의 후).
         self._design_right_lay = QVBoxLayout(self._design_right_pane)
         self._design_right_lay.setContentsMargins(0, 0, 0, 0)
+        # UI 마이그레이션 M3-b — 우측 2D 도 세로 분할: 상단 vispy AlignmentDockPanel
+        # / 하단 three.js AlignmentDockPanelThree. 좌측 3D 와 같은 Strangler 패턴.
+        self._design_right_split = QSplitter(Qt.Vertical)
+        self._design_right_top = QWidget()    # f5_panel 자리 (탭 전환 시 reparent)
+        self._design_right_top_lay = QVBoxLayout(self._design_right_top)
+        self._design_right_top_lay.setContentsMargins(0, 0, 0, 0)
+        self._design_right_split.addWidget(self._design_right_top)
+        self._design_right_split.addWidget(self._f5_panel_three)
+        self._design_right_split.setStretchFactor(0, 0)
+        self._design_right_split.setStretchFactor(1, 1)
+        # M8-b — vispy 2D 캔버스 제거: 상단(_f5_panel)은 *상단 컨트롤만* 얇게
+        # 남기고(hide_canvas), 하단 three.js 가 평면뷰 전체.
+        self._design_right_split.setSizes([40, 800])
+        self._design_right_split.setChildrenCollapsible(True)
+        self._design_right_lay.addWidget(self._design_right_split, stretch=1)
         self._design_center_split.addWidget(self._design_left_pane)
         self._design_center_split.addWidget(self._design_right_pane)
         # [2026-05-11 v2] 3D : 2D = 7 : 3 비율로 초기화. 사용자가 핸들로 자유 조정.
@@ -467,6 +552,68 @@ class MainWindow(QMainWindow):
         self._room_props.setVisible(False)
         h.addWidget(right)
         return page
+
+    def _build_section_slider(self) -> QWidget:
+        """[B3] 3D 화면 z축 단면(수평 평면 절단) 컨트롤 — 체크박스 + 슬라이더.
+
+        체크 ON 이면 슬라이더 높이(z, mm) 위쪽을 잘라 평면을 본다(three.js 클리핑).
+        """
+        box = QWidget()
+        lay = QHBoxLayout(box)
+        lay.setContentsMargins(6, 2, 6, 2)
+        self._section_check = QCheckBox('단면')
+        self._section_check.setToolTip(
+            '체크 시 슬라이더 높이에서 위쪽을 잘라 평면을 봅니다.')
+        lay.addWidget(self._section_check)
+        self._section_slider = QSlider(Qt.Horizontal)
+        # 범위는 단면을 켤 때 -100 ~ 건물 최고점으로 동적 갱신(_update_section_range).
+        self._section_slider.setRange(-100, 10000)
+        self._section_slider.setValue(10000)
+        self._section_slider.setSingleStep(100)
+        lay.addWidget(self._section_slider, stretch=1)
+        self._section_label = QLabel('z = 10000 mm')
+        self._section_label.setFixedWidth(120)
+        lay.addWidget(self._section_label)
+        self._section_check.toggled.connect(self._on_section_toggled)
+        self._section_slider.valueChanged.connect(self._on_section_changed)
+        box.setMaximumHeight(34)
+        return box
+
+    def _update_section_range(self):
+        """단면 슬라이더 범위를 -100 ~ 건물 최고점(코어 옥탑 슬래브 끝)으로 갱신.
+
+        장면의 모든 부재 메쉬 z 최댓값을 건물 최고점으로 본다(코어 옥탑 슬래브 포함).
+        """
+        from modular_3d.render.mesh_builder import build_component_mesh
+        z_max = 0.0
+        for comp in self._scene.components.values():
+            try:
+                v, _f, _c = build_component_mesh(comp)
+            except Exception:
+                continue
+            if v is not None and len(v):
+                z_max = max(z_max, float(v[:, 2].max()))
+        z_min = -100
+        z_max = max(int(round(z_max)), z_min + 100)
+        self._section_slider.blockSignals(True)
+        self._section_slider.setRange(z_min, z_max)
+        self._section_slider.setValue(z_max)   # 켜는 순간엔 전체가 보이는 위치
+        self._section_slider.blockSignals(False)
+
+    def _on_section_toggled(self, checked: bool):
+        """단면 체크 토글 — 켜질 때 슬라이더 범위를 현재 건물 높이에 맞춘다."""
+        if checked:
+            self._update_section_range()
+        self._on_section_changed()
+
+    def _on_section_changed(self, *_):
+        """단면 체크/슬라이더 변경 → three.js 클리핑 평면 갱신."""
+        z = float(self._section_slider.value())
+        enabled = self._section_check.isChecked()
+        self._section_label.setText(f'z = {int(z)} mm')
+        three = getattr(self._viewer, 'three', None)
+        if three is not None and hasattr(three, 'set_section_z'):
+            three.set_section_z(z, enabled)
 
     def _build_joint_edit_tab(self) -> QWidget:
         """접합부 조정 탭: 중앙(3D 와이어프레임) + 우 접합부 UI placeholder.
@@ -526,6 +673,52 @@ class MainWindow(QMainWindow):
         self._analysis_right_lay = QVBoxLayout(self._analysis_right_pane)
         self._analysis_right_lay.setContentsMargins(0, 0, 0, 0)
         h.addWidget(self._analysis_right_pane)
+        return page
+
+    def _build_section_design_tab(self) -> QWidget:
+        """단면 설계 탭: 중앙(공유 3D 와이어프레임) + 우 옵션 패널(P2=빈 골격).
+
+        [2026-05-31 P2] 좌측은 구조해석과 같은 공유 vispy 캔버스를 reparent 해서
+        쓴다(진입 시 _on_tab_changed 에서 마운트). 우측은 P3 에서 옵션 위젯이,
+        P4 에서 타입 목록 + 컴포넌트 3D 가 채워질 자리. 지금은 안내 라벨만.
+        """
+        from PyQt5.QtWidgets import QSizePolicy as _QSP
+        page = QWidget()
+        h = QHBoxLayout(page)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(2)
+
+        center = QWidget()
+        cv = QVBoxLayout(center)
+        cv.setContentsMargins(0, 0, 0, 0)
+        cv.setSpacing(0)
+        self._section_center_pane = QWidget()
+        self._section_center_lay = QVBoxLayout(self._section_center_pane)
+        self._section_center_lay.setContentsMargins(0, 0, 0, 0)
+        cv.addWidget(self._section_center_pane, stretch=1)
+        h.addWidget(center, stretch=1)
+
+        # 우측 — 옵션 패널(P3). P4 에서 타입목록 + 컴포넌트 3D 가 패널 하단에 붙는다.
+        self._section_right_pane = QWidget()
+        self._section_right_pane.setMinimumWidth(380)
+        self._section_right_pane.setSizePolicy(_QSP.Minimum, _QSP.Expanding)
+        self._section_right_lay = QVBoxLayout(self._section_right_pane)
+        self._section_right_lay.setContentsMargins(0, 0, 0, 0)
+        from .section_design_panel import SectionDesignPanel
+        self._section_panel = SectionDesignPanel()
+        # '적용' → 현재 옵션으로 재수렴 + 색 갱신.
+        self._section_panel.apply_requested.connect(self._apply_section_design)
+        # 타입 목록 선택 → 그 타입 컴포넌트 단일 3D 갱신(P4b-1).
+        self._section_panel.type_selected.connect(self._on_section_type_list_selected)
+        # [9-7] 단면 변경 — 콤보 바꾸면 즉시 대상에 반영·재수렴·전파.
+        self._section_panel.section_changed.connect(self._on_section_change)
+        self._section_locks = {}            # {comp_id: {색클래스: 단면}}
+        self._comp_type_label = {}          # comp_id → 타입 라벨(최근 수렴 기준)
+        self._sel_section_type_label = None  # 현재 선택 타입 라벨
+        self._section_selected_comp_id = None  # [7B-2] 좌측 3D 로 선택한 컴포넌트
+        self._section_sel_mode = 'type'      # [7B-3] 'type'(목록) | 'single'(3D 클릭)
+        self._section_right_lay.addWidget(self._section_panel)
+        h.addWidget(self._section_right_pane)
         return page
 
     def _build_quantity_tab(self) -> QWidget:
@@ -814,25 +1007,6 @@ class MainWindow(QMainWindow):
                 continue
         return ""
 
-    def _build_placeholder_tab(self, title_text: str) -> QWidget:
-        """빈 탭 — 운송 / 공기 및 접합부 / 최종평가 용. 내부 내용은 추후 추가.
-
-        [2026-05-13 UI 개편] 시나리오 탭(저장/불러오기) 제거 후 신설된 3 탭의
-        공통 placeholder. 향후 각 탭의 실제 위젯을 채워 넣는다.
-        """
-        page = QWidget()
-        v = QVBoxLayout(page)
-        v.setContentsMargins(20, 20, 20, 20)
-        v.setSpacing(10)
-        title = QLabel(f'{title_text}')
-        title.setStyleSheet('font-weight: bold; font-size: 14px;')
-        v.addWidget(title)
-        info = QLabel('(추후 구현 예정)')
-        info.setStyleSheet('color: #888;')
-        v.addWidget(info)
-        v.addStretch(1)
-        return page
-
     # ── 탭 전환 시 공유 위젯 reparent ────────────────────
 
     def _on_tab_changed(self, idx: int):
@@ -856,14 +1030,35 @@ class MainWindow(QMainWindow):
         if prev_idx == TAB_JOINT_EDIT and idx != TAB_JOINT_EDIT:
             if hasattr(self._viewer, 'clear_ops_joint_highlight'):
                 self._viewer.clear_ops_joint_highlight()
-            self._joint_selected = None
-            self._reset_add_progress()
+            self._joint_ctrl.clear_selection()
+        # [7B-4b] 단면 설계 탭을 떠나면 빨강 하이라이트(공유 pinned 시각) 해제.
+        if prev_idx == TAB_SECTION and idx != TAB_SECTION:
+            try:
+                self._viewer.update_pinned_members([])
+            except Exception:
+                pass
         if (prev_idx == TAB_JOINT_EDIT
-                and idx in (TAB_ANALYSIS, TAB_QUANTITY)):
+                and idx in (TAB_ANALYSIS, TAB_SECTION, TAB_QUANTITY)):
             v = self._viewer
             if hasattr(v, 'is_ops_view_active') and v.is_ops_view_active():
                 v.hide_ops_view()
                 dprint('ANALYSIS', '[ANALYSIS] 접합부 조정 → 구조해석/물량 — ops 뷰 무효화 후 재빌드 예정')
+
+        # [9C-1 임시 진단] 배치·단면 설계 탭 진입 시 타입 라벨/시그니처 콘솔 출력.
+        #   동일 모듈 병합 실패·c3 중복 원인(시그니처 차이) 파악용 — 확정 후 제거.
+        if idx in (TAB_DESIGN, TAB_SECTION):
+            try:
+                from modular_3d.model.type_naming import dump_type_signatures
+                dump_type_signatures(self._scene)
+            except Exception:
+                pass
+
+        # [P5c stale 무효화] 배치/정의 탭(모델 편집 진입) → 저장된 단면 설계 수렴
+        # 결과 폐기. 모델이 바뀌면 옛 결과가 물량/트리에 쓰이지 않게(다음 단면 설계
+        # 탭 진입 시 자동 재수렴). 안전한 단일 지점.
+        if idx in (TAB_DESIGN, TAB_DEFINE):
+            if hasattr(self._controller, 'set_section_design_result'):
+                self._controller.set_section_design_result(None)
 
         if idx == TAB_DEFINE:
             # 모듈 정의 탭 — 자체 작업공간(별도 인스턴스)이라 공유 위젯 reparent
@@ -876,32 +1071,46 @@ class MainWindow(QMainWindow):
             return
 
         if idx == TAB_DESIGN:
-            # 3D → 디자인 좌, 2D F5 → 디자인 우, 치수 → 디자인 하단
-            self._design_left_lay.addWidget(self._canvas_widget)
-            self._design_right_lay.addWidget(self._f5_panel)
+            # 2D F5 → 디자인 우(상단 컨트롤바), 치수 → 디자인 하단.
+            # UI 마이그레이션 M8-b — 디자인 탭은 three.js 단독 표시.
+            #  · 좌 3D: vispy 캔버스(_canvas_widget) *마운트 안 함* → three.js 만.
+            #    (vispy 3D 는 접합부/해석/물량 탭에서 계속 공유 사용.)
+            #  · 우 2D: _f5_panel 은 *상단 컨트롤(층수·저장·불러오기)만* 얇게 남기고
+            #    캔버스는 hide_canvas() 로 숨김 → 평면뷰는 three.js 가 전담.
+            self._design_right_top_lay.addWidget(self._f5_panel)
+            self._f5_panel.hide_canvas()
             self._design_dim_lay.addWidget(self._dim_panel)
             self._dim_panel.setVisible(True)
             self._deformed_widget.hide()
             # [2026-05-11 v5] 구조해석 → 디자인 복귀 시 ops 와이어프레임/변형형상 등을 끄고
             # 일반 메쉬 뷰로 복원. 기존 F6 → F5 토글 시의 정리 코드와 동일.
             self._restore_design_view()
+            # [2026-05-28] 실 색면 표시 ON(배치설계는 실 편집 탭).
+            if hasattr(self._viewer, 'set_rooms_visible'):
+                self._viewer.set_rooms_visible(True)
         elif idx == TAB_JOINT_EDIT:
             # [2026-05-13 접합부조정탭] canvas + 우측 패널 reparent + 프리뷰.
             # solve 미실행 — spec/ops 빌드만 하고 _draw_from_spec 으로 표시.
             self._joint_center_lay.addWidget(self._canvas_widget)
             self._joint_right_lay.addWidget(self._joint_panel)
             self._deformed_widget.hide()
+            # [2026-05-28] 접합부 탭은 와이어프레임만 — 실 색면 숨김(공중부양 방지).
+            if hasattr(self._viewer, 'set_rooms_visible'):
+                self._viewer.set_rooms_visible(False)
             if hasattr(self._dim_panel, 'deactivate'):
                 self._dim_panel.deactivate()
             self._dim_panel.setVisible(False)
             # 불러오기 직후 첫 진입이면 저장본/새 계산 선택(프리뷰 전에).
-            self._maybe_prompt_joint_choice()
-            self._run_joint_edit_preview()
+            self._joint_ctrl._maybe_prompt_joint_choice()
+            self._joint_ctrl._run_joint_edit_preview()
         elif idx == TAB_ANALYSIS:
             self._analysis_center_lay.addWidget(self._canvas_widget)
             self._analysis_center_lay.addWidget(self._deformed_widget)
             self._deformed_widget.show()
             self._analysis_right_lay.addWidget(self._analysis_panel)
+            # [2026-05-28] 구조해석 탭은 와이어프레임만 — 실 색면 숨김.
+            if hasattr(self._viewer, 'set_rooms_visible'):
+                self._viewer.set_rooms_visible(False)
             # (2026-05-12) dim_panel 비활성 + state 도 IDLE 로 — 탭 전환 후
             # 디자인 탭 복귀 시 "사용자 키 입력해도 무동작" 상태 방지.
             if hasattr(self._dim_panel, 'deactivate'):
@@ -917,11 +1126,25 @@ class MainWindow(QMainWindow):
             # (2026-05-19 작업 5) 구조해석 탭 복귀 시 케이스를 D+L 로 되돌림.
             if hasattr(self._analysis_panel, 'select_dl_case'):
                 self._analysis_panel.select_dl_case()
+        elif idx == TAB_SECTION:
+            # [2026-05-31 P2] 단면 설계 탭 — 좌 공유 와이어프레임 마운트 +
+            # 진입 시 '모두 통일' 자동 수렴 → 좌측 5단계 응력비 색.
+            self._section_center_lay.addWidget(self._canvas_widget)
+            self._deformed_widget.hide()
+            if hasattr(self._viewer, 'set_rooms_visible'):
+                self._viewer.set_rooms_visible(False)
+            if hasattr(self._dim_panel, 'deactivate'):
+                self._dim_panel.deactivate()
+            self._dim_panel.setVisible(False)
+            self._run_section_design_if_needed()
         elif idx == TAB_QUANTITY:
             self._quantity_center_lay.addWidget(self._canvas_widget)
             self._quantity_center_lay.addWidget(self._deformed_widget)
             self._deformed_widget.show()
             self._quantity_right_lay.addWidget(self._analysis_panel)
+            # [2026-05-28] 물량 탭은 와이어프레임만 — 실 색면 숨김.
+            if hasattr(self._viewer, 'set_rooms_visible'):
+                self._viewer.set_rooms_visible(False)
             if hasattr(self._dim_panel, 'deactivate'):
                 self._dim_panel.deactivate()
             self._dim_panel.setVisible(False)
@@ -991,16 +1214,18 @@ class MainWindow(QMainWindow):
             self._dim_panel.setVisible(False)
             if hasattr(self, "_deformed_widget"):
                 self._deformed_widget.hide()
-            # [Phase C] 진입 즉시 자동주입 — 현재 씬 상태를 어댑터로 직렬화 후
-            # SchedulePanel.apply_scene_data() 호출. 페이지 미로드 상태면
-            # SchedulePanel 가 큐에 쌓아뒀다가 loadFinished 시 적용한다.
+            # [Phase C] 진입 즉시 자동주입 — 어댑터 호출 책임은 SchedulePanel 자체.
+            # 페이지 미로드 상태면 SchedulePanel 가 큐에 쌓아뒀다가 loadFinished 시 적용.
             try:
-                from modular_3d.schedule.schedule_adapter import build_scene_data
-                comps = list(self._scene.components.values()) if hasattr(self._scene, 'components') else []
-                data = build_scene_data(comps, project_settings=self._project_settings)
-                self._tab_schedule.apply_scene_data(data)
+                comps = (self._scene.components.values()
+                         if hasattr(self._scene, 'components') else [])
+                # [2026-05-31] scene 전달 — 접합부 설계 결과 기반 카운트 정확화(§3-7).
+                self._tab_schedule.on_enter(comps, self._project_settings, self._scene)
             except Exception as e:
+                # 사용자 시야 — dprint 만으로는 빈 화면 원인 모름. 상태바 + 로그.
                 dprint('SCHEDULE', f'[SCHEDULE] 자동주입 실패: {e}')
+                self.statusBar().showMessage(
+                    f'공정표 자동주입 실패 — {type(e).__name__}: {e}', 8000)
         elif idx == TAB_EVALUATION:
             # [2026-05-27 평가 탭 Phase J·M] EvaluationPanel — 공유 위젯 X.
             # 진입 즉시 evaluation_adapter 가 scene·ProjectSettings·물량·운송·공정표
@@ -1010,29 +1235,109 @@ class MainWindow(QMainWindow):
             self._dim_panel.setVisible(False)
             if hasattr(self, "_deformed_widget"):
                 self._deformed_widget.hide()
+            self._refresh_evaluation_panel()
+        elif idx == TAB_COMPARE:
+            # [2026-05-31] 비교 탭 — 자기 데이터(.case.json 로드)만 사용.
+            # 공유 위젯은 다른 탭과 동일하게 정리. 자동주입 없음.
+            if hasattr(self._dim_panel, 'deactivate'):
+                self._dim_panel.deactivate()
+            self._dim_panel.setVisible(False)
+            if hasattr(self, "_deformed_widget"):
+                self._deformed_widget.hide()
+
+    # ── 평가 탭 데이터 갱신 헬퍼 (탭 진입·정책 변경 양쪽에서 사용) ──
+    def _refresh_evaluation_panel(self):
+        """평가 어댑터 호출 + apply_data. _on_tab_changed(EVALUATION) 과
+        analysis_panel.policy_changed 양쪽이 같은 경로로 평가 화면을 갱신."""
+        try:
+            from modular_3d.evaluation.evaluation_adapter import build_evaluation_data
+            comps = list(self._scene.components.values()) if hasattr(self._scene, 'components') else []
+            quantity_reports = getattr(self._analysis_panel, '_quantity_reports', None) or None
+            current_policy = getattr(self._analysis_panel, '_current_policy', '3종')
+            transport_pack = getattr(self, '_last_transport_pack', None)
+            transport_tab = getattr(self._analysis_panel, '_transport_tab', None)
+            transport_eco = getattr(transport_tab, '_last_eco', None) if transport_tab is not None else None
+            data = build_evaluation_data(
+                components=comps,
+                project_settings=self._project_settings,
+                quantity_reports=quantity_reports,
+                current_policy=current_policy,
+                transport_pack=transport_pack,
+                transport_eco=transport_eco,
+                schedule_payload=getattr(self, '_schedule_payload', None) or None,
+            )
+            self._tab_evaluation.apply_data(data)
+            # [2026-05-31 v2] 종합탭 — 전체 배치 캡처. 단순 grab() 은 사용자의
+            # 현재 zoom/pan 상태를 그대로 잡아 일부만 보이므로, fit-all 뷰로
+            # 강제 전환 후 캡처(캔버스 상태는 캡처 후 원복).
             try:
-                from modular_3d.evaluation.evaluation_adapter import build_evaluation_data
-                comps = list(self._scene.components.values()) if hasattr(self._scene, 'components') else []
-                # 물량 — analysis_panel._quantity_reports (정책별 QuantityReport).
-                # 정책 — analysis_panel._current_policy (사용자가 물량 탭에서 선택).
-                quantity_reports = getattr(self._analysis_panel, '_quantity_reports', None) or None
-                current_policy = getattr(self._analysis_panel, '_current_policy', '3종')
-                # 운송 — pack 은 self._last_transport_pack, economics 는 transport_panel._last_eco.
-                transport_pack = getattr(self, '_last_transport_pack', None)
-                transport_tab = getattr(self._analysis_panel, '_transport_tab', None)
-                transport_eco = getattr(transport_tab, '_last_eco', None) if transport_tab is not None else None
-                data = build_evaluation_data(
-                    components=comps,
-                    project_settings=self._project_settings,
-                    quantity_reports=quantity_reports,
-                    current_policy=current_policy,
-                    transport_pack=transport_pack,
-                    transport_eco=transport_eco,
-                    schedule_payload=getattr(self, '_schedule_payload', None) or None,
-                )
-                self._tab_evaluation.apply_data(data)
+                pm = self._capture_layout_full_pixmap()
+                if pm is not None and not pm.isNull():
+                    self._tab_evaluation.set_layout_pixmap(pm)
             except Exception as e:
-                dprint('EVALUATION', f'[EVALUATION] 데이터 수집 실패: {e}')
+                dprint('EVALUATION', f'[EVALUATION] 평면도 캡처 실패: {e}')
+        except Exception as e:
+            # 빈 화면 방지 — 사용자에게 원인 노출.
+            dprint('EVALUATION', f'[EVALUATION] 데이터 수집 실패: {e}')
+            try:
+                self.statusBar().showMessage(
+                    f'평가 데이터 수집 실패 — {type(e).__name__}: {e}', 8000)
+            except Exception:
+                pass
+
+    # ── 배치 캔버스 전체 캡처 ────────────────────────────
+    def _capture_layout_full_pixmap(self):
+        """배치설계 2D 캔버스의 전체 배치를 항상 fit-all 뷰로 캡처.
+
+        [2026-05-31] 사용자의 현재 zoom/pan 과 무관하게 모든 부재가 한눈에
+        들어오는 평면도를 만든다. 캔버스 상태(zoom/pan/size)는 캡처 후 원복.
+        """
+        from PyQt5.QtGui import QPixmap as _QPixmap
+        canvas = getattr(self._f5_panel, 'canvas', None)
+        if canvas is None:
+            return None
+        # 백업
+        old_zoom  = getattr(canvas, '_zoom',  None)
+        old_pan_x = getattr(canvas, '_pan_x', None)
+        old_pan_y = getattr(canvas, '_pan_y', None)
+        old_size  = canvas.size()
+        try:
+            # 캡처용 큰 캔버스 크기 — 디테일 확보 및 종합탭 카드 비율.
+            target_w, target_h = 900, 700
+            canvas.resize(target_w, target_h)
+            if hasattr(canvas, '_auto_fit'):
+                try:
+                    canvas._auto_fit()
+                except Exception:
+                    pass
+            pm = _QPixmap(canvas.size())
+            from PyQt5.QtCore import Qt as _Qt
+            pm.fill(_Qt.white)
+            canvas.render(pm)
+            # [2026-05-31] 캡처 직후 검은 배경 픽셀을 흰색으로 치환 →
+            # 캔버스 paintEvent 가 깐 검은 배경 흔적을 PNG 에서 제거.
+            try:
+                from .compare_panel import _CaseSlot
+                pm = _CaseSlot._whiten_dark_pixels(pm, threshold=45)
+            except Exception:
+                pass
+            return pm
+        finally:
+            # 원복 — 사용자가 배치설계 탭으로 돌아갔을 때 보던 뷰 그대로.
+            canvas.resize(old_size)
+            if old_zoom  is not None: canvas._zoom  = old_zoom
+            if old_pan_x is not None: canvas._pan_x = old_pan_x
+            if old_pan_y is not None: canvas._pan_y = old_pan_y
+            try:
+                canvas.update()
+            except Exception:
+                pass
+
+    def _on_policy_changed_for_evaluation(self, policy: str):
+        """정책 변경 시 평가 탭이 활성이면 즉시 재계산. 비활성이면 다음
+        탭 진입 때 lazy pull 로 갱신되므로 무시."""
+        if self._tabs.currentIndex() == TAB_EVALUATION:
+            self._refresh_evaluation_panel()
 
     # ── 디자인 탭 복귀 시 3D 뷰 정리 ────────────────────
 
@@ -1101,486 +1406,9 @@ class MainWindow(QMainWindow):
 
     # ── 접합부 조정 탭 — 와이어프레임 프리뷰 (solve 미실행) ──
 
-    def _run_joint_edit_preview(self, force: bool = False):
-        """접합부 조정 탭 진입 시 spec 만 빌드해 와이어프레임 표시.
-
-        [정책 2026-05-13 접합부조정탭]
-        구조해석 탭의 `_run_structural_analysis` 와 달리 **solve_all_cases 를
-        부르지 않는다**. build_analysis_model + build_ops_model 까지만 — spec
-        알갱이가 채워지면 viewer.show_ops_view 가 _draw_from_spec 로 와이어프
-        레임을 그린다.
-
-        [함정] 이미 ops 뷰가 켜져 있으면(예: 구조해석 탭에서 본 탭으로 이동) 또
-        토글되어 꺼지는 일이 없도록 활성 상태일 땐 build 자체를 생략한다. 단,
-        force=True 면(접합 변경 직후 등) 활성 상태여도 강제 재빌드한다 —
-        오버라이드 반영 결과를 즉시 와이어프레임에 반영하기 위함.
-        """
-        if not self._scene.components:
-            dprint('JOINT-EDIT', '[JOINT-EDIT] Scene 이 비어 있음 — 프리뷰 생략')
-            return
-        v = self._viewer
-        # [2026-05-25 D4 수정] ops 뷰가 이미 활성이어도 _joint_om 이 아직 없으면
-        # (구조해석 탭 경유로 접합 탭 첫 진입 등) 빌드해 접합 픽킹용 모델을 확보한다.
-        # 그렇지 않으면 픽킹이 None 모델을 참조해 무반응.
-        if (not force and self._joint_om is not None
-                and hasattr(v, 'is_ops_view_active') and v.is_ops_view_active()):
-            dprint('JOINT-EDIT', '[JOINT-EDIT] ops 뷰 이미 활성 — 프리뷰 재실행 생략')
-            return
-        try:
-            from modular_3d.analysis.topology import build_analysis_model
-            from modular_3d.analysis.ops_builder import build_ops_model
-        except ImportError as e:
-            dprint('JOINT-EDIT', f'[JOINT-EDIT] 해석 모듈 import 실패: {e}')
-            return
-        try:
-            am = build_analysis_model(self._scene)
-            om_view = build_ops_model(am, scene=self._scene)
-            # 접합 픽킹을 위해 마지막 빌드 결과 보관.
-            self._joint_om = om_view
-            self._joint_am = am
-            dprint('JOINT-EDIT', '[JOINT-EDIT] spec 빌드 완료 — solve 생략. 와이어프레임 표시.')
-            v.show_ops_view(om_view)
-            # [Phase 5] 범례 동적 갱신 — spec 의 모든 결합 레코드에서 rule_id 수집.
-            try:
-                spec = getattr(om_view, 'spec', None)
-                if spec is not None:
-                    rule_ids = set()
-                    for e in spec.iter_equal_dofs():
-                        rule_ids.add(getattr(e, 'rule_id', 'legacy_auto'))
-                    for r in spec.iter_rigid_links():
-                        rule_ids.add(getattr(r, 'rule_id', 'legacy_auto'))
-                    for d in spec.iter_diaphragms():
-                        rule_ids.add(getattr(d, 'rule_id', 'legacy_auto'))
-                    self._joint_panel.refresh_legend(rule_ids)
-            except Exception as e2:
-                dprint('JOINT-EDIT', f'[JOINT-EDIT] 범례 갱신 경고: {type(e2).__name__}: {e2}')
-        except Exception as e:
-            dprint('JOINT-EDIT', f'[JOINT-EDIT] 프리뷰 중 오류: {type(e).__name__}: {e}')
-            QMessageBox.warning(
-                self, '접합부 설계 프리뷰 실패',
-                f'와이어프레임 빌드 중 오류:\n\n{type(e).__name__}: {e}',
-            )
-
     # ── 접합부 변경 — 편집 모드/픽킹/적용 (2026-05-25) ──────
 
-    def _on_joint_edit_mode(self, on: bool):
-        """접합 편집 모드 토글. 끄면 선택·강조 정리."""
-        self._joint_edit_mode = bool(on)
-        self._joint_selected = None
-        self._joint_panel.clear_selection()
-        if hasattr(self._viewer, 'clear_ops_joint_highlight'):
-            self._viewer.clear_ops_joint_highlight()
-
-    def _on_joint_pick(self, pos):
-        """3D 좌클릭 → 가장 가까운 컴포넌트 간 접합 선택·강조."""
-        om = self._joint_om
-        am = self._joint_am
-        if om is None:
-            return
-        info = self._viewer.pick_ops_joint_at(pos, om, am)
-        if info is None:
-            self._joint_selected = None
-            self._joint_panel.clear_selection()
-            self._viewer.clear_ops_joint_highlight()
-            return
-        self._joint_selected = info
-        self._joint_panel.show_selected_joint(info)
-        self._highlight_selected_joint(info)
-
-    def _highlight_selected_joint(self, info):
-        """선택 접합 강조 — 직각접합이면 위-N1-아래 체인, 아니면 한 결합."""
-        om = self._joint_om
-        if info.get('right_angle') and info.get('n1_tag') is not None:
-            chain = self._right_angle_chain(om, info['n1_tag'])
-            self._viewer.highlight_ops_joint_chain(om, chain)
-        else:
-            self._viewer.highlight_ops_joint(om, info['master'], info['slave'])
-
-    def _right_angle_chain(self, om, n1_tag):
-        """중간 노드 n1_tag 를 공유하는 직각접합 결합들의 노드 체인 [위, N1, 아래].
-        rule_id 무관 — 사용자추가(R10/R11) + 자동(R03) 모두 N1 공유로 수집."""
-        nodes = set()
-        for ed in om.spec.equal_dofs:
-            if n1_tag in (ed.master, ed.slave):
-                nodes.add(ed.master)
-                nodes.add(ed.slave)
-        ends = [t for t in nodes if t != n1_tag and t in om.node_tags]
-        ends.sort(key=lambda t: om.node_tags[t][2])
-        if len(ends) >= 2:
-            return [ends[-1], n1_tag, ends[0]]   # 위(z큰) - N1 - 아래
-        return [n1_tag] + ends
-
-    def _find_n1_tag_by_xy(self, om, n1_xy):
-        """평면 위치로 중간 노드(N1, panel_z_route) tag 찾기(다층 중 첫 매칭)."""
-        if not n1_xy:
-            return None
-        from modular_3d.model.joint_override import MATCH_TOL_MM as _T
-        for t, c in om.node_tags.items():
-            if abs(c[0] - n1_xy[0]) <= _T and abs(c[1] - n1_xy[1]) <= _T:
-                nr = om.spec.node(t) if om.spec is not None else None
-                if nr is not None and getattr(nr, 'role', '') == 'panel_z_route':
-                    return t
-        return None
-
-    def _find_add_override_by_n1(self, n1_xy):
-        """N1 평면 위치로 직각 add 오버라이드 역추적. N1.xy = 위(z 큰) 점 xy."""
-        if not n1_xy:
-            return None
-        from modular_3d.model.joint_override import MATCH_TOL_MM as _T
-        for o in self._scene.joint_overrides:
-            if getattr(o, 'kind', '') != 'add' or not getattr(o, 'right_angle', False):
-                continue
-            if float(o.z_a) >= float(o.z_b):
-                ux, uy = o.a_xy
-            else:
-                ux, uy = o.b_xy
-            if abs(ux - n1_xy[0]) <= _T and abs(uy - n1_xy[1]) <= _T:
-                return o
-        return None
-
-    def _comp_group(self, comp_id: int) -> int:
-        """컴포넌트 id → group_id (보조 식별). 없으면 0."""
-        comp = self._scene.components.get(comp_id)
-        return int(getattr(comp, 'group_id', 0) or 0) if comp is not None else 0
-
-    def _on_joint_change(self, kind: str):
-        """선택 접합에 변경(remove/pin/rigid) 적용 → 같은 xy 모든 층 → 재빌드.
-
-        - 자동 접합: remove/rigid/pin 오버라이드(게이트)로 처리.
-        - 사용자 추가 접합(USER_ADD): 그 add 오버라이드를 직접 삭제(remove)하거나
-          add_dofs 를 핀/강접으로 바꾼다(추가 접합은 게이트를 안 거치므로).
-        """
-        info = self._joint_selected
-        if info is None:
-            return
-        from modular_3d.model.joint_override import (
-            JointOverride, PIN_DOFS, RIGID_DOFS, same_joint)
-        rid0 = info.get('rule_id', '')
-        is_user_add = (rid0 == 'USER_ADD'
-                       or rid0.startswith('R10') or rid0.startswith('R11'))
-        if is_user_add and info.get('right_angle'):
-            # 직각접합 — 중간 노드로 add 오버라이드 1개를 역추적해 통째로 처리.
-            ov = self._find_add_override_by_n1(info.get('n1_xy'))
-            if ov is not None:
-                if kind == 'remove':
-                    if ov in self._scene.joint_overrides:
-                        self._scene.joint_overrides.remove(ov)
-                else:
-                    ov.add_dofs = RIGID_DOFS if kind == 'rigid' else PIN_DOFS
-        elif is_user_add:
-            ax, bx = info['a_xy'], info['b_xy']
-            if kind == 'remove':
-                self._scene.joint_overrides = [
-                    o for o in self._scene.joint_overrides
-                    if not (getattr(o, 'kind', '') == 'add'
-                            and same_joint(o, ax, bx))
-                ]
-            else:
-                dofs = RIGID_DOFS if kind == 'rigid' else PIN_DOFS
-                for o in self._scene.joint_overrides:
-                    if getattr(o, 'kind', '') == 'add' and same_joint(o, ax, bx):
-                        o.add_dofs = dofs
-                        break
-        elif info.get('right_angle') and info.get('n1_tag') is not None:
-            # 자동 직각접합(R03 등) — N1 공유 체인 두 결합(위↔N1 수직, N1↔아래
-            # 수평)을 통째로 게이트 처리. 한 결합만 바꾸면 ㄴ자가 반쪽만 변경됨.
-            single = self._joint_panel.is_edit_single_layer()
-            om = self._joint_om
-            rid = str(rid0)
-            chain = self._right_angle_chain(om, info['n1_tag'])
-            for i in range(len(chain) - 1):
-                u, w = chain[i], chain[i + 1]
-                cu = om.node_tags.get(u)
-                cw = om.node_tags.get(w)
-                if cu is None or cw is None:
-                    continue
-                self._scene.set_joint_override(JointOverride(
-                    kind=kind,
-                    a_xy=(float(cu[0]), float(cu[1])),
-                    b_xy=(float(cw[0]), float(cw[1])),
-                    z_a=float(cu[2]), z_b=float(cw[2]),
-                    rule_id=rid, single_layer=single,
-                ))
-        else:
-            # rule_id 저장 — 같은 평면 위치에 겹친 다른 종류 수직 접합과 구분해
-            # 이 종류에만 변경이 적용되도록. single_layer 면 이 층만 적용.
-            single = self._joint_panel.is_edit_single_layer()
-            ov = JointOverride(
-                kind=kind, a_xy=info['a_xy'], b_xy=info['b_xy'],
-                z_a=float(info.get('a_z', 0.0)),
-                z_b=float(info.get('b_z', 0.0)),
-                a_group=self._comp_group(info['a_comp']),
-                b_group=self._comp_group(info['b_comp']),
-                rule_id=str(info.get('rule_id', '')),
-                single_layer=single,
-            )
-            self._scene.set_joint_override(ov)
-        self._run_joint_edit_preview(force=True)
-        # 변경 결과를 패널/강조에 반영.
-        if kind == 'remove':
-            self._joint_selected = None
-            self._joint_panel.clear_selection()
-            self._viewer.clear_ops_joint_highlight()
-            self._warn_if_unstable()   # 제거로 불안정해졌는지 즉시 경고
-        else:
-            info['is_rigid'] = (kind == 'rigid')
-            self._joint_panel.show_selected_joint(info)
-            if info.get('right_angle'):
-                # 재빌드로 N1 tag 가 바뀌므로 평면 위치로 다시 찾아 체인 강조.
-                n1 = self._find_n1_tag_by_xy(self._joint_om, info.get('n1_xy'))
-                if n1 is not None:
-                    info['n1_tag'] = n1
-                    self._viewer.highlight_ops_joint_chain(
-                        self._joint_om,
-                        self._right_angle_chain(self._joint_om, n1))
-                else:
-                    self._viewer.clear_ops_joint_highlight()
-            else:
-                self._viewer.highlight_ops_joint(
-                    self._joint_om, info['master'], info['slave'])
-
-    def _warn_if_unstable(self):
-        """현재 접합 프리뷰 모델이 mechanism(불안정) 위험이면 경고(차단 없음).
-
-        사용자 사양: 제거는 허용하되 경고만. self_check 가 고립 노드/특이강성을
-        감지하면 다이얼로그 + 좌측 빨강 강조로 알린다."""
-        om = self._joint_om
-        if om is None:
-            return
-        try:
-            from modular_3d.analysis.ops_builder import self_check
-            res = self_check(om)
-        except Exception:
-            return
-        if not getattr(res, 'is_critical', False):
-            if hasattr(self._viewer, 'hide_unstable_warning'):
-                self._viewer.hide_unstable_warning()
-            return
-        issues = getattr(res, 'issues', []) or []
-        QMessageBox.warning(
-            self, '구조 불안정 경고',
-            '접합 제거로 구조가 불안정(mechanism)해질 수 있습니다.\n'
-            '제거는 적용되었으나, 구조해석 탭에서 상세를 확인하세요.\n\n'
-            + '\n'.join('· ' + str(s) for s in issues[:5]))
-        nid = getattr(res, 'problem_node_ids', None)
-        if nid and hasattr(self._viewer, 'show_unstable_warning'):
-            self._viewer.show_unstable_warning(om, nid)
-
-    def _on_joint_revert(self):
-        """모든 접합 변경 초기화 → 자동 규칙 상태로(확인 후)."""
-        if not self._scene.joint_overrides:
-            return
-        ret = QMessageBox.question(
-            self, '모든 접합 변경 초기화',
-            '이 디자인의 모든 접합 변경(제거·핀·강접·추가)을 지우고\n'
-            '자동 규칙 상태로 되돌립니다. 계속할까요?',
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if ret != QMessageBox.Yes:
-            return
-        self._scene.clear_joint_overrides()
-        self._run_joint_edit_preview(force=True)
-        self._joint_selected = None
-        self._joint_panel.clear_selection()
-        self._viewer.clear_ops_joint_highlight()
-
-    def _design_signature(self):
-        """현재 디자인(부재 구성)의 시그니처 — 부재 id·위치·치수·회전 기반.
-        접합 탭 진입 사이에 디자인이 바뀌었는지 비교하는 데 쓴다."""
-        parts = []
-        for cid, c in sorted(self._scene.components.items()):
-            pos = tuple(round(float(v), 1) for v in c.position)
-            dims = tuple(sorted((k, round(float(v), 1))
-                                for k, v in c.dimensions.items()))
-            parts.append((cid, pos, dims, int(getattr(c, 'rotation', 0))))
-        return hash(tuple(parts))
-
-    def _maybe_prompt_joint_choice(self):
-        """접합 탭 진입 시 접합 오버라이드 처리 정책(3 케이스).
-
-        (1) 불러오기 직후(+디자인 미변경): '저장본 사용 / 새 자동계산' 선택.
-        (2) 직전 접합 탭 진입 이후 디자인이 바뀜: 무조건 리셋(자동 규칙).
-        (3) 디자인 미변경 + 접합 변경 후 왕복: '유지 / 초기화' 선택.
-        프리뷰(_run_joint_edit_preview) 전에 호출된다.
-        """
-        scene = self._scene
-        cur_sig = self._design_signature()
-        last_sig = getattr(self, '_joint_last_design_sig', None)
-        pending = getattr(scene, '_joint_overrides_pending_choice', False)
-
-        if pending and scene.joint_overrides:
-            # 케이스 1 — 불러온 저장본.
-            box = QMessageBox(self)
-            box.setWindowTitle('접합 설정 불러오기')
-            box.setText('저장된 접합 변경 사항이 있습니다.\n'
-                        '저장된 접합을 사용할까요, 아니면 새로 자동 계산할까요?')
-            box.addButton('저장된 접합 사용', QMessageBox.AcceptRole)
-            new_btn = box.addButton('새로 자동 계산', QMessageBox.DestructiveRole)
-            box.exec_()
-            if box.clickedButton() is new_btn:
-                scene.clear_joint_overrides()
-            scene._joint_overrides_pending_choice = False
-        elif (scene.joint_overrides and last_sig is not None
-              and cur_sig != last_sig):
-            # 케이스 2 — 디자인이 바뀌면 접합 변경이 위치와 안 맞을 수 있어 무조건 리셋.
-            scene.clear_joint_overrides()
-            QMessageBox.information(
-                self, '접합 초기화',
-                '디자인이 변경되어 기존 접합 변경을 초기화하고\n'
-                '자동 규칙으로 다시 계산합니다.')
-        elif (scene.joint_overrides and last_sig is not None
-              and cur_sig == last_sig):
-            # 케이스 3 — 디자인 그대로 + 접합 변경 후 재진입.
-            ret = QMessageBox.question(
-                self, '접합 설정',
-                '저장된 접합 변경을 그대로 유지할까요?\n'
-                "'아니오'를 누르면 초기화하고 자동 규칙으로 계산합니다.",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
-            if ret == QMessageBox.No:
-                scene.clear_joint_overrides()
-        self._joint_last_design_sig = cur_sig
-
     # ── 접합 추가 (2026-05-25 2단계) ───────────────────────
-
-    def _on_joint_add_mode(self, on: bool):
-        """접합 추가 모드 토글. 끄면 진행 중 첫 점·후보·고스트 정리."""
-        self._joint_add_mode = bool(on)
-        if hasattr(self._viewer, 'clear_ops_joint_highlight'):
-            self._viewer.clear_ops_joint_highlight()
-        self._reset_add_progress()
-
-    def _reset_add_progress(self):
-        """접합 추가 진행 상태(첫 점·후보·고스트·선) 모두 정리."""
-        self._joint_add_first = None
-        self._joint_add_cands = []
-        self._joint_add_snap = None
-        v = self._viewer
-        for m in ('clear_joint_ghost', 'clear_joint_candidates',
-                  'clear_joint_line_ghost'):
-            if hasattr(v, m):
-                getattr(v, m)()
-
-    def _validate_add(self, a: dict, b: dict, right_angle: bool = False):
-        """신규 접합 두 점 검증(모서리 위 점). 반환 (가능여부, 안내문).
-        right_angle=True 면 직각(ㄴ자) — 평면·높이 둘 다 다른 두 점을 허용."""
-        import math
-        ca = int(a.get('comp', 0) or 0)
-        cb = int(b.get('comp', 0) or 0)
-        if ca != 0 and cb != 0 and ca == cb:
-            return False, '같은 부재의 두 점입니다. 서로 다른 부재의 점을 골라야 합니다.'
-        ax, ay, az = a['point']
-        bx, by, bz = b['point']
-        dist = math.dist((ax, ay, az), (bx, by, bz))
-        if dist > 400.0:
-            return False, f'두 점이 너무 멉니다 ({dist:.0f}mm > 400mm).'
-        tol = 50.0
-        dx, dy, dz = abs(ax - bx), abs(ay - by), abs(az - bz)
-        if right_angle:
-            if not (dz > tol and (dx > tol or dy > tol)):
-                return False, ('직각(ㄴ자) 접합은 평면과 높이가 모두 다른 '
-                               '두 점이어야 합니다.')
-        else:
-            if (dx > tol) + (dy > tol) + (dz > tol) != 1:
-                return False, ('두 점은 수평 또는 수직(한 축만 차이)으로만 '
-                               '연결할 수 있습니다. (직각 결합은 옵션을 켜세요.)')
-        return True, ''
-
-    def _update_joint_ghost(self, pos):
-        """접합 추가 모드 — 마우스 위치 미리보기.
-        첫 점 전: 모서리 점 고스트. 첫 점 후: 후보에 스냅(하늘색→초록) + 선 고스트."""
-        om = self._joint_om
-        am = self._joint_am
-        if om is None:
-            return
-        if self._joint_add_first is None:
-            nd = self._viewer.pick_ops_edge_point_at(pos, om, am)
-            if nd is None:
-                self._viewer.clear_joint_ghost()
-            else:
-                self._viewer.show_joint_ghost(nd['point'], nd['snapped'])
-            return
-        # 첫 점 이후 — 후보 우선 스냅.
-        p_first = self._joint_add_first['point']
-        hit = self._viewer.pick_nearest_candidate(pos, self._joint_add_cands)
-        if hit is not None:
-            q, _idx = hit
-            self._joint_add_snap = q
-            self._viewer.show_joint_ghost((q[0], q[1], q[2]), True)
-            self._viewer.show_joint_line_ghost(p_first, (q[0], q[1], q[2]))
-            return
-        self._joint_add_snap = None
-        nd = self._viewer.pick_ops_edge_point_at(pos, om, am)
-        if nd is None:
-            self._viewer.clear_joint_ghost()
-            self._viewer.clear_joint_line_ghost()
-        else:
-            self._viewer.show_joint_ghost(nd['point'], nd['snapped'])
-            self._viewer.show_joint_line_ghost(p_first, nd['point'])
-
-    def _on_joint_add_pick(self, pos):
-        """접합 추가 모드 좌클릭 — 모서리 위 점 두 개로 신규 접합 생성.
-        둘째 점은 스냅한 후보가 있으면 그 후보를, 없으면 모서리 점을 쓴다."""
-        om = self._joint_om
-        am = self._joint_am
-        if om is None:
-            return
-        if self._joint_add_first is None:
-            nd = self._viewer.pick_ops_edge_point_at(pos, om, am)
-            if nd is None:
-                return
-            self._joint_add_first = nd
-            self._viewer.show_joint_ghost(nd['point'], nd['snapped'])
-            from modular_3d.analysis.joint_rules import candidate_joint_points
-            cands = candidate_joint_points(
-                om, nd['point'], int(nd.get('comp', 0) or 0),
-                right_angle=self._joint_panel.is_add_right_angle())
-            self._joint_add_cands = cands
-            self._joint_add_snap = None
-            self._viewer.show_joint_candidates(cands)
-            self._joint_panel.set_add_hint('점2를 클릭하세요(하늘색 점에 스냅).')
-            return
-        a = self._joint_add_first
-        snap = self._joint_add_snap
-        if snap is not None:
-            # 후보점(다른 부재 보 위 선점) — 노드 추가형. 색이 바뀐(스냅된)
-            # 그대로 실제 접합도 그 자리에 노드를 만들어 결합한다.
-            b = {'point': (snap[0], snap[1], snap[2]),
-                 'comp': int(snap[3]) if len(snap) > 3 else 0,
-                 'snapped': False}
-        else:
-            nd = self._viewer.pick_ops_edge_point_at(pos, om, am)
-            if nd is None:
-                return
-            b = nd
-        # 끝점 종류 — 선 위 점(주황·미스냅)이면 그 자리에 보 분할로 노드 생성,
-        # 꼭지점(초록·스냅)이면 기존 노드 스냅. 사용자가 본 색과 실제 접합 일치.
-        a_on_edge = not bool(a.get('snapped', False))
-        b_on_edge = not bool(b.get('snapped', False))
-        right = self._joint_panel.is_add_right_angle()
-        single = self._joint_panel.is_add_single_layer()
-        ok, msg = self._validate_add(a, b, right_angle=right)
-        if not ok:
-            QMessageBox.information(self, '접합 추가 불가', msg)
-            self._reset_add_progress()
-            self._joint_panel.set_add_hint('점1을 다시 클릭하세요.')
-            return
-        from modular_3d.model.joint_override import (
-            JointOverride, PIN_DOFS, RIGID_DOFS)
-        rigid = self._joint_panel.is_add_rigid()
-        ax, ay, az = a['point']
-        bx, by, bz = b['point']
-        ov = JointOverride(
-            kind='add', a_xy=(ax, ay), b_xy=(bx, by),
-            z_a=az, z_b=bz,
-            a_group=self._comp_group(int(a.get('comp', 0) or 0)),
-            b_group=self._comp_group(int(b.get('comp', 0) or 0)),
-            add_dofs=(RIGID_DOFS if rigid else PIN_DOFS),
-            single_layer=single, right_angle=right,
-            a_on_edge=a_on_edge, b_on_edge=b_on_edge,
-        )
-        self._scene.set_joint_override(ov)
-        self._run_joint_edit_preview(force=True)
-        self._reset_add_progress()
-        self._joint_panel.set_add_hint('추가됨. 다음 점1을 클릭하세요.')
 
     # ── 구조해석 자동 실행 ─────────────────────────────
 
@@ -1612,46 +1440,423 @@ class MainWindow(QMainWindow):
                 f'해석 중 오류가 발생했습니다:\n\n{type(e).__name__}: {e}',
             )
 
+    def _run_section_design_if_needed(self):
+        """단면 설계 탭 진입 — 와이어프레임 확보 후 '모두 통일' 자동 수렴 → 응력비 색.
+
+        [2026-05-31 P2] 절차:
+          1) _run_analysis_if_needed 로 ops 와이어프레임 뷰 + om 확보(컨트롤러
+             _last_ops_analysis).
+          2) converge_sections(모두 통일)로 단면을 수렴시켜 부재별 응력비 산출.
+          3) 그 om 에 5단계 응력비 색(show_member_ratio_bands, 빨강=NG) 적용.
+        수렴은 코어 포함 씬이 필요하고 무거우므로(최대 ~60 해석) 실패는 경고만.
+        결과는 self._section_result 에 보관(P3·P4 에서 옵션/3D 가 소비).
+        """
+        if not self._scene.components:
+            return
+        # 1) 와이어프레임 + om 확보 (기존 구조해석 경로 재사용)
+        self._run_analysis_if_needed()
+        # 2) 현재 패널 옵션(기본=모두 통일)으로 수렴 + 색.
+        opts = self._section_panel.current_options()
+        self._converge_and_color(opts)
+
+    def _apply_section_design(self):
+        """단면 설계 패널 '적용' — 현재 옵션으로 재수렴 + 색 갱신.
+
+        진입 시점과 달리 ops 와이어프레임은 이미 떠 있으므로 분석 재실행은
+        is_ops_view_active 가드로 자동 생략된다.
+        """
+        if not self._scene.components:
+            return
+        self._run_analysis_if_needed()
+        self._converge_and_color(self._section_panel.current_options())
+
+    def _converge_and_color(self, options):
+        """주어진 옵션으로 converge_sections 실행 → 좌측 5단계 응력비 색 적용.
+
+        결과는 self._section_result 에 보관(P4 의 타입 목록·컴포넌트 3D 가 소비).
+        수렴은 무겁고(최대 ~60 해석) 코어 포함 씬이 필요 → 실패는 경고만.
+        """
+        try:
+            from modular_3d.analysis.section_converge import (
+                converge_sections, expand_locks_to_members)
+            from modular_3d.analysis.topology import build_analysis_model
+            # 수동 잠금(comp_id별 클래스→단면)을 부재 단위로 전개해 고정.
+            am = build_analysis_model(self._scene)
+            locks = getattr(self, '_section_locks', None) or {}
+            locked_sections = expand_locks_to_members(am, locks)
+            self._section_result = converge_sections(
+                self._scene, options, prebuilt_am=am,
+                locked_sections=locked_sections)
+            # [P5b] 물량 탭이 단일 출처로 쓰도록 컨트롤러에 전달.
+            if hasattr(self._controller, 'set_section_design_result'):
+                self._controller.set_section_design_result(self._section_result)
+        except Exception as e:
+            dprint('ANALYSIS', f'[SECTION] 수렴 실패: {type(e).__name__}: {e}')
+            QMessageBox.warning(
+                self, '단면 설계 수렴 실패',
+                f'단면 수렴 중 오류:\n\n{type(e).__name__}: {e}',
+            )
+            return
+        # 결과 요약을 패널 상태 라벨에 표시.
+        try:
+            r = self._section_result
+            n_ng = len(getattr(r, 'ng_member_ids', []) or [])
+            # 반복 횟수는 사용자에게 혼란만 줘서 표시에서 제외. 수렴 여부 + NG 수만.
+            conv = '수렴 완료' if getattr(r, 'converged', False) else '안전측 종료'
+            self._section_panel.set_status(f'{conv} · NG {n_ng}개')
+        except Exception:
+            pass
+        # 타입 목록(-1-1 로컬 파생) 채우기.
+        try:
+            from modular_3d.analysis.section_converge import derive_section_types
+            types, _comp_label = derive_section_types(self._section_result, self._scene)
+            self._comp_type_label = _comp_label or {}
+            self._section_panel.populate_types(types)
+        except Exception as e:
+            dprint('ANALYSIS', f'[SECTION] 타입 목록 생성 실패: {type(e).__name__}: {e}')
+        # 응력비 색 — 분석 om 에 수렴 응력비를 5단계 색으로(빨강=NG).
+        try:
+            v = self._viewer
+            last_ops = getattr(self._controller, '_last_ops_analysis', None)
+            ratios = getattr(self._section_result, 'member_ratios', None) or {}
+            if (last_ops and ratios
+                    and hasattr(v, 'is_ops_view_active') and v.is_ops_view_active()):
+                v.show_member_ratio_bands(last_ops[0], ratios)
+        except Exception as e:
+            dprint('ANALYSIS', f'[SECTION] 응력비 색 적용 실패: {type(e).__name__}: {e}')
+
+    def _on_section_type_selected(self, label: str, comp_id: int):
+        """단면 설계 타입 목록 선택 → 그 대표 컴포넌트 색 메쉬를 패널 3D 에 표시.
+
+        [P4b-1] scene 컴포넌트를 build_component_mesh 로 그대로 렌더(원점 중심 이동).
+        [P4b-2 잔여] 수렴 단면 치수 반영·종속 부재 포함·외곽 고정 안쪽 성장.
+        """
+        self._sel_section_type_label = label or None
+        if comp_id is None or comp_id < 0:
+            return
+        comp = self._scene.components.get(comp_id)
+        if comp is None:
+            return
+        try:
+            import numpy as _np
+            from modular_3d.analysis.section_converge import find_dependent_comp_ids
+            # [7C-2] 컴포넌트(+종속)를 색 클래스별 메시로 — 각 메시에 단면명 부여(hover).
+            #   클래스별 분리라야 부재 위 hover 시 그 강재명을 띄울 수 있다(통짜 메시 X).
+            raw = []   # (verts, faces, colors, name)
+            for cid in [comp_id] + list(find_dependent_comp_ids(self._scene, comp_id)):
+                c = self._scene.components.get(cid)
+                if c is None:
+                    continue
+                names_c = self._section_dims_names_by_class(cid)   # {cc: 단면명}
+                cmeshes = self._build_component_class_meshes_sized(
+                    c, self._section_dims_by_class(cid))
+                for cc, (v, f, col) in cmeshes.items():
+                    v = _np.asarray(v, dtype=float)
+                    if v.size == 0:
+                        continue
+                    raw.append((v, f, col, names_c.get(cc, '')))
+            if not raw:
+                self._section_panel.set_component_members([])
+                return
+            stack = _np.vstack([r[0] for r in raw])
+            vmin = stack.min(axis=0)
+            vmax = stack.max(axis=0)
+            center = (vmin + vmax) * 0.5     # 전체 공통 원점 중심 이동
+            size = vmax - vmin               # 외곽 치수(폭/깊이/높이, mm)
+            members = [{
+                'vertices': (v - center), 'faces': f, 'face_colors': col, 'name': nm,
+            } for (v, f, col, nm) in raw]
+            self._section_panel.set_component_members(members)
+            # [7C-1] 캐드식 치수선(폭/깊이/높이).
+            self._section_panel.set_component_dims(
+                float(size[0]), float(size[1]), float(size[2]))
+        except Exception as e:
+            dprint('ANALYSIS',
+                   f'[SECTION] 컴포넌트 3D 빌드 실패: {type(e).__name__}: {e}')
+
+    def _section_highlight_members(self, comp_ids):
+        """[7B-4b] 주어진 컴포넌트들의 부재를 좌측 ops 와이어프레임에서 빨강 강조.
+
+        공유 pinned 라인 시각(update_pinned_members) 재사용 — 단면 설계 탭 떠날 때
+        _on_tab_changed 에서 해제. comp_id → 부재 mid 는 분석 am.comp_to_members.
+        """
+        last_ops = getattr(self._controller, '_last_ops_analysis', None)
+        if not last_ops:
+            return
+        om, am = last_ops[0], last_ops[1]
+        import numpy as _np
+        red = (1.0, 0.15, 0.15, 1.0)
+        segs = []
+        for cid in (comp_ids or []):
+            for mid in am.comp_to_members.get(cid, []):
+                m = am.members.get(mid)
+                if m is None:
+                    continue
+                c1 = om.node_tags.get(m.n1)
+                c2 = om.node_tags.get(m.n2)
+                if c1 is None or c2 is None:
+                    continue
+                segs.append(((_np.asarray(c1, float), _np.asarray(c2, float)), red))
+        try:
+            self._viewer.update_pinned_members(segs, 10.0)   # [9-3] 더 굵게
+        except Exception as e:
+            dprint('ANALYSIS', f'[SECTION] 하이라이트 실패: {type(e).__name__}: {e}')
+
+    def _on_section_type_list_selected(self, label: str, rep_comp_id: int):
+        """[7B-3] 타입 목록 *사용자 클릭* → 타입 전체 모드.
+
+        잠금/변경이 그 타입 전체에 적용(분기 없음). 컴포넌트 3D 는 대표 comp 로 표시,
+        선택 라벨·잠금 콤보 미리채움. (3D 클릭이 select_type_row 로 동기 이동할 때는
+        blockSignals 라 이 핸들러가 안 불려 single 모드가 유지된다.)
+        """
+        self._section_show_component(rep_comp_id, label, single=False)
+
+    def _on_section_3d_pick(self, pos):
+        """[7B-2] 단면 설계 탭 좌측 3D 클릭 → 컴포넌트 선택 연동.
+
+        ops 부재를 픽킹 → 그 부재의 소유 컴포넌트 역추적(종속이면 parent_id 로 부모) →
+        타입 목록 동기(표시), 그 컴포넌트로 3D 갱신, 선택 라벨 표시, 잠금 콤보 현재 단면
+        미리채움. (선택 1개만 잠금/하이라이트는 7B-3·7B-4.)
+        """
+        last_ops = getattr(self._controller, '_last_ops_analysis', None)
+        if not last_ops:
+            return
+        om, am = last_ops[0], last_ops[1]
+        try:
+            mid = self._viewer.pick_ops_member_at(pos, om, am)
+        except Exception:
+            mid = None
+        if mid is None:
+            return
+        m = am.members.get(mid)
+        if m is None:
+            return
+        cids = getattr(m, 'source_comp_ids', None) or []
+        comp_id = cids[0] if cids else None
+        if comp_id is None:
+            return
+        # 종속 부재(캔틸 등)면 소유 본체(parent_id)로 역추적.
+        comp = self._scene.components.get(comp_id)
+        if comp is not None:
+            pid = int(getattr(comp, 'parent_id', 0) or 0)
+            if pid:
+                comp_id = pid
+        label = (self._comp_type_label or {}).get(comp_id)
+        if label is None:
+            return  # 코어 등 타입 목록 비대상 → 무시
+        # [7B-3] 3D 클릭 = 이 컴포넌트 1개만(잠금 시 -1-2 분기).
+        self._section_show_component(comp_id, label, single=True)
+
+    def _section_dims_names_by_class(self, comp_id: int) -> dict:
+        """그 컴포넌트의 색 클래스별 현재 배정 단면 *이름* {cc: name}."""
+        out = {}
+        res = getattr(self, '_section_result', None)
+        if res is None:
+            return out
+        try:
+            from modular_3d.analysis.section_converge import sections_by_color_class
+            for cc, sec in sections_by_color_class(res, comp_id).items():
+                nm = getattr(sec, 'name', None)
+                if nm:
+                    out[cc] = nm
+        except Exception:
+            pass
+        return out
+
+    def _section_comp_ids_for_label(self, label: str):
+        """그 타입 라벨에 속한 모든 컴포넌트 id(최근 수렴 기준)."""
+        return [cid for cid, l in (self._comp_type_label or {}).items()
+                if l == label]
+
+    def _section_lock_targets(self):
+        """[7B-3] 선택 출처별 잠금 대상 comp_id 목록.
+
+        - single(3D 클릭): 그 컴포넌트 1개만 → 재수렴 시 -1-2 로 분기.
+        - type(목록 클릭): 그 타입 라벨의 모든 컴포넌트 → 다 같이 변경(분기 없음).
+        """
+        mode = getattr(self, '_section_sel_mode', 'type')
+        if mode == 'single' and self._section_selected_comp_id is not None:
+            return [self._section_selected_comp_id]
+        label = getattr(self, '_sel_section_type_label', None)
+        if not label:
+            return []
+        return self._section_comp_ids_for_label(label)
+
+    def _section_show_component(self, comp_id, label, single):
+        """[9-7 통합] 선택 컴포넌트로 패널 전체 상태 동기 — 타입목록·3D·상세·대상라벨·
+        콤보 미리채움·하이라이트를 한 번에. single=True(3D 클릭, 그 comp 1개) /
+        False(타입 목록, 타입 전체)."""
+        self._section_sel_mode = 'single' if single else 'type'
+        self._section_selected_comp_id = comp_id if single else None
+        self._sel_section_type_label = label or None
+        self._section_panel.select_type_row(label)            # 표시 동기(신호 차단)
+        self._on_section_type_selected(label or '', comp_id)  # 3D 메시 + 치수선
+        self._section_panel.show_type_detail(label or '')     # [9-5] 상세 텍스트
+        tgt = '이 컴포넌트만' if single else '타입 전체'
+        self._section_panel.set_lock_target_label(
+            f'대상: {label} ({tgt})' if label else '대상: (선택 없음)')
+        self._section_panel.prefill_lock_combos(
+            self._section_dims_names_by_class(comp_id))
+        ids = [comp_id] if single else self._section_comp_ids_for_label(label)
+        self._section_highlight_members(ids)
+
+    def _on_section_change(self):
+        """[9-7] 단면 변경 콤보 변경 → 대상에 즉시 반영·재수렴·전파.
+
+        대상 = 선택 출처별(single=그 comp→-1-2 분기 / type=타입 전체). 콤보 상태 그대로
+        잠금 교체(자동=해제). 재수렴 후 편집한 그 comp(새 타입)로 다시 선택·렌더(시야 유지).
+        """
+        targets = self._section_lock_targets()
+        if not targets:
+            return
+        single = (getattr(self, '_section_sel_mode', 'type') == 'single')
+        focus = (self._section_selected_comp_id if single else targets[0])
+        choices = self._section_panel.current_lock_choices()  # {색클래스: 단면명}(비-자동)
+        from modular_3d.카탈로그.steel_sections import SHS_CATALOG
+        name2sec = {s.name: s for s in SHS_CATALOG}
+        class_map = {cc: name2sec[n] for cc, n in choices.items() if n in name2sec}
+        for cid in targets:
+            if class_map:
+                self._section_locks[cid] = dict(class_map)   # 콤보 상태로 교체
+            else:
+                self._section_locks.pop(cid, None)           # 모두 자동 → 잠금 해제
+        self._apply_section_design()   # 재수렴(populate 가 row0 자동선택)
+        # [9-6] 편집한 그 컴포넌트(새 타입)로 다시 선택·렌더 — 시야 유지(메시만 교체).
+        if focus is not None:
+            new_label = (self._comp_type_label or {}).get(focus)
+            if new_label:
+                self._section_show_component(focus, new_label, single=single)
+
+    def _section_dims_by_class(self, comp_id: int) -> dict:
+        """수렴 결과에서 그 컴포넌트의 색 클래스별 단면 치수 (w,h,t).
+
+        SHS 단면만(w/h/t 보유) 반영. H형강은 치수 의미가 달라 생략(공칭 유지).
+        """
+        out: dict = {}
+        res = getattr(self, '_section_result', None)
+        if res is None:
+            return out
+        try:
+            from modular_3d.analysis.section_converge import sections_by_color_class
+            for cc, sec in sections_by_color_class(res, comp_id).items():
+                w = getattr(sec, 'w', None)
+                h = getattr(sec, 'h', None)
+                t = getattr(sec, 't', None)
+                if w and h and t:
+                    out[cc] = (float(w), float(h), float(t))
+        except Exception:
+            pass
+        return out
+
+    def _section_apply_override(self, comp, dims: dict):
+        """클래스별 단면 치수를 컴포넌트 부재에 *임시 적용*하고 복원용 saved 반환.
+
+        scene 객체를 영구 변형하지 않도록, 호출부가 finally 에서 _section_restore_override.
+        """
+        saved = []
+        if not dims:
+            return saved
+
+        # [수직3층모듈 호환] bottom_beams 가 리스트의 리스트일 수 있어 평탄화.
+        def _flat(seq):
+            out = []
+            for it in (seq or []):
+                if isinstance(it, (list, tuple)):
+                    out.extend(it)
+                else:
+                    out.append(it)
+            return out
+
+        groups = {
+            'column': _flat(getattr(comp, 'columns', [])),
+            'ceil':   _flat(getattr(comp, 'top_beams', [])),
+            'floor':  _flat(getattr(comp, 'bottom_beams', []))
+                      + _flat(getattr(comp, 'edge_beams', [])),
+        }
+        tr = getattr(comp, 'top_runner', None)
+        if tr is not None:
+            groups['ceil'].append(tr)
+        br = getattr(comp, 'bottom_runner', None)
+        if br is not None:
+            groups['floor'].append(br)
+        cbeam = getattr(comp, 'beam', None)
+        if cbeam is not None and hasattr(cbeam, 'section_w'):
+            groups['ceil'].append(cbeam)
+        groups['floor'] += list(getattr(comp, 'beams', []) or [])
+        for cc, elems in groups.items():
+            d = dims.get(cc)
+            if not d:
+                continue
+            for e in elems:
+                if hasattr(e, 'section_w'):
+                    saved.append((e, e.section_w, e.section_h, e.section_t))
+                    e.section_w, e.section_h, e.section_t = d
+        return saved
+
+    @staticmethod
+    def _section_restore_override(saved):
+        for e, w, h, t in saved:
+            e.section_w, e.section_h, e.section_t = w, h, t
+
+    def _build_component_class_meshes_sized(self, comp, dims: dict) -> dict:
+        """[7C-2] 수렴 단면 치수를 임시 적용한 뒤 색 클래스별 메시 {cc: MeshData} 빌드.
+
+        모듈/바닥패널/벽패널은 외곽 고정·안쪽 성장(outer_anchor=True). 종속(캔틸)은 False.
+        """
+        from modular_3d.render.mesh_builder import build_component_class_meshes
+        from modular_3d.model import ComponentType as _CT
+        anchor = getattr(comp, 'comp_type', None) in (
+            _CT.MODULE, _CT.FLOOR_PANEL, _CT.STRUCT_WALL)
+        saved = self._section_apply_override(comp, dims)
+        try:
+            return build_component_class_meshes(comp, outer_anchor=anchor)
+        finally:
+            self._section_restore_override(saved)
+
     # ── 좌측 팔레트 콜백 ────────────────────────────────
 
-    def _on_room_mode_toggle(self, checked: bool):
-        """팔레트 '실 모드' 토글 → 배치 탭 2D 캔버스 편집 모드 전환(2단계)."""
+    def _on_detail_mode_toggle(self, checked: bool):
+        """팔레트 '상세 설계' 토글 → 배치 탭 2D 캔버스 모드 정리.
+
+        상세 설계 모드는 실 지정/벽/개구부의 관문 — 세부 모드는 각 버튼이
+        전환하므로 토글 자체는 component(선택/편집) 기준으로 진행 상태만 정리한다.
+        """
         canvas = getattr(self._f5_panel, 'canvas', None)
         if canvas is not None and hasattr(canvas, 'set_edit_mode'):
-            canvas.set_edit_mode('room' if checked else 'component')
+            canvas.set_edit_mode('component')
         if not checked:
             self._show_room_props(None)
 
     def _on_room_draw(self):
-        """팔레트 '실 그리기' → 배치 탭 2D 캔버스 실 그리기 모드 진입(2단계)."""
+        """팔레트 '실 지정' → 실 편집 모드 진입 + 실 그리기 시작."""
         canvas = getattr(self._f5_panel, 'canvas', None)
-        if canvas is not None and hasattr(canvas, 'start_room_draw'):
+        if canvas is None:
+            return
+        if hasattr(canvas, 'set_edit_mode'):
+            canvas.set_edit_mode('room')
+        if hasattr(canvas, 'start_room_draw'):
             canvas.start_room_draw()
 
-    def _on_opening_mode_toggle(self, checked: bool):
-        """팔레트 '개구부 모드' 토글 → 배치 탭 캔버스 편집 모드 전환(3단계)."""
-        canvas = getattr(self._f5_panel, 'canvas', None)
-        if canvas is not None and hasattr(canvas, 'set_edit_mode'):
-            canvas.set_edit_mode('opening' if checked else 'component')
-
     def _on_opening_add(self):
-        """팔레트 '개구부 추가' → 다음 부재 클릭으로 개구부 배치(3단계)."""
+        """팔레트 '개구부' → 개구부 모드 진입 후 벽/슬래브 클릭으로 배치.
+
+        start_opening_add 가 내부에서 opening 편집 모드로 전환한다.
+        """
         canvas = getattr(self._f5_panel, 'canvas', None)
         if canvas is not None and hasattr(canvas, 'start_opening_add'):
             canvas.start_opening_add()
 
     def _on_wall_place(self):
-        """팔레트 '벽 배치(내벽)' → 부재 배치 머신으로 내벽 종속 배치 시작.
+        """팔레트 '벽' → 부재 배치 머신으로 내벽 종속 배치 시작.
 
         부모 클릭(DEPENDENCY_PICK) → 길이 입력 → 고스트(R/V/클릭) 흐름은
         캔틸레버 등 기존 종속 배치와 동일. 머신은 component 편집 모드에서만
-        라우팅되므로 실·벽/개구부 토글을 먼저 해제한다.
+        라우팅되므로 캔버스를 component 로 전환한다(상세 설계 토글은 유지).
         """
         from modular_3d.model import ComponentType
         canvas = getattr(self._f5_panel, 'canvas', None)
         if canvas is None:
             return
-        self._palette.clear_special_modes()
         if hasattr(canvas, 'set_edit_mode'):
             canvas.set_edit_mode('component')
         if hasattr(canvas, 'handle_palette_select'):
@@ -1734,22 +1939,10 @@ class MainWindow(QMainWindow):
 
     # ── 시나리오 탭 핸들러 ──────────────────────────────
 
-    def _on_scenes_floors_changed(self, n: int):
-        """시나리오 탭의 층수 SpinBox 변경 → F5 패널과 동기화 + 시그널 발화."""
-        if hasattr(self, '_f5_panel') and self._f5_panel is not None:
-            self._f5_panel.set_floors(int(n), emit=True)
-
     def _on_scene_save(self):
         """시나리오 탭 '저장' 버튼 → F5Mixin._f5_save_scene 재사용."""
         if hasattr(self._controller, '_f5_save_scene'):
             self._controller._f5_save_scene()
-
-    def _on_scene_load(self):
-        """시나리오 탭 '불러오기' 버튼 → F5Mixin._f5_load_scene 재사용 후
-        디자인 탭으로 자동 전환."""
-        if hasattr(self._controller, '_f5_load_scene'):
-            self._controller._f5_load_scene()
-        self._tabs.setCurrentIndex(TAB_DESIGN)
 
     # ── 헬퍼 ─────────────────────────────────────────
 
@@ -1788,12 +1981,18 @@ class MainWindow(QMainWindow):
                 # 편집 모드면 접합 픽킹.
                 if (btn == Qt.LeftButton
                         and self._tabs.currentIndex() == TAB_JOINT_EDIT):
-                    if self._joint_add_mode:
-                        self._on_joint_add_pick(pos)
+                    if self._joint_ctrl.is_add_mode():
+                        self._joint_ctrl._on_joint_add_pick(pos)
                         return True
-                    if self._joint_edit_mode:
-                        self._on_joint_pick(pos)
+                    if self._joint_ctrl.is_edit_mode():
+                        self._joint_ctrl._on_joint_pick(pos)
                         return True
+                # [7B-2] 단면 설계 탭 좌클릭 → 컴포넌트 선택(부재 픽킹 후 소유 컴포넌트
+                # 역추적) → 패널/타입목록/컴포넌트3D 연동. ops 부재 핀(정보창) 대신 사용.
+                if (btn == Qt.LeftButton
+                        and self._tabs.currentIndex() == TAB_SECTION):
+                    self._on_section_3d_pick(pos)
+                    return True
                 self._controller.on_qt_mouse_press(btn, pos)
                 return False
 
@@ -1808,9 +2007,9 @@ class MainWindow(QMainWindow):
                     return False
                 pos = (event.x(), event.y())
                 # [2026-05-25] 접합 추가 모드: 마우스 위치 모서리 점 고스트 미리보기.
-                if (self._joint_add_mode
+                if (self._joint_ctrl.is_add_mode()
                         and self._tabs.currentIndex() == TAB_JOINT_EDIT):
-                    self._update_joint_ghost(pos)
+                    self._joint_ctrl._update_joint_ghost(pos)
                     return False
                 self._controller.on_qt_mouse_move(pos)
                 return False

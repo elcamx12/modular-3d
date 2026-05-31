@@ -300,8 +300,15 @@ def evaluate_slot(
         bottom = truck_state.placements[parent_idx]
         if bottom.posture != Posture.LYING:
             return float("-inf"), None
-        # 모듈 위 적층 금지 (이중 안전망 — _find_stack_bottom_idx 도 막지만 명시)
+        # 모듈 위 적층 금지
         if isinstance(bottom.item, Module):
+            return float("-inf"), None
+        # L자(종속 floor) 패널 위 단순 STACK 금지 — 벽 segment 위로 올라가
+        # ㄷ자가 되는 물리적으로 불가능한 배치 방지. 종속 floor 위 적층은
+        # *DEP_INNER 슬롯* (벽 안쪽 free area) 만 허용.
+        if isinstance(bottom.item, Panel) and (
+            bottom.item.wall_segments or bottom.item.kind == "lshape"
+        ):
             return float("-inf"), None
         # 위 단 길이 ≤ 아래 단 길이 AND 폭 ≤ 폭 (큰 면적이 아래)
         b_len, b_w, _, _ = _item_dims_for_posture(bottom.item, bottom.posture)
@@ -439,6 +446,12 @@ def evaluate_slot_v2(
         # 모듈 위 적층 금지 (이중 안전망)
         if isinstance(bottom.item, Module):
             return float("-inf"), None
+        # L자(종속 floor) 위 단순 STACK 금지 — 벽 위로 올라가는 ㄷ자 형태 방지.
+        # 종속 floor 위 적층은 DEP_INNER 슬롯 (벽 안쪽 free area) 만 허용.
+        if isinstance(bottom.item, Panel) and (
+            bottom.item.wall_segments or bottom.item.kind == "lshape"
+        ):
+            return float("-inf"), None
         # 적층 기하 — 사용자 결정: 큰 면적이 아래
         b_len, b_w, _, _ = _item_dims_for_posture(bottom.item, bottom.posture)
         c_len, c_w, _, _ = _item_dims_for_posture(item, posture)
@@ -510,14 +523,13 @@ def evaluate_slot_v2(
 
 
 # V2 용 가중치 세트 — 4-tuple (α, β, γ, δ)
+# 2026-05-27 축소: 중복 효과 제거 (lookahead 도입으로 가중치 다양성 영향 작아짐).
+# 4 종 — 균형 / 무게 / 적층(높이) / 비용 보너스.
 WEIGHT_SETS_V2: List[Tuple[float, float, float, float]] = [
-    (1.0, 1.0, 1.0, 1.0),    # 균형 + 비용 신호
-    (2.0, 1.0, 1.0, 1.0),    # 길이 강조
-    (1.0, 2.0, 1.0, 1.0),    # 무게 강조
-    (1.0, 1.0, 2.0, 1.0),    # 높이 강조
-    (1.0, 1.0, 1.0, 2.5),    # 비용 (적층) 강조
-    (1.5, 1.0, 0.5, 2.0),    # 길이 + 비용 강조 (적층 친화)
-    (1.0, 1.5, 1.0, 1.5),    # 무게 + 비용
+    (1.0, 1.0, 1.0, 1.0),    # 균형 (안전망)
+    (1.0, 2.0, 1.0, 1.0),    # 무게 강조 (무거운 화물 우선 안착)
+    (0.5, 0.5, 2.0, 1.0),    # 적층 강조 (높이 단독)
+    (1.0, 1.0, 1.0, 2.5),    # 비용 보너스 강조 (적층/혼합 매우 우대)
 ]
 
 
@@ -713,6 +725,8 @@ def _dependent_first_sorter(items: Sequence[Item]) -> List[Item]:
     return sorted(items, key=key)
 
 
+# 2026-05-27 축소: cost_efficiency 시드 제거 (weight_desc 와 정렬 동일,
+# truck_score_fn 도 lookahead 도입 후 의미 X). 3 정렬 × 4 가중치 = 12 시드.
 GREEDY_STRATEGIES: List[GreedyStrategy] = [
     GreedyStrategy(
         name="weight_desc",
@@ -728,11 +742,6 @@ GREEDY_STRATEGIES: List[GreedyStrategy] = [
         name="dependent_first",
         sort_items_fn=_dependent_first_sorter,
         truck_score_fn=default_truck_score,
-    ),
-    GreedyStrategy(
-        name="cost_efficiency",
-        sort_items_fn=lambda items: sorted(items, key=lambda x: -x.weight),
-        truck_score_fn=cost_efficiency_truck_score,
     ),
 ]
 
@@ -758,7 +767,7 @@ SHUFFLED_STRATEGY = GreedyStrategy(
 # ────────────────────────────────────────────────────────────────────
 # 새 트럭 선정 — 빈 트럭 한 대 만들어 점수 비교
 # ────────────────────────────────────────────────────────────────────
-_DEBUG_TRUCK_SELECTION: bool = True   # 트럭 선정 진단 로그 (콘솔 출력)
+_DEBUG_TRUCK_SELECTION: bool = False   # 트럭 선정 진단 로그 (필요 시 True)
 
 
 # ── lookahead 재귀 방지용 thread-local ─────────────────────
@@ -768,6 +777,29 @@ _lookahead_state = _threading.local()
 
 def _is_in_lookahead() -> bool:
     return getattr(_lookahead_state, "active", False)
+
+
+# ── 모듈 트럭 선택 캐시 (메모이제이션) ──────────────────────
+# 동일 사양 모듈은 호환 트럭 + 단가 정책이 같으면 항상 같은 트럭이 선택됨
+# → 결과 캐시해서 16개 모듈 결정을 16번 계산하지 않고 1번만.
+_module_truck_cache: Dict[Tuple, str] = {}
+
+
+def _module_cache_key(item: "Module", trucks_sig: tuple, cost_mode: str) -> Tuple:
+    """모듈 사양 + 트럭 세트 시그너처 + 비용 모드 = 캐시 키."""
+    return (
+        int(round(item.length)),
+        int(round(item.width)),
+        int(round(item.height)),
+        int(round(item.weight)),
+        trucks_sig,
+        cost_mode,
+    )
+
+
+def clear_module_truck_cache() -> None:
+    """패킹 시작 시 호출 — 시드 간 캐시 잔존 방지."""
+    _module_truck_cache.clear()
 
 
 def _filter_compat_trucks(
@@ -852,6 +884,29 @@ def _select_best_new_truck(
         return None
     if len(candidates) == 1:
         return candidates[0]
+
+    # ── 모듈 빠른 경로 — 단독 회차 + 캐시 메모이제이션 ────────
+    # 정책 (사용자 결정 2026-05-27): 모듈+패널 혼적 금지 → 모듈 회차 단독.
+    # 동일 사양 모듈은 항상 같은 트럭 → 캐시. 16개 모듈도 캐시 미스 1번만 계산.
+    if isinstance(item, Module):
+        trucks_sig = tuple(
+            (tr.name, tr.active, tr.truck_type) for tr in all_trucks
+        )
+        key = _module_cache_key(item, trucks_sig, cost_mode)
+        cached_name = _module_truck_cache.get(key)
+        if cached_name is not None:
+            for tr in candidates:
+                if tr.name == cached_name:
+                    return tr
+            # 캐시 트럭이 *현 후보에 없으면* (드물게 active 변경 등) 재계산
+        scored = [
+            (default_truck_score(tr, [item], site, sp, cost_mode, eco_options), tr)
+            for tr in candidates
+        ]
+        scored.sort(key=lambda x: x[0])
+        chosen = scored[0][1]
+        _module_truck_cache[key] = chosen.name
+        return chosen
 
     # 재귀 (시뮬 안) — *첫 결정만* pref_once cand 강제 + 이후 가장 싼 트럭
     if _is_in_lookahead():

@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>ViewerThree — 디자인 탭 3D</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; overflow: hidden;
+    background: #f5f7fa;
+    width: 100%; height: 100%;
+    font-family: 'Pretendard', 'Segoe UI', sans-serif;
+  }
+  #container { width: 100vw; height: 100vh; position: relative; }
+  #canvas { display: block; width: 100%; height: 100%; }
+  #empty-msg {
+    position: absolute; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    color: #6b7785; font-size: 13px;
+    background: rgba(255,255,255,0.7);
+    padding: 14px 22px; border-radius: 10px;
+    border: 1px solid #d1d9e0;
+  }
+  #info {
+    position: absolute; bottom: 8px; right: 8px; z-index: 10;
+    color: #6b7785; font-size: 10px;
+    background: rgba(255,255,255,0.7);
+    padding: 4px 8px; border-radius: 4px;
+    border: 1px solid #d1d9e0;
+  }
+</style>
+</head>
+<body>
+<div id="container">
+  <div id="empty-msg">three.js 뷰 — 부재 로딩 대기 중 (M2-a 골격)</div>
+  <div id="info">왼클릭=회전 · 우클릭=이동 · 휠=줌</div>
+  <div id="member-tip" style="position:absolute; display:none; z-index:20;
+    pointer-events:none; background:rgba(20,24,28,0.92); color:#fff;
+    font-size:12px; padding:3px 7px; border-radius:4px; white-space:nowrap;"></div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<script>
+"use strict";
+
+// ─────────────────────────────────────────────────────────
+// 좌표·단위 정책 (UI_마이그레이션/05_M2_설계.md 참조)
+// - Python Scene 좌표: x=길이, y=폭, z=높이, 단위 mm
+// - three.js 도 *동일* 컨벤션 (운송탭의 y↔z 교환·mm→m 환산 안 함)
+// - 카메라 up = (0, 0, 1)
+// ─────────────────────────────────────────────────────────
+
+let scene, camera, renderer, controls;
+let qtBridge = null;
+
+// 부재·실 메쉬 레지스트리 — id → THREE.Mesh
+const componentMeshes = {};
+const roomMeshes = {};
+
+// 고스트·스냅 마커·선택 박스 — 단일 인스턴스
+let ghostMesh = null;
+let openingGhostMesh = null;
+let roomGhostMesh = null;
+let snapMarker = null;
+let selectionBox = null;
+
+// ─────────────────────────────────────────────────────────
+// 초기화
+// ─────────────────────────────────────────────────────────
+function init() {
+  const container = document.getElementById('container');
+  const w = container.clientWidth, h = container.clientHeight;
+
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xf5f7fa);
+
+  // 카메라 — Viewer3D 의 CustomCamera 와 같은 초기값
+  // distance=20000mm, fov=45°, elevation=30°, azimuth=-60°, center=(3000,3000,0)
+  // [M2-c 사용자 피드백 2026-05-28] vispy TurntableCamera 와 three.js 의
+  // azimuth 컨벤션 차이로 위에서 본 기준 시야가 90도 어긋남. azim 을
+  // -90° 보정해 vispy 와 동일한 시점으로 맞춤 (반시계 회전).
+  camera = new THREE.PerspectiveCamera(45, w / h, 10, 200000);
+  const dist = 20000;
+  const elev = 30 * Math.PI / 180;
+  const azim_vispy_deg = -60;
+  const azim = (azim_vispy_deg - 90) * Math.PI / 180;
+  const cx = 3000, cy = 3000, cz = 0;
+  camera.position.set(
+    cx + dist * Math.cos(elev) * Math.sin(azim),
+    cy + dist * Math.cos(elev) * Math.cos(azim),
+    cz + dist * Math.sin(elev),
+  );
+  camera.up.set(0, 0, 1);
+  camera.lookAt(cx, cy, cz);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(w, h);
+  renderer.domElement.id = 'canvas';
+  container.appendChild(renderer.domElement);
+
+  // [2026-05-30 B3] z축 단면 절단용 클리핑 평면 — 모든 부재 재질이 공유한다.
+  // normal (0,0,-1) → (normal·p + constant) > 0, 즉 z < constant 영역만 보인다.
+  // constant 가 절단 높이. 초기 1e9 = 사실상 무한대(전체 보임). setSectionZ 로 조정.
+  renderer.localClippingEnabled = true;
+  window.sectionPlane = new THREE.Plane(new THREE.Vector3(0, 0, -1), 1e9);
+
+  controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.target.set(cx, cy, cz);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.screenSpacePanning = false;
+  controls.minDistance = 100;
+  controls.maxDistance = 100000;
+  controls.update();
+
+  // 광원
+  scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+  const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+  dirLight.position.set(5000, 5000, 10000);
+  scene.add(dirLight);
+
+  // [2026-05-30 B1] 바닥 그리드(GridHelper) 제거 — 사용자 요청.
+
+  window.addEventListener('resize', onResize);
+  animate();
+
+  // WebChannel 연결 (Python 측 _ViewerThreeBridge)
+  if (typeof QWebChannel !== 'undefined' && typeof qt !== 'undefined'
+      && qt.webChannelTransport) {
+    new QWebChannel(qt.webChannelTransport, function(channel) {
+      qtBridge = channel.objects.bridge || null;
+      if (qtBridge && qtBridge.js_log) {
+        qtBridge.js_log('ViewerThree HTML 로드 완료 (M2-a 골격)');
+      }
+    });
+  }
+}
+
+function onResize() {
+  const container = document.getElementById('container');
+  const w = container.clientWidth, h = container.clientHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+// ─────────────────────────────────────────────────────────
+// 메쉬 빌더 헬퍼 — vertices/faces/face_colors → BufferGeometry
+// (M2-b 구현 대상. 현재는 골격만)
+// ─────────────────────────────────────────────────────────
+function _buildMeshFromMeshData(verticesList, facesList, faceColorsList) {
+  // verticesList: (N, 3) — 꼭짓점 좌표
+  // facesList:    (M, 3) — 삼각형 face 의 꼭짓점 인덱스
+  // faceColorsList: (M, 4) — face 별 (R,G,B,A), 0~1
+
+  // per-face 색을 per-vertex 로 풀기 위해 non-indexed BufferGeometry 사용:
+  // 각 face 의 3 꼭짓점을 그대로 늘어놓고, 같은 색을 3 번 반복.
+  const M = facesList.length;
+  const positions = new Float32Array(M * 9);   // 3 verts × 3 coords
+  const colors = new Float32Array(M * 9);      // 3 verts × 3 RGB
+
+  for (let i = 0; i < M; i++) {
+    const face = facesList[i];
+    const col = faceColorsList[i];
+    for (let k = 0; k < 3; k++) {
+      const v = verticesList[face[k]];
+      positions[i*9 + k*3 + 0] = v[0];
+      positions[i*9 + k*3 + 1] = v[1];
+      positions[i*9 + k*3 + 2] = v[2];
+      colors[i*9 + k*3 + 0] = col[0];
+      colors[i*9 + k*3 + 1] = col[1];
+      colors[i*9 + k*3 + 2] = col[2];
+    }
+  }
+
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geom.computeVertexNormals();
+
+  const mat = new THREE.MeshLambertMaterial({
+    vertexColors: true, side: THREE.DoubleSide,
+    clippingPlanes: window.sectionPlane ? [window.sectionPlane] : [],
+  });
+  return new THREE.Mesh(geom, mat);
+}
+
+// ─────────────────────────────────────────────────────────
+// 외부 API (Python 측 ViewerThree 가 runJavaScript 로 호출)
+// M2-a: 시그너처 + 빈 본문. M2-b 에서 실 동작 구현.
+// ─────────────────────────────────────────────────────────
+
+window.addComponent = function(payload) {
+  // payload = { comp_id, vertices, faces, face_colors }
+  const id = payload.comp_id;
+  if (componentMeshes[id]) {
+    scene.remove(componentMeshes[id]);
+    componentMeshes[id].geometry.dispose();
+    componentMeshes[id].material.dispose();
+    delete componentMeshes[id];
+  }
+  const mesh = _buildMeshFromMeshData(
+    payload.vertices, payload.faces, payload.face_colors);
+  mesh.userData.comp_id = id;
+  scene.add(mesh);
+  componentMeshes[id] = mesh;
+  _hideEmptyMsg();
+};
+
+// [2026-05-30 B3] z축 단면 절단 — enabled 면 z(높이) 위를 잘라 평면을 본다.
+window.setSectionZ = function(z, enabled) {
+  if (window.sectionPlane) {
+    window.sectionPlane.constant = enabled ? z : 1e9;
+  }
+};
+
+window.removeComponent = function(comp_id) {
+  const mesh = componentMeshes[comp_id];
+  if (!mesh) return;
+  scene.remove(mesh);
+  mesh.geometry.dispose();
+  mesh.material.dispose();
+  delete componentMeshes[comp_id];
+};
+
+// [7C-1] 캐드식 치수선 — 우측 컴포넌트 3D 전용. 폭/깊이/높이 3축, 숫자(mm)만(한글 없음).
+let dimGroup = null;
+function _disposeGroup(g) {
+  if (!g) return;
+  g.traverse(function(o) {
+    if (o.geometry) o.geometry.dispose();
+    if (o.material) {
+      if (o.material.map) o.material.map.dispose();
+      o.material.dispose();
+    }
+  });
+}
+function _makeNumberSprite(value, scale) {
+  const text = String(Math.round(value));
+  const cv = document.createElement('canvas');
+  cv.width = 256; cv.height = 64;
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, 256, 64);
+  ctx.fillStyle = '#111111';
+  ctx.font = 'bold 44px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(text, 128, 34);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.needsUpdate = true;
+  const mat = new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true });
+  const sp = new THREE.Sprite(mat);
+  sp.scale.set(scale * 4, scale, 1);
+  return sp;
+}
+function _addDimLine(group, p1, p2, value, sscale) {
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(
+    new Float32Array([p1[0], p1[1], p1[2], p2[0], p2[1], p2[2]]), 3));
+  const mat = new THREE.LineBasicMaterial({ color: 0x222222, depthTest: false });
+  const line = new THREE.LineSegments(geom, mat);
+  line.renderOrder = 999;
+  group.add(line);
+  const sp = _makeNumberSprite(value, sscale);
+  sp.position.set((p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2, (p1[2] + p2[2]) / 2);
+  sp.renderOrder = 1000;
+  group.add(sp);
+}
+// payload = { dx, dy, dz } (원점 중심 메시의 축별 외곽 치수, mm). null 이면 제거.
+window.setDimensionLines = function(payload) {
+  if (dimGroup) { scene.remove(dimGroup); _disposeGroup(dimGroup); dimGroup = null; }
+  if (!payload) return;
+  const dx = payload.dx, dy = payload.dy, dz = payload.dz;
+  if (!(dx > 0 && dy > 0 && dz > 0)) return;
+  const hx = dx / 2, hy = dy / 2, hz = dz / 2;
+  const m = Math.max(dx, dy, dz);
+  const off = m * 0.06 + 80;     // 박스에서 바깥으로 띄우는 거리
+  const ss = m * 0.05 + 40;      // 숫자 스프라이트 크기
+  dimGroup = new THREE.Group();
+  _addDimLine(dimGroup, [-hx, -hy - off, -hz], [hx, -hy - off, -hz], dx, ss);  // 폭(X)
+  _addDimLine(dimGroup, [-hx - off, -hy, -hz], [-hx - off, hy, -hz], dy, ss);  // 깊이(Y)
+  _addDimLine(dimGroup, [-hx - off, -hy - off, -hz], [-hx - off, -hy - off, hz], dz, ss);  // 높이(Z)
+  scene.add(dimGroup);
+};
+
+// [7C-2] 색 클래스별 부재 메시(단면명 보유) + hover 툴팁. 우측 컴포넌트 3D 전용.
+let memberGroup = null;
+let _hoverRaycaster = null;
+let _hoverAttached = false;
+function _attachHover() {
+  if (_hoverAttached || !renderer) return;
+  _hoverAttached = true;
+  _hoverRaycaster = new THREE.Raycaster();
+  const tip = document.getElementById('member-tip');
+  renderer.domElement.addEventListener('mousemove', function (ev) {
+    if (!memberGroup) { if (tip) tip.style.display = 'none'; return; }
+    const rect = renderer.domElement.getBoundingClientRect();
+    const ndc = new THREE.Vector2(
+      ((ev.clientX - rect.left) / rect.width) * 2 - 1,
+      -((ev.clientY - rect.top) / rect.height) * 2 + 1);
+    _hoverRaycaster.setFromCamera(ndc, camera);
+    const hits = _hoverRaycaster.intersectObjects(memberGroup.children, false);
+    if (hits.length && hits[0].object.userData.sectionName) {
+      tip.textContent = hits[0].object.userData.sectionName;
+      tip.style.left = (ev.clientX - rect.left + 12) + 'px';
+      tip.style.top = (ev.clientY - rect.top + 12) + 'px';
+      tip.style.display = 'block';
+    } else if (tip) {
+      tip.style.display = 'none';
+    }
+  });
+}
+// payload = { members: [ { vertices, faces, face_colors, name } ] }. null/빈 → 제거.
+window.setComponentMembers = function (payload) {
+  if (memberGroup) { scene.remove(memberGroup); _disposeGroup(memberGroup); memberGroup = null; }
+  const tip = document.getElementById('member-tip');
+  if (tip) tip.style.display = 'none';
+  if (!payload || !payload.members || !payload.members.length) return;
+  _attachHover();
+  memberGroup = new THREE.Group();
+  for (const m of payload.members) {
+    const mesh = _buildMeshFromMeshData(m.vertices, m.faces, m.face_colors);
+    mesh.userData.sectionName = m.name || '';
+    memberGroup.add(mesh);
+  }
+  scene.add(memberGroup);
+  _hideEmptyMsg();
+};
+
+window.addRoom = function(payload) {
+  const id = payload.room_id;
+  if (roomMeshes[id]) {
+    scene.remove(roomMeshes[id]);
+    roomMeshes[id].geometry.dispose();
+    roomMeshes[id].material.dispose();
+    delete roomMeshes[id];
+  }
+  const mesh = _buildMeshFromMeshData(
+    payload.vertices, payload.faces, payload.face_colors);
+  mesh.userData.room_id = id;
+  // 실 색면은 반투명
+  mesh.material.transparent = true;
+  mesh.material.opacity = 0.4;
+  scene.add(mesh);
+  roomMeshes[id] = mesh;
+};
+
+window.removeRoom = function(room_id) {
+  const mesh = roomMeshes[room_id];
+  if (!mesh) return;
+  scene.remove(mesh);
+  mesh.geometry.dispose();
+  mesh.material.dispose();
+  delete roomMeshes[room_id];
+};
+
+// ─────────────────────────────────────────────────────────
+// 고스트·스냅·선택 — M2-c 구현
+// ─────────────────────────────────────────────────────────
+
+// ── 공용 헬퍼: 반투명 메쉬 빌더 ────────────────────────
+function _buildGhostMesh(verticesList, facesList, faceColorsList,
+                        opacity) {
+  const mesh = _buildMeshFromMeshData(verticesList, facesList, faceColorsList);
+  mesh.material.transparent = true;
+  mesh.material.opacity = (typeof opacity === 'number') ? opacity : 0.5;
+  mesh.material.depthWrite = false;   // 반투명 메쉬가 자기 자신 가리지 않게
+  mesh.renderOrder = 10;
+  return mesh;
+}
+
+function _disposeMesh(mesh) {
+  if (!mesh) return;
+  scene.remove(mesh);
+  if (mesh.geometry) mesh.geometry.dispose();
+  if (mesh.material) mesh.material.dispose();
+}
+
+// ── 부재 배치 미리보기 고스트 ──────────────────────────
+window.updateGhost = function(payload) {
+  _disposeMesh(ghostMesh);
+  ghostMesh = _buildGhostMesh(payload.vertices, payload.faces,
+                              payload.face_colors, 0.45);
+  ghostMesh.userData.role = 'ghost';
+  scene.add(ghostMesh);
+};
+
+window.clearGhost = function() {
+  _disposeMesh(ghostMesh);
+  ghostMesh = null;
+};
+
+window.setGhostEnabled = function(enabled) {
+  if (ghostMesh) ghostMesh.visible = !!enabled;
+};
+
+// ── 개구부 고스트 ─────────────────────────────────────
+window.updateOpeningGhost = function(payload) {
+  _disposeMesh(openingGhostMesh);
+  openingGhostMesh = _buildGhostMesh(payload.vertices, payload.faces,
+                                     payload.face_colors, 0.55);
+  openingGhostMesh.userData.role = 'opening_ghost';
+  scene.add(openingGhostMesh);
+};
+
+window.clearOpeningGhost = function() {
+  _disposeMesh(openingGhostMesh);
+  openingGhostMesh = null;
+};
+
+// ── 실 고스트 (이동/복사 미리보기) ─────────────────────
+window.updateRoomGhost = function(payload) {
+  _disposeMesh(roomGhostMesh);
+  roomGhostMesh = _buildGhostMesh(payload.vertices, payload.faces,
+                                  payload.face_colors, 0.35);
+  roomGhostMesh.userData.role = 'room_ghost';
+  scene.add(roomGhostMesh);
+};
+
+window.clearRoomGhost = function() {
+  _disposeMesh(roomGhostMesh);
+  roomGhostMesh = null;
+};
+
+// ── 스냅 마커: THREE.Points + 부재 꼭짓점 표시 ─────────
+// vispy 의 visuals.Markers 와 동등 — snap_point (강조) + all_vertices (보조)
+window.showSnapMarkers = function(payload) {
+  _disposeMesh(snapMarker);
+  const sp = payload.snap_point;          // [x, y, z]
+  const av = payload.all_vertices || [];  // (N, 3)
+
+  // 위치 배열 — 첫 항목 = 강조 점, 나머지 = 보조
+  const positions = new Float32Array((1 + av.length) * 3);
+  const colors = new Float32Array((1 + av.length) * 3);
+  // 강조 점 — 빨강
+  positions[0] = sp[0]; positions[1] = sp[1]; positions[2] = sp[2];
+  colors[0] = 0.95; colors[1] = 0.2; colors[2] = 0.2;
+  // 보조 점 — 짙은 노랑
+  for (let i = 0; i < av.length; i++) {
+    const v = av[i];
+    positions[(i+1)*3 + 0] = v[0];
+    positions[(i+1)*3 + 1] = v[1];
+    positions[(i+1)*3 + 2] = v[2];
+    colors[(i+1)*3 + 0] = 0.95;
+    colors[(i+1)*3 + 1] = 0.75;
+    colors[(i+1)*3 + 2] = 0.0;
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  const mat = new THREE.PointsMaterial({
+    size: 180, sizeAttenuation: true, vertexColors: true,
+    transparent: true, depthTest: false,
+  });
+  snapMarker = new THREE.Points(geom, mat);
+  snapMarker.renderOrder = 20;
+  scene.add(snapMarker);
+};
+
+window.hideSnapMarker = function() {
+  if (snapMarker) {
+    scene.remove(snapMarker);
+    if (snapMarker.geometry) snapMarker.geometry.dispose();
+    if (snapMarker.material) snapMarker.material.dispose();
+    snapMarker = null;
+  }
+};
+
+// ── 선택 박스: bbox 12 모서리 와이어프레임 (빨강) ──────
+window.showSelectionBox = function(payload) {
+  if (selectionBox) {
+    scene.remove(selectionBox);
+    if (selectionBox.geometry) selectionBox.geometry.dispose();
+    if (selectionBox.material) selectionBox.material.dispose();
+    selectionBox = null;
+  }
+  const a = payload.bbox_min;   // [x, y, z]
+  const b = payload.bbox_max;
+  // 8 꼭짓점
+  const v = [
+    [a[0], a[1], a[2]], [b[0], a[1], a[2]], [b[0], b[1], a[2]], [a[0], b[1], a[2]],
+    [a[0], a[1], b[2]], [b[0], a[1], b[2]], [b[0], b[1], b[2]], [a[0], b[1], b[2]],
+  ];
+  // 12 모서리 — 각 (i, j) 쌍을 Float32Array 의 line segment 로
+  const edges = [
+    [0,1],[1,2],[2,3],[3,0],  // 하면
+    [4,5],[5,6],[6,7],[7,4],  // 상면
+    [0,4],[1,5],[2,6],[3,7],  // 기둥
+  ];
+  const positions = new Float32Array(edges.length * 6);
+  for (let i = 0; i < edges.length; i++) {
+    const [u, w] = edges[i];
+    positions[i*6 + 0] = v[u][0];
+    positions[i*6 + 1] = v[u][1];
+    positions[i*6 + 2] = v[u][2];
+    positions[i*6 + 3] = v[w][0];
+    positions[i*6 + 4] = v[w][1];
+    positions[i*6 + 5] = v[w][2];
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const mat = new THREE.LineBasicMaterial({
+    color: 0xe53935, linewidth: 2,
+    transparent: true, depthTest: false,
+  });
+  selectionBox = new THREE.LineSegments(geom, mat);
+  selectionBox.renderOrder = 30;
+  selectionBox.userData.comp_id = payload.comp_id;
+  scene.add(selectionBox);
+};
+
+window.hideSelectionBox = function() {
+  if (selectionBox) {
+    scene.remove(selectionBox);
+    if (selectionBox.geometry) selectionBox.geometry.dispose();
+    if (selectionBox.material) selectionBox.material.dispose();
+    selectionBox = null;
+  }
+};
+
+function _hideEmptyMsg() {
+  const el = document.getElementById('empty-msg');
+  if (el) el.style.display = 'none';
+}
+
+// 페이지 로드 완료 후 init
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}
+</script>
+</body>
+</html>

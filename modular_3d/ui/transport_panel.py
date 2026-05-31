@@ -30,8 +30,6 @@
 from __future__ import annotations
 
 import os
-import re
-from dataclasses import asdict
 from typing import Dict, List, Optional
 
 import plotly.io as pio
@@ -44,9 +42,8 @@ try:
 except Exception:
     pass
 
-from PyQt5.QtCore import Qt, QByteArray, QPoint, QTimer, QUrl, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, QUrl, pyqtSignal
 from PyQt5.QtGui import QColor, QBrush, QFont
-from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog,
     QDialogButtonBox, QDoubleSpinBox, QFormLayout, QFrame, QGroupBox,
@@ -63,7 +60,7 @@ from modular_3d.transport.cache import TransportCache
 from modular_3d.transport.catalog_io import load_all_trucks
 from modular_3d.transport.economics import EconomicsOptions, compute_economics
 from modular_3d.transport.models import SiteLimit, SpacingParams, Truck
-from modular_3d.transport.packer import PackResult, Trip, pack_items, recheck_trip_with_truck
+from modular_3d.transport.packer import PackResult, Trip, recheck_trip_with_truck
 from modular_3d.transport.visualizer import draw_rear_view, draw_top_view
 from modular_3d.ui.transport_catalog_dialog import TransportCatalogDialog
 from modular_3d.ui.transport_references_dialog import TransportReferencesDialog
@@ -439,6 +436,21 @@ class TransportTab(QWidget):
         )
         self._run_btn.clicked.connect(self._run_transport)
         run_row.addWidget(self._run_btn)
+
+        # 디버그 트레이스 저장 버튼 (Phase 5-K5)
+        self._debug_btn = QPushButton("🪲 디버그 저장")
+        self._debug_btn.setStyleSheet(
+            "QPushButton { background-color: #888; color: white; "
+            "padding: 6px 12px; border-radius: 3px; }"
+            "QPushButton:hover { background-color: #666; }"
+        )
+        self._debug_btn.setToolTip(
+            "BB 분기한정 패커 트레이스를 바탕화면(bb_trace.txt)에 저장하면서 "
+            "운송 계산을 실행합니다."
+        )
+        self._debug_btn.clicked.connect(self._run_transport_with_trace)
+        run_row.addWidget(self._debug_btn)
+
         run_row.addStretch(1)
         run_wrap = QWidget(); run_wrap.setLayout(run_row)
         lay.addRow(run_wrap)
@@ -566,49 +578,6 @@ class TransportTab(QWidget):
         self._util_fig = Figure(figsize=(5, 3), tight_layout=True)
         self._util_canvas = Canvas(self._util_fig)
         lay.addWidget(self._util_canvas)
-        return page
-
-    def _build_subtab_views(self) -> QWidget:
-        page = QWidget()
-        lay = QVBoxLayout(page)
-        lay.setContentsMargins(2, 2, 2, 2)
-        # JS 콘솔 에러만 출력 (info/log 묵음 — 운영 시 시끄러움 방지)
-        from PyQt5.QtWebEngineWidgets import QWebEnginePage
-
-        class _ErrorOnlyPage(QWebEnginePage):
-            def javaScriptConsoleMessage(self, level, msg, line, src):
-                # level: 0=Info, 1=Warning, 2=Error
-                if int(level) >= 2:
-                    print(f"[WEB JS ERR] L{line} {msg}", flush=True)
-        self._DebugPage = _ErrorOnlyPage
-        # 회차 선택 콤보
-        sel_row = QHBoxLayout()
-        sel_row.addWidget(QLabel("회차 선택:"))
-        self._view_combo = QComboBox()
-        self._view_combo.currentIndexChanged.connect(self._on_view_combo_changed)
-        sel_row.addWidget(self._view_combo, stretch=1)
-        sel_wrap = QWidget(); sel_wrap.setLayout(sel_row)
-        lay.addWidget(sel_wrap)
-        # 좌우 분할
-        splitter = QSplitter(Qt.Horizontal)
-        self._top_view_web = QWebEngineView()
-        self._rear_view_web = QWebEngineView()
-        for web in (self._top_view_web, self._rear_view_web):
-            web.setMinimumHeight(360)
-            # 디버그: JS console 메시지 + load 결과를 콘솔에 찍어 진단
-            try:
-                web.setPage(self._DebugPage(web))
-            except Exception:
-                pass
-            # loadFinished 로그는 운영 시 필요 없음 — 실패 시에만 출력
-            web.loadFinished.connect(
-                lambda ok, w=web: (None if ok else print(
-                    f"[WEB] load FAILED  url={w.url().toString()[:80]}", flush=True))
-            )
-        splitter.addWidget(self._top_view_web)
-        splitter.addWidget(self._rear_view_web)
-        splitter.setSizes([600, 400])
-        lay.addWidget(splitter, stretch=1)
         return page
 
     def _build_subtab_economics(self) -> QWidget:
@@ -746,6 +715,45 @@ class TransportTab(QWidget):
             aframe_fixed_krw=float(getattr(ps, 'aframe_fixed_krw', 800000.0)),
         )
 
+    # ── 디버그 트레이스 실행 ──────────────────────────────
+    def _run_transport_with_trace(self) -> None:
+        """BB 트레이스를 바탕화면 bb_trace.txt 에 기록하면서 운송 계산 실행.
+
+        - 캐시 무효화 → 강제 재계산
+        - packer_bb.set_trace_path() 로 in-process 경로 설정
+        - 실행 후 set_trace_path("") 로 끄고 메시지박스로 결과 알림
+        """
+        import os
+        from modular_3d.transport import packer_bb as _bb
+
+        # 바탕화면 경로 자동 산출
+        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+        if not os.path.isdir(desktop):
+            desktop = os.path.expanduser("~")
+        trace_path = os.path.join(desktop, "bb_trace.txt")
+
+        _bb.set_trace_path(trace_path)
+        # 캐시 무효화 — pack 단계만 (단계 7) 비워서 강제 BB 재실행
+        try:
+            self._cache.invalidate_from(7)
+        except Exception:
+            pass
+        try:
+            self._run_transport()
+        finally:
+            _bb.set_trace_path("")
+        # 결과 알림
+        if os.path.isfile(trace_path):
+            QMessageBox.information(
+                self, "디버그 트레이스 저장 완료",
+                f"BB 트레이스가 저장되었습니다:\n{trace_path}",
+            )
+        else:
+            QMessageBox.warning(
+                self, "디버그 트레이스",
+                "트레이스 파일이 생성되지 않았습니다. (BB 가 호출되지 않았을 수 있음 — 모듈만 있고 패널이 없는 경우)",
+            )
+
     # ── 메인 실행 ─────────────────────────────────────────
     def _run_transport(self) -> None:
         if not self._design_results or self._current_policy not in self._design_results:
@@ -809,6 +817,11 @@ class TransportTab(QWidget):
 
         if pack.blocked:
             self.transport_blocked.emit(len(pack.blocked))
+        # 회차 0건 — 패킹은 성공했으나 결과적으로 어떤 부재도 못 실음. 사용자 알림.
+        if pack.total_trips == 0:
+            self._show_error(
+                "운송 결과 0회차 — 트럭 카탈로그·현장 제한·부재 치수를 확인하세요. "
+                "(진단 탭에 자세한 사유가 표시됩니다.)")
         # [Phase C] center pane 3D 도식 갱신 신호
         self.transport_pack_updated.emit(pack, self._read_spacing())
         self.set_state("ResultShown")

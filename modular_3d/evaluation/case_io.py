@@ -38,6 +38,7 @@ def save_case(
     project_settings: Any,
     evaluation_data: Optional[Dict[str, Any]],
     name: Optional[str] = None,
+    layout_png_bytes: Optional[bytes] = None,
 ) -> Dict[str, Any]:
     """케이스 파일 저장.
 
@@ -47,10 +48,21 @@ def save_case(
         project_settings: ProjectSettings 인스턴스 또는 None
         evaluation_data: build_evaluation_data() 결과 또는 None
         name: 케이스 이름 (선택)
+        layout_png_bytes: 1층 평면도 PNG raw bytes (선택). 비교탭에서 표시용.
 
     Returns:
         직렬화된 dict (호출자 확인용)
     """
+    # [2026-05-31] 비교탭에서 평면도를 보여주기 위해 PNG 바이트를 base64 로
+    # 인라인 저장. 단일 .case.json 파일 정책 유지 (PDF 별도 없음).
+    import base64
+    layout_b64 = None
+    if layout_png_bytes:
+        try:
+            layout_b64 = base64.b64encode(layout_png_bytes).decode("ascii")
+        except Exception:
+            layout_b64 = None
+
     case = {
         "kind": _CASE_KIND,
         "saved_at": datetime.now().isoformat(timespec="seconds"),
@@ -59,6 +71,9 @@ def save_case(
         "project_settings": _safe_asdict(project_settings),
         "results": {
             "evaluation": evaluation_data or {},
+        },
+        "images": {
+            "layout_png_b64": layout_b64,
         },
     }
     with open(path, "w", encoding="utf-8") as f:

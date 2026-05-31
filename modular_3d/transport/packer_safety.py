@@ -56,9 +56,44 @@ def _nominal_dims_for_posture(item: Item, posture: Posture) -> Tuple[float, floa
     return item.length, item.width, item.thickness
 
 
+def _wall_segment_nominal_box(
+    seg, panel: "Panel",
+) -> Tuple[float, float, float, float, float, float]:
+    """wall_segment 의 *nominal 운송 좌표계* 박스.
+
+    [좌표 — Phase 3 lookup_3d_three.py 의 _serialize_wall_segment 와 일관]
+    - 운송 X = Panel.length 방향, 운송 Y = Panel.width 방향
+    - 벽이 floor 두께 위에 솟음 → z ∈ [thickness, thickness + height]
+    - side 0=하변/1=우변/2=상변/3=좌변
+    """
+    panel_L = float(panel.length)
+    panel_W = float(panel.width)
+    floor_th = float(panel.thickness)
+    seg_th = float(seg.thickness_mm)
+    seg_len = float(seg.length_mm)
+    seg_h = float(seg.height_mm)
+    s_off = float(seg.start_offset_mm)
+    if seg.side == 0:  # 하변
+        x0, x1 = s_off, s_off + seg_len
+        y0, y1 = 0.0, seg_th
+    elif seg.side == 1:  # 우변
+        x0, x1 = panel_L - seg_th, panel_L
+        y0, y1 = s_off, s_off + seg_len
+    elif seg.side == 2:  # 상변
+        x0, x1 = s_off, s_off + seg_len
+        y0, y1 = panel_W - seg_th, panel_W
+    else:  # side 3 — 좌변
+        x0, x1 = 0.0, seg_th
+        y0, y1 = s_off, s_off + seg_len
+    z0 = floor_th
+    z1 = z0 + seg_h
+    return (x0, y0, z0, x1, y1, z1)
+
+
 def boxes_of_component(
     item: Item, posture: Posture,
     trip_xyz_mm: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+    rotation_180: bool = False,
 ) -> List[Tuple[float, float, float, float, float, float]]:
     """컴포넌트의 모든 부재 박스 리스트 (트럭 좌표 mm).
 
@@ -67,10 +102,16 @@ def boxes_of_component(
         posture: LYING / STANDING (Panel 만 STANDING 가능, Module 은 LYING 만)
         trip_xyz_mm: 컴포넌트 좌하단의 트럭 적재함 좌표 (x, y, z) mm.
                      기본값 (0,0,0) 면 nominal 좌표 그대로 반환.
+        rotation_180: True 면 nominal 좌표를 180도 회전 (x→L-x-L_p, y→W-y-W_p).
+                     L자 패널의 벽 segments 위치 회전 시도용 (사용자 규칙 B6).
 
     Returns:
         리스트 of (x_min, y_min, z_min, x_max, y_max, z_max) — 부재 1개당 1 박스.
-        body_parts(부모 자체) + attached_parts(종속) 모두 포함.
+        body_parts(부모 자체) + attached_parts(종속) + wall_segments(L자 벽) 모두 포함.
+
+    [Phase 5-J 추가 — 2026-05-27]
+    - wall_segments 박스를 충돌 검사 대상에 포함 (안전성 ↑ — L자 옆 침범 차단)
+    - rotation_180 옵션 — L자 180도 회전 시도 (완전성 ↑ — 다른 형상 케이스)
 
     [STANDING 처리]
     STANDING 자세는 Panel 만 (벽 패널 세워 운송). body_parts/attached_parts 는
@@ -82,8 +123,17 @@ def boxes_of_component(
 
     is_standing = posture == Posture.STANDING
 
+    # 180도 회전 — nominal (x, y) → (L_nom - x - L_p, W_nom - y - W_p)
+    # 회전 시 *부재 박스 크기 그대로*. 외곽 차원 (L_nom, W_nom) 으로 미러링.
+    L_nom_outer, W_nom_outer, _h_nom = _nominal_dims_for_posture(item, Posture.LYING)
+
     def _add(x: float, y: float, z: float, L: float, W: float, H: float) -> None:
-        """LYING 기준 박스 → trip 좌표 박스. STANDING 시 y↔z 교환."""
+        """LYING 기준 박스 → trip 좌표 박스. rotation_180 + STANDING 처리."""
+        # 180도 회전 (LYING 기준 좌표계에서 적용)
+        if rotation_180:
+            x = L_nom_outer - x - L
+            y = W_nom_outer - y - W
+        # 자세 변환
         if is_standing:
             # nominal (x, y, z, L, W, H) → STANDING (x, z, y, L, H, W)
             x0 = tx + x; y0 = ty + z; z0 = tz + y
@@ -100,6 +150,11 @@ def boxes_of_component(
     # attached_parts — 종속 부재 (캔틸·중간)
     for p in tuple(getattr(item, "attached_parts", ()) or ()):
         _add(p.x_mm, p.y_mm, p.z_mm, p.length_mm, p.width_mm, p.height_mm)
+    # wall_segments — L자 패널의 벽 부분 (Phase 5-J 추가)
+    if isinstance(item, Panel) and item.wall_segments:
+        for seg in item.wall_segments:
+            x0, y0, z0, x1, y1, z1 = _wall_segment_nominal_box(seg, item)
+            _add(x0, y0, z0, x1 - x0, y1 - y0, z1 - z0)
 
     # Fallback — body_parts·attached_parts 비어있는 화물(어댑터가 못 채운 경우 등)
     # 컴포넌트 nominal 박스 1개로 대체.

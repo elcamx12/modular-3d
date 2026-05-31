@@ -12,7 +12,6 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional
 
-import numpy as np
 
 from .topology import AnalysisModel, AnalysisMember
 from .ops_solver import OpsResults, MemberForce
@@ -192,7 +191,7 @@ def extract_envelope_demands(am: AnalysisModel,
                               ) -> Dict[int, MemberDemand]:
     """(2026-05-19 작업 5) 모든 하중조합의 단면력 절댓값 최대로 envelope demand 생성.
 
-    [근거] "지배조합" 옵션 — 5 케이스 중 가장 가혹한 단면력을 부재별로 골라
+    [근거] "지배조합" 옵션 — 전체 하중조합 중 가장 가혹한 단면력을 부재별로 골라
     설계하면 어떤 단일 조합에서도 단면이 안전하다. 사용자가 "지배조합" 선택 시
     이 demand 로 design_for_policy 가 돈다.
 

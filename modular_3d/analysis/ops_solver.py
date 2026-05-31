@@ -344,12 +344,18 @@ def _consolidate_member_loads(am: AnalysisModel, lr: LoadResult) -> Dict[int, Tu
 
 
 def _apply_eleload_factored(om: OpsModel, mid: int,
-                            d_self: float, d_slab: float, live: float) -> float:
-    """1.2D + 1.6L 계수하중을 부재 한 개에 eleLoad 로 적용.
+                            d_self: float, d_slab: float, live: float,
+                            dl_factor: float = LOAD_COMBO_DL,
+                            ll_factor: float = LOAD_COMBO_LL) -> float:
+    """계수 중력하중(dl_factor·D + ll_factor·L)을 부재 한 개에 eleLoad 로 적용.
+
+    [2026-05-30] 하중계수 파라미터화 — 기본값은 1.2D+1.6L(기존 동작).
+    하중조합별로 (dl,ll) 를 달리 줘서 D 단독(1,0)·L 단독(0,1)·전도방지(0.9,0)
+    등을 만든다. D = self_weight+slab_dead, L = live.
 
     Returns: 적용 총 하중 z 성분 [N] (음수 = 중력).
     """
-    w_factored = (LOAD_COMBO_DL * (d_self + d_slab) + LOAD_COMBO_LL * live)
+    w_factored = (dl_factor * (d_self + d_slab) + ll_factor * live)
     if w_factored < 1e-9:
         return 0.0
     # 분할된 보(member_to_split_ele_tags)는 모든 sub-element에 동일 분포하중 적용
@@ -407,8 +413,15 @@ def _apply_eleload_factored(om: OpsModel, mid: int,
 
 
 def solve_vertical(om: OpsModel, scene,
-                   load_result: LoadResult | None = None) -> OpsResults:
-    """수직(D+L = 1.2D + 1.6L) 정적 해석.
+                   load_result: LoadResult | None = None,
+                   dl_factor: float = LOAD_COMBO_DL,
+                   ll_factor: float = LOAD_COMBO_LL,
+                   case_name: str = '1.2D+1.6L') -> OpsResults:
+    """중력 정적 해석. 기본 = D+L(1.2D + 1.6L).
+
+    [2026-05-30] 하중계수·케이스명 파라미터화. (dl_factor, ll_factor) 로
+    D 단독(1,0)·L 단독(0,1) 등 기본 성분 해석을 만들어, solve_all_cases 가
+    이들을 선형 중첩해 KDS 하중조합을 합성한다.
 
     om 은 build_ops_model() 직후 상태여야 함 (ops 모델 등록 완료).
     load_result 가 주어지면 calculate_loads 를 다시 부르지 않고 재사용.
@@ -440,7 +453,8 @@ def solve_vertical(om: OpsModel, scene,
     z_frame = 0.0
     z_by_role: Dict[str, float] = {}
     for mid, (d_self, d_slab, live) in consolidated.items():
-        contrib = _apply_eleload_factored(om, mid, d_self, d_slab, live)
+        contrib = _apply_eleload_factored(om, mid, d_self, d_slab, live,
+                                          dl_factor, ll_factor)
         z_frame += contrib
         if _DBG_VLOAD:
             m = am.members.get(mid)
@@ -474,7 +488,7 @@ def solve_vertical(om: OpsModel, scene,
         raise RuntimeError(f"OpenSees analyze 실패 (return code {ok})")
 
     # 4) 결과 추출
-    res = OpsResults(case_name='1.2D+1.6L')
+    res = OpsResults(case_name=case_name)
     res.total_applied_load_z = total_applied_z
 
     # 4-a) 노드 변위
@@ -903,8 +917,115 @@ def solve_wind(om: OpsModel, scene, direction: str = 'X') -> OpsResults:
     return res
 
 
+# ── 하중조합 합성 (선형 중첩) ────────────────────────────────────
+# [함정 경고] 아래 두 헬퍼는 "해석은 선형 탄성" 이라는 전제에서만 정당하다.
+# 같은 모델·제약(Penalty)로 푼 기본 성분(D/L/Ex/Ey/Wx/Wy)의 부재력·변위는
+# 하중에 선형이므로 산술 합/스칼라배로 임의 KDS 조합을 만들 수 있다.
+# 비선형 요소를 도입하면 이 합성은 즉시 무효 — 그때는 조합별 직접 해석 필요.
+
+
+def _abs_max_pick(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """두 배열을 성분별로 비교해 절댓값이 큰 쪽 값(부호 보존)을 고른다."""
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    return np.where(np.abs(a) >= np.abs(b), a, b)
+
+
+def _linear_combo(case_name: str,
+                  parts: 'list[Tuple[float, OpsResults]]') -> OpsResults:
+    """기본 성분 결과들의 선형결합 Σ(coeff·res) → 새 OpsResults.
+
+    member_forces / member_stations / node_disps / base_reactions / 적용하중
+    을 모두 선형 합성. 부재·노드 키 합집합 기준(누락 성분은 0 취급).
+    """
+    res = OpsResults(case_name=case_name)
+    # 부재력 — 양단 6성분 선형 합
+    all_mids: set = set()
+    for _, r in parts:
+        all_mids.update(r.member_forces.keys())
+    for mid in all_mids:
+        f_i = np.zeros(6); f_j = np.zeros(6)
+        ele_tag = 0; L = 0.0
+        for coeff, r in parts:
+            mf = r.member_forces.get(mid)
+            if mf is None:
+                continue
+            f_i = f_i + coeff * mf.f_i
+            f_j = f_j + coeff * mf.f_j
+            ele_tag = mf.ele_tag; L = mf.L
+        res.member_forces[mid] = MemberForce(
+            member_id=mid, ele_tag=ele_tag, L=L, f_i=f_i, f_j=f_j)
+    # 분포 단면력 (5×6) — 선형 합
+    all_st: set = set()
+    for _, r in parts:
+        all_st.update(r.member_stations.keys())
+    for mid in all_st:
+        acc = None
+        for coeff, r in parts:
+            st = r.member_stations.get(mid)
+            if st is None:
+                continue
+            acc = coeff * st if acc is None else acc + coeff * st
+        if acc is not None:
+            res.member_stations[mid] = acc
+    # 노드 변위 / 베이스 반력 — 선형 합
+    for field_name in ('node_disps', 'base_reactions'):
+        agg: Dict[int, np.ndarray] = {}
+        keys: set = set()
+        for _, r in parts:
+            keys.update(getattr(r, field_name).keys())
+        for nid in keys:
+            v = np.zeros(6)
+            for coeff, r in parts:
+                arr = getattr(r, field_name).get(nid)
+                if arr is not None:
+                    v = v + coeff * np.asarray(arr, dtype=np.float64)
+            agg[nid] = v
+        setattr(res, field_name, agg)
+    # 적용하중 합
+    for attr in ('total_applied_load_x', 'total_applied_load_y',
+                 'total_applied_load_z'):
+        setattr(res, attr,
+                sum(coeff * getattr(r, attr) for coeff, r in parts))
+    return res
+
+
+def _pm_envelope(case_name: str,
+                 grav_parts: 'list[Tuple[float, OpsResults]]',
+                 lat_res: OpsResults) -> OpsResults:
+    """중력 ± 횡력 조합의 ± 포락 결과.
+
+    plus = Σgrav + lat,  minus = Σgrav − lat.
+    부재력·분포단면력은 성분별 |plus|·|minus| 중 큰 쪽을 채택(설계 안전측).
+    변위·반력·적용하중은 표시 대표값으로 plus 를 사용.
+    """
+    plus = _linear_combo(case_name, grav_parts + [(1.0, lat_res)])
+    minus = _linear_combo(case_name, grav_parts + [(-1.0, lat_res)])
+    env = OpsResults(case_name=case_name)
+    for mid, mf_p in plus.member_forces.items():
+        mf_m = minus.member_forces.get(mid)
+        if mf_m is None:
+            env.member_forces[mid] = mf_p
+            continue
+        env.member_forces[mid] = MemberForce(
+            member_id=mid, ele_tag=mf_p.ele_tag, L=mf_p.L,
+            f_i=_abs_max_pick(mf_p.f_i, mf_m.f_i),
+            f_j=_abs_max_pick(mf_p.f_j, mf_m.f_j))
+    for mid, st_p in plus.member_stations.items():
+        st_m = minus.member_stations.get(mid)
+        env.member_stations[mid] = (st_p if st_m is None
+                                    else _abs_max_pick(st_p, st_m))
+    # 변위/반력/적용하중 — plus 대표값
+    env.node_disps = plus.node_disps
+    env.base_reactions = plus.base_reactions
+    env.total_applied_load_x = plus.total_applied_load_x
+    env.total_applied_load_y = plus.total_applied_load_y
+    env.total_applied_load_z = plus.total_applied_load_z
+    return env
+
+
 def solve_all_cases(scene, *, prebuilt_am=None) -> Dict[str, OpsResults]:
-    """5 케이스(D+L, Ex, Ey, Wx, Wy) 자동 해석 — 케이스마다 ops 모델 재빌드.
+    """KDS 하중조합 자동 해석 — 기본 6 성분 해석 후 조합 합성.
 
     Args:
         scene: 해석 대상 Scene.
@@ -914,8 +1035,15 @@ def solve_all_cases(scene, *, prebuilt_am=None) -> Dict[str, OpsResults]:
             am 재빌드 1 회 절감.)
             **ops 도메인 캐싱은 별개 — 5 케이스마다 ops.wipe + 재빌드.**
 
-    Returns:
-        {'D+L': res, 'Ex': res, 'Ey': res, 'Wx': res, 'Wy': res}
+    Returns (노출 조합 — dropdown / 지배조합 envelope 대상):
+        {
+          '1.4D':  1.4D,
+          'D+L':   1.2D + 1.6L,
+          'Ex':    1.2D + 1.0L ± Ex,   'Ey': ...,  'Wx': ...,  'Wy': ...,
+          'Ex_OT': 0.9D ± Ex,          'Ey_OT': ..., 'Wx_OT': ..., 'Wy_OT': ...,
+        }
+    기본 성분(D, L, Ex, Ey, Wx, Wy) 6회만 직접 해석하고 나머지는 선형 중첩.
+    설하중(S) 미구현 → 설하중 들어가는 2개 조합은 반환하지 않는다(추후 구현).
 
     [코어 필수 검증 — 2026-05-12 Q55 (가)]
     Scene 에 RC 코어(Component.CORE) 가 0 개이면 해석 자체를 차단.
@@ -933,30 +1061,43 @@ def solve_all_cases(scene, *, prebuilt_am=None) -> Dict[str, OpsResults]:
     from modular_3d.analysis.topology import build_analysis_model
     from modular_3d.analysis.ops_builder import build_ops_model
 
-    out: Dict[str, OpsResults] = {}
     am = prebuilt_am if prebuilt_am is not None else build_analysis_model(scene)
 
-    # 부재별 하중은 한 번만 계산하고 모든 케이스가 재사용
+    # 부재별 하중은 한 번만 계산하고 모든 기본 해석이 재사용
     lr_cached = calculate_loads(scene, am)
 
-    # D+L
+    # ── 1) 기본 성분 해석 6회 (각 케이스마다 ops 모델 재빌드) ──
+    #   D 단독(1.0D), L 단독(1.0L) — 중력 성분. (dl,ll) 로 분리.
     om = build_ops_model(am, scene=scene)
-    out['D+L'] = solve_vertical(om, scene, load_result=lr_cached)
+    base_D = solve_vertical(om, scene, load_result=lr_cached,
+                            dl_factor=1.0, ll_factor=0.0, case_name='D')
+    om = build_ops_model(am, scene=scene)
+    base_L = solve_vertical(om, scene, load_result=lr_cached,
+                            dl_factor=0.0, ll_factor=1.0, case_name='L')
+    om = build_ops_model(am, scene=scene)
+    base_Ex = solve_seismic(om, scene, 'X', load_result=lr_cached)
+    om = build_ops_model(am, scene=scene)
+    base_Ey = solve_seismic(om, scene, 'Y', load_result=lr_cached)
+    om = build_ops_model(am, scene=scene)
+    base_Wx = solve_wind(om, scene, 'X')
+    om = build_ops_model(am, scene=scene)
+    base_Wy = solve_wind(om, scene, 'Y')
 
-    # Ex
-    om = build_ops_model(am, scene=scene)
-    out['Ex'] = solve_seismic(om, scene, 'X', load_result=lr_cached)
-
-    # Ey
-    om = build_ops_model(am, scene=scene)
-    out['Ey'] = solve_seismic(om, scene, 'Y', load_result=lr_cached)
-
-    # Wx
-    om = build_ops_model(am, scene=scene)
-    out['Wx'] = solve_wind(om, scene, 'X')
-
-    # Wy
-    om = build_ops_model(am, scene=scene)
-    out['Wy'] = solve_wind(om, scene, 'Y')
+    # ── 2) 노출 조합 합성 (선형 중첩) ──
+    out: Dict[str, OpsResults] = {}
+    # 중력 단독 조합
+    out['1.4D'] = _linear_combo('1.4D', [(1.4, base_D)])
+    out['D+L'] = _linear_combo('1.2D+1.6L', [(1.2, base_D), (1.6, base_L)])
+    # 중력+횡력 (1.2D+1.0L ± 횡력) / 전도방지 (0.9D ± 횡력)
+    grav_strength = [(1.2, base_D), (1.0, base_L)]
+    grav_overturn = [(0.9, base_D)]
+    for key, disp_name, lat in (
+        ('Ex', '1.2D+1.0L±Ex', base_Ex),
+        ('Ey', '1.2D+1.0L±Ey', base_Ey),
+        ('Wx', '1.2D+1.0L±Wx', base_Wx),
+        ('Wy', '1.2D+1.0L±Wy', base_Wy),
+    ):
+        out[key] = _pm_envelope(disp_name, grav_strength, lat)
+        out[f'{key}_OT'] = _pm_envelope(f'0.9D±{key}', grav_overturn, lat)
 
     return out

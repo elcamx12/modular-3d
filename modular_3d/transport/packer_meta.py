@@ -37,7 +37,7 @@ from .packer_types import Item
 
 # ── 무작위 시드 기본 설정 ─────────────────────────────────────────
 DEFAULT_RANDOM_SEED_BASE: int = 42
-N_RANDOM_SEEDS: int = 30
+N_RANDOM_SEEDS: int = 0  # 2026-05-27 축소 — lookahead 도입 후 효과 미미
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -431,13 +431,6 @@ def pack_all_seeds_v2(
     early_exit = False
     pruned_count = 0
     seed_idx = 0
-
-    def _maybe_prune_half(seed_best_partial: float, current_best: float) -> bool:
-        """n/2 시점 가지치기 — 부분 비용이 현재 최저 × 임계 이상이면 폐기."""
-        if current_best == float("inf"):
-            return False
-        threshold = _adaptive_threshold(cost_history, current_best)
-        return seed_best_partial >= current_best * threshold
 
     current_best = float("inf")
 

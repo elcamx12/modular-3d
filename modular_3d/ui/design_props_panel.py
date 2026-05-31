@@ -69,13 +69,7 @@ class DesignPropertiesPanel(QWidget):
         sep.setFrameShape(QFrame.HLine)
         lay.addWidget(sep)
 
-        # ── 활성/선택 부재 정보 ─────────────────────────
-        self._active_label = QLabel('활성 부재: (없음)')
-        self._active_label.setStyleSheet('color: #06c; font-size: 11px;')
-        self._active_label.setWordWrap(True)
-        self._active_label.setMinimumWidth(0)
-        lay.addWidget(self._active_label)
-
+        # ── 선택 부재 정보 ([E2] 활성 부재 표시 제거 — 선택 부재만) ─────
         self._selected_label = QLabel('선택 부재: (없음)')
         self._selected_label.setStyleSheet('font-size: 11px;')
         self._selected_label.setWordWrap(True)
@@ -125,28 +119,38 @@ class DesignPropertiesPanel(QWidget):
     # ── 외부 API ─────────────────────────────────────
 
     def refresh_active(self, comp_type: Optional[ComponentType]):
-        """활성 부재 변경 시 호출 — 라벨 갱신."""
-        if comp_type is None:
-            self._active_label.setText('활성 부재: (없음)')
-        else:
-            name = TYPE_NAMES.get(comp_type, str(comp_type))
-            self._active_label.setText(f'활성 부재: {name}')
+        """[E2] 활성 부재 표시 제거 — 선택 부재만 표시하므로 동작 없음."""
+        return
 
     def refresh_selected(self, comp_id: int):
-        """선택 부재 변경 시 호출 — 라벨 + 보 단면 타입 콤보 갱신."""
+        """선택 부재 변경 시 호출 — 라벨 + 보 단면 타입 콤보 갱신.
+
+        [E3·E4] ID 미표기. 타입은 모듈A-1 체계(독립부재) 또는 타입명(종속/기타),
+        위치 + 부재/컴포넌트 크기(width×depth×height) 표기.
+        """
         self._sel_id = int(comp_id)
         if comp_id <= 0 or comp_id not in self._scene.components:
             self._selected_label.setText('선택 부재: (없음)')
             self._sec_row.setVisible(False)
             return
         comp = self._scene.components[comp_id]
-        name = TYPE_NAMES.get(comp.comp_type, str(comp.comp_type))
+        # [E4] 타입 표기 — 독립부재는 '모듈A-1', 종속/기타는 타입명.
+        from modular_3d.model.type_naming import classify_component_types
+        labels = classify_component_types(self._scene)
+        type_label = labels.get(comp_id) or TYPE_NAMES.get(
+            comp.comp_type, str(comp.comp_type))
         x, y, z = (float(comp.position[0]),
                    float(comp.position[1]),
                    float(comp.position[2]))
+        # [E3] 크기 — dimensions 중 있는 값만 (width×depth×height).
+        d = getattr(comp, 'dimensions', {}) or {}
+        size_parts = [f'{float(d[k]):.0f}' for k in ('width', 'depth', 'height')
+                      if d.get(k)]
+        size_str = '×'.join(size_parts) if size_parts else '-'
         self._selected_label.setText(
-            f'선택 부재: id={comp_id}\n  타입={name}\n'
-            f'  위치=({x:.0f}, {y:.0f}, {z:.0f})'
+            f'선택 부재: {type_label}\n'
+            f'  위치=({x:.0f}, {y:.0f}, {z:.0f})\n'
+            f'  크기={size_str} mm'
         )
         self._refresh_section_combo(comp)
 

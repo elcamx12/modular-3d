@@ -189,16 +189,8 @@ def _pick_heaviest(sections: List[SHSSection]) -> Optional[SHSSection]:
     return max(sections, key=lambda s: s.weight_per_m_kg)
 
 
-# ── 라벨 (comp_meta 재구성) ────────────────────────────────
-def _alpha_label(i: int) -> str:
-    """0=a, 1=b, ... 25=z, 26=aa, ..."""
-    s = ""
-    n = i + 1
-    while n > 0:
-        n -= 1
-        s = chr(ord("a") + n % 26) + s
-        n //= 26
-    return s
+# ── 라벨 (comp_meta 재구성) — _utils/format.py 의 공용 함수 사용 ────────
+from modular_3d._utils.format import alpha_label as _alpha_label
 
 
 def build_comp_meta(scene: Scene, model) -> Dict[int, Tuple[str, int, str]]:
@@ -238,16 +230,6 @@ def _format_label(meta: Tuple[str, int, str], cid: int) -> str:
 
 
 # ── 부재 그룹화 헬퍼 (모듈 4 기둥 / 8 보 등) ───────────────
-def _classify_module_member(mid: int, model) -> str:
-    """부재 mid 가 기둥/보/캔틸 등 어느 카테고리인지 — group_categories 와 동일.
-
-    단순화: AnalysisModel.members[mid].member_type (string) 또는 카테고리
-    추정. 본 어댑터는 design_result.member_to_group 의 그룹명을 사용해 우회.
-    """
-    m = model.members.get(mid)
-    if m is None:
-        return "?"
-    return getattr(m, "kind", getattr(m, "member_type", "?"))
 
 
 # ── 비내력벽 자중 합산 (4 면) ──────────────────────────────
@@ -521,8 +503,13 @@ def _nominal_to_transport_box(
 
 def _make_body_part(
     kind: str, nominal_aabb, subkind: str = "",
+    section_type: str = "shs",
 ) -> Optional[BodyPart]:
-    """nominal AABB → BodyPart (운송 좌표계 변환 후 생성). 영부피면 None."""
+    """nominal AABB → BodyPart (운송 좌표계 변환 후 생성). 영부피면 None.
+
+    section_type: 보(kind="beam")의 단면 형상('shs'|'h'). 정상 자세의 보는
+    웨브가 연직이라 web_dir=(0,0,1) 로 둔다(눕히기 remap 에서 축 순열 적용).
+    """
     x, y, z, L, W, H = _nominal_to_transport_box(nominal_aabb)
     if L <= 1e-3 or W <= 1e-3 or H <= 1e-3:
         return None
@@ -530,12 +517,14 @@ def _make_body_part(
         kind=kind, subkind=subkind,
         x_mm=float(x), y_mm=float(y), z_mm=float(z),
         length_mm=float(L), width_mm=float(W), height_mm=float(H),
+        section_type=section_type,
+        web_dx=0.0, web_dy=0.0, web_dz=1.0,
     )
 
 
 def _make_attached_part(
     kind: str, source_kind: str, nominal_aabb, subkind: str = "",
-    section_name: str = "",
+    section_name: str = "", section_type: str = "shs",
 ) -> Optional[AttachedPart]:
     """nominal AABB → AttachedPart (운송 좌표계 변환 후 생성). 영부피면 None."""
     x, y, z, L, W, H = _nominal_to_transport_box(nominal_aabb)
@@ -546,6 +535,8 @@ def _make_attached_part(
         x_mm=float(x), y_mm=float(y), z_mm=float(z),
         length_mm=float(L), width_mm=float(W), height_mm=float(H),
         section_name=section_name,
+        section_type=section_type,
+        web_dx=0.0, web_dy=0.0, web_dz=1.0,
     )
 
 
@@ -558,10 +549,12 @@ def _collect_module_body_parts(
         bp = _make_body_part("column", _nominal_aabb_column(c, comp))
         if bp is not None: parts.append(bp)
     for b in comp.bottom_beams:
-        bp = _make_body_part("beam", _nominal_aabb_beam(b, comp), subkind="bottom")
+        bp = _make_body_part("beam", _nominal_aabb_beam(b, comp), subkind="bottom",
+                             section_type=getattr(b, "section_type", "shs"))
         if bp is not None: parts.append(bp)
     for b in comp.top_beams:
-        bp = _make_body_part("beam", _nominal_aabb_beam(b, comp), subkind="top")
+        bp = _make_body_part("beam", _nominal_aabb_beam(b, comp), subkind="top",
+                             section_type=getattr(b, "section_type", "shs"))
         if bp is not None: parts.append(bp)
     if comp.slab is not None:
         bp = _make_body_part("slab", _nominal_aabb_slab(comp.slab, comp))
@@ -580,7 +573,8 @@ def _collect_floor_body_parts(
     """바닥패널 — 둘레 보 4 + 슬래브 1."""
     parts: List[BodyPart] = []
     for b in comp.edge_beams:
-        bp = _make_body_part("beam", _nominal_aabb_beam(b, comp), subkind="perim")
+        bp = _make_body_part("beam", _nominal_aabb_beam(b, comp), subkind="perim",
+                             section_type=getattr(b, "section_type", "shs"))
         if bp is not None: parts.append(bp)
     if comp.slab is not None:
         bp = _make_body_part("slab", _nominal_aabb_slab(comp.slab, comp))
@@ -597,10 +591,12 @@ def _collect_wall_body_parts(
         bp = _make_body_part("column", _nominal_aabb_column(c, comp))
         if bp is not None: parts.append(bp)
     if comp.bottom_runner is not None:
-        bp = _make_body_part("beam", _nominal_aabb_beam(comp.bottom_runner, comp), subkind="runner")
+        bp = _make_body_part("beam", _nominal_aabb_beam(comp.bottom_runner, comp), subkind="runner",
+                             section_type=getattr(comp.bottom_runner, "section_type", "shs"))
         if bp is not None: parts.append(bp)
     if comp.top_runner is not None:
-        bp = _make_body_part("beam", _nominal_aabb_beam(comp.top_runner, comp), subkind="runner")
+        bp = _make_body_part("beam", _nominal_aabb_beam(comp.top_runner, comp), subkind="runner",
+                             section_type=getattr(comp.top_runner, "section_type", "shs"))
         if bp is not None: parts.append(bp)
     if comp.wall_fill is not None:
         nab = _nominal_aabb_wallpanel(comp.wall_fill, comp)
@@ -625,23 +621,18 @@ def _collect_v3_body_parts(
         if bp is not None: parts.append(bp)
     for fb in comp.bottom_beams:
         for b in fb:
-            bp = _make_body_part("beam", _nominal_aabb_beam(b, comp), subkind="bottom")
+            bp = _make_body_part("beam", _nominal_aabb_beam(b, comp), subkind="bottom",
+                                 section_type=getattr(b, "section_type", "shs"))
             if bp is not None: parts.append(bp)
     for b in comp.top_beams:
-        bp = _make_body_part("beam", _nominal_aabb_beam(b, comp), subkind="top")
+        bp = _make_body_part("beam", _nominal_aabb_beam(b, comp), subkind="top",
+                             section_type=getattr(b, "section_type", "shs"))
         if bp is not None: parts.append(bp)
     for s in comp.slabs:
         bp = _make_body_part("slab", _nominal_aabb_slab(s, comp))
         if bp is not None: parts.append(bp)
     return tuple(parts)
 
-
-def _attached_part_kind(comp: Component) -> Optional[str]:
-    if isinstance(comp, MidBeam): return "midbeam"
-    if isinstance(comp, MidColumn): return "midcolumn"
-    if isinstance(comp, CantileverBeam): return "cantilever_beam"
-    if isinstance(comp, CantileverSlab): return "cantilever_slab"
-    return None
 
 
 # ── 종속 부재 → 부재 단위 AttachedPart 다중 생성 ─────────────
@@ -657,6 +648,7 @@ def _collect_child_parts(
         ap = _make_attached_part(
             "beam", "midbeam", _nominal_aabb_beam(child.beam, parent_comp),
             section_name=sec_name,
+            section_type=getattr(child.beam, "section_type", "shs"),
         )
         if ap is not None: out.append(ap)
     elif isinstance(child, MidColumn) and child.column is not None:
@@ -670,6 +662,7 @@ def _collect_child_parts(
             "beam", "cantilever_beam",
             _nominal_aabb_beam(child.beam, parent_comp),
             section_name=sec_name,
+            section_type=getattr(child.beam, "section_type", "shs"),
         )
         if ap is not None: out.append(ap)
     elif isinstance(child, CantileverSlab):
@@ -678,6 +671,7 @@ def _collect_child_parts(
                 "beam", "cantilever_slab",
                 _nominal_aabb_beam(b, parent_comp),
                 subkind="perim", section_name=sec_name,
+                section_type=getattr(b, "section_type", "shs"),
             )
             if ap is not None: out.append(ap)
         if child.slab is not None:
@@ -689,48 +683,6 @@ def _collect_child_parts(
             if ap is not None: out.append(ap)
     return out
 
-
-def _attached_part_nominal_aabb_OLD(
-    child: Component, parent_comp: Component,
-) -> Optional[Tuple[Tuple[float, float, float], Tuple[float, float, float]]]:
-    """종속 부재의 nominal AABB (부모 좌표계 기준).
-
-    각 종속 부재가 자신의 generate_sub_components 로 만든 *실제 부재 좌표*
-    (BeamData / ColumnData / SlabData) 를 직접 사용해서 nominal AABB 산출.
-    부재 자체 회전·앵커는 월드 좌표에 이미 반영됐고, 부모 회전·앵커는
-    _world_to_parent_nominal 이 풀어준다. → 부모/자식 회전 무관 정합.
-    """
-    points: List[np.ndarray] = []
-    extra_z_thickness = 0.0
-    extra_xy_sect = 0.0
-    if isinstance(child, MidBeam) and child.beam is not None:
-        points = [child.beam.start, child.beam.end]
-        extra_xy_sect = max(float(child.beam.section_w), float(child.beam.section_h))
-    elif isinstance(child, MidColumn) and child.column is not None:
-        points = [child.column.base, child.column.top]
-        extra_xy_sect = max(float(child.column.section_w), float(child.column.section_h))
-    elif isinstance(child, CantileverBeam) and child.beam is not None:
-        points = [child.beam.start, child.beam.end]
-        extra_xy_sect = max(float(child.beam.section_w), float(child.beam.section_h))
-    elif isinstance(child, CantileverSlab):
-        # 슬래브가 가장 큰 외곽 → corners 만 사용
-        if child.slab is not None:
-            (xmin, ymin, zmin), (xmax, ymax, _zmax) = _nominal_aabb_of_points(
-                child.slab.corners, parent_comp,
-            )
-            return ((xmin, ymin, zmin), (xmax, ymax, zmin + float(child.slab.thickness)))
-        # fallback — 보로만 처리
-        for b in child.beams:
-            points.append(b.start); points.append(b.end)
-    if not points:
-        return None
-    nps = [_world_to_parent_nominal(p, parent_comp) for p in points]
-    xs = [p[0] for p in nps]; ys = [p[1] for p in nps]; zs = [p[2] for p in nps]
-    half = extra_xy_sect / 2
-    return (
-        (min(xs) - half, min(ys) - half, min(zs) - half),
-        (max(xs) + half, max(ys) + half, max(zs) + half),
-    )
 
 
 def _remap_part_v3_lying(bp: BodyPart) -> BodyPart:
@@ -754,6 +706,9 @@ def _remap_part_v3_lying(bp: BodyPart) -> BodyPart:
         kind=bp.kind, subkind=bp.subkind,
         x_mm=bp.z_mm, y_mm=bp.y_mm, z_mm=bp.x_mm,
         length_mm=bp.height_mm, width_mm=bp.width_mm, height_mm=bp.length_mm,
+        section_type=bp.section_type,
+        # 좌표 순열(x←z, y←y, z←x)과 동일하게 웨브 방향도 순열.
+        web_dx=bp.web_dz, web_dy=bp.web_dy, web_dz=bp.web_dx,
     )
 
 
@@ -763,6 +718,8 @@ def _remap_attached_v3_lying(ap: AttachedPart) -> AttachedPart:
         x_mm=ap.z_mm, y_mm=ap.y_mm, z_mm=ap.x_mm,
         length_mm=ap.height_mm, width_mm=ap.width_mm, height_mm=ap.length_mm,
         section_name=ap.section_name,
+        section_type=ap.section_type,
+        web_dx=ap.web_dz, web_dy=ap.web_dy, web_dz=ap.web_dx,
     )
 
 
@@ -787,6 +744,9 @@ def _remap_part_wall_lying(bp: BodyPart) -> BodyPart:
         kind=bp.kind, subkind=bp.subkind,
         x_mm=bp.y_mm, y_mm=bp.z_mm, z_mm=bp.x_mm,
         length_mm=bp.width_mm, width_mm=bp.height_mm, height_mm=bp.length_mm,
+        section_type=bp.section_type,
+        # 좌표 순열(x←y, y←z, z←x)과 동일하게 웨브 방향도 순열.
+        web_dx=bp.web_dy, web_dy=bp.web_dz, web_dz=bp.web_dx,
     )
 
 
@@ -850,7 +810,10 @@ def _z_normalize_parts(
         BodyPart(kind=bp.kind, subkind=bp.subkind,
                  x_mm=bp.x_mm + sx, y_mm=bp.y_mm + sy, z_mm=bp.z_mm + sz,
                  length_mm=bp.length_mm, width_mm=bp.width_mm,
-                 height_mm=bp.height_mm)
+                 height_mm=bp.height_mm,
+                 # H형강 단면·웨브 방향 보존 (평행이동은 형상·방향 불변).
+                 section_type=bp.section_type,
+                 web_dx=bp.web_dx, web_dy=bp.web_dy, web_dz=bp.web_dz)
         for bp in body
     )
     new_attached = tuple(
@@ -858,7 +821,9 @@ def _z_normalize_parts(
                      x_mm=ap.x_mm + sx, y_mm=ap.y_mm + sy, z_mm=ap.z_mm + sz,
                      length_mm=ap.length_mm, width_mm=ap.width_mm,
                      height_mm=ap.height_mm,
-                     section_name=ap.section_name)
+                     section_name=ap.section_name,
+                     section_type=ap.section_type,
+                     web_dx=ap.web_dx, web_dy=ap.web_dy, web_dz=ap.web_dz)
         for ap in attached
     )
     return new_body, new_attached

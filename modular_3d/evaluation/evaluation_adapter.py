@@ -31,12 +31,18 @@ from ..model.core import (
     FloorPanel,
     StructWall,
     CoreSlab,
+    Core,
     CantileverBeam,
     CantileverSlab,
     MidBeam,
     MidColumn,
     InteriorWall,
 )
+try:
+    # 모듈 비내력 외벽 두께 — 카탈로그 상수가 있으면 사용, 없으면 100mm 가정.
+    from ..카탈로그.geometry import NONBEARING_WALL_THICKNESS_MM as _NB_WALL_T
+except Exception:
+    _NB_WALL_T = 100.0
 
 
 # ── 좌표 보조 ─────────────────────────────────────────────
@@ -111,36 +117,159 @@ def _build_headline(comps: List[Component], project_settings: Optional[Any]) -> 
             total_mm2_per_floor[f] = total_mm2_per_floor.get(f, 0.0) + (xmax - xmin) * (ymax - ymin)
     total_floor_area_m2 = sum(total_mm2_per_floor.values()) / 1.0e6
 
+    eff = _compute_floor1_effective_area(comps)
+
     return {
         "floors_above_ground": int(floors_above),
         "basement_floors": basement,
         "modules_total": int(len(modules)),
         "footprint_m2": round(footprint_m2, 1),
         "total_floor_area_m2": round(total_floor_area_m2, 1),
+        "effective_area_floor1": eff,
+    }
+
+
+# ── A-2. 1F 유효면적 비율 ──────────────────────────────────
+def _compute_floor1_effective_area(comps: List[Component]) -> Dict[str, float]:
+    """1F 기준 (사용 가능한 면적) / (한 층 전체 면적) 비율.
+
+    [정의 — 사용자 합의 2026-05-31]
+    - 전체 면적(gross): 1F 모듈 외곽 + 코어 슬래브 + 캔틸레버 슬래브 AABB 합.
+      → 1층에서 사람이 밟고 다닐 수 있는 모든 바닥의 총합.
+    - 빼는 면적: 위에서 봤을 때 기둥·벽이 차지하는 평면 면적.
+      - 모듈 코너 기둥 4 개 × (section_w × section_h)
+      - 모듈 외벽 4면 (둘레 × 비내력 벽 두께) — 모서리 중복은 4·t² 빼서 보정
+      - 1F 의 StructWall / InteriorWall / Core(코어벽): width × depth (위에서 본 면적)
+      - 1F 의 MidColumn: section_w × section_h
+    - 사용 가능 면적(net) = gross − 위 합. ratio = net / gross.
+
+    중간보·캔틸레버보 등 "보" 부재는 위에서 본 점유 면적이 작고 본질적으로
+    천장에 매달리는 부재라 빼지 않음(거주자 입장에서 머리 위 통과).
+    """
+    floor = 0  # 1F 만
+
+    gross_mm2 = 0.0
+
+    # 1F 를 지나는 모듈 모으기
+    floor1_modules: List[Component] = []
+    for c in comps:
+        if isinstance(c, (Module, Vertical3Module)):
+            s0, s1 = _module_floor_span(c)
+            if s0 <= floor <= s1:
+                floor1_modules.append(c)
+                xmin, ymin, _, xmax, ymax, _ = _aabb(c)
+                gross_mm2 += (xmax - xmin) * (ymax - ymin)
+
+    # 1F 코어 슬래브 + 캔틸레버 슬래브 (1F 위에 놓이는 바닥)
+    for c in comps:
+        if not isinstance(c, (CoreSlab, CantileverSlab)):
+            continue
+        f = int(getattr(c, "floor_index", 0))
+        if f != floor:
+            continue
+        xmin, ymin, _, xmax, ymax, _ = _aabb(c)
+        gross_mm2 += (xmax - xmin) * (ymax - ymin)
+
+    if gross_mm2 <= 0.0:
+        return {"gross_m2": 0.0, "net_m2": 0.0, "ratio_pct": 0.0}
+
+    sub_mm2 = 0.0
+
+    # 모듈: 코너 기둥 4개 + 외벽 4면 둘레
+    for m in floor1_modules:
+        w = float(m.dimensions.get("width", 0.0))
+        d = float(m.dimensions.get("depth", 0.0))
+        cols = getattr(m, "columns", []) or []
+        for col in cols:
+            sw = float(getattr(col, "section_w", 200.0) or 200.0)
+            sh = float(getattr(col, "section_h", 200.0) or 200.0)
+            sub_mm2 += sw * sh
+        # 4 면 외벽 (둘레 × 두께) − 모서리 4 개 중복 t²
+        t = float(_NB_WALL_T)
+        perimeter = 2.0 * (w + d)
+        sub_mm2 += perimeter * t - 4.0 * t * t
+
+    # 1F 의 구조벽 / 내벽 / 코어벽 / 중간기둥
+    for c in comps:
+        f = int(getattr(c, "floor_index", 0))
+        if f != floor:
+            continue
+        if isinstance(c, StructWall):
+            w = float(c.dimensions.get("width", 0.0))
+            d = float(c.dimensions.get("depth", 200.0))
+            sub_mm2 += w * d
+        elif isinstance(c, InteriorWall):
+            w = float(c.dimensions.get("width", 0.0))
+            d = float(c.dimensions.get("depth", _NB_WALL_T))
+            sub_mm2 += w * d
+        elif isinstance(c, Core):
+            w = float(c.dimensions.get("width", 0.0))
+            d = float(c.dimensions.get("depth", 300.0))
+            sub_mm2 += w * d
+        elif isinstance(c, MidColumn):
+            col = getattr(c, "column", None)
+            if col is not None:
+                sw = float(getattr(col, "section_w", 200.0) or 200.0)
+                sh = float(getattr(col, "section_h", 200.0) or 200.0)
+                sub_mm2 += sw * sh
+
+    net_mm2 = max(0.0, gross_mm2 - sub_mm2)
+    return {
+        "gross_m2": round(gross_mm2 / 1.0e6, 2),
+        "net_m2":   round(net_mm2 / 1.0e6, 2),
+        "ratio_pct": round(net_mm2 / gross_mm2 * 100.0, 1),
     }
 
 
 # ── B. 부재 구성 ──────────────────────────────────────────
 def _build_members(comps: List[Component]) -> Dict[str, Any]:
-    module_buckets: Dict[Tuple[int, int], int] = {}
+    """모듈·패널을 *외곽 치수 + 강재 시그니처* 두 단계로 그룹화.
+
+    [2026-05-31 옵션 B]
+    - 1차 키: 외곽 (a_mm, b_mm). 외곽이 같은 모듈끼리 같은 알파벳(A, B, …) 부여.
+    - 2차 키: 강재 단면 시그니처 tuple (기둥·보 라벨 모음).
+      같은 외곽 안에서 강재가 다르면 'A-1타입', 'A-2타입' 변형 번호 부여.
+    - 변형이 1 개뿐이면 그냥 'A타입' (변형 번호 없음).
+    """
+    # 1) 모듈을 (외곽, 강재 시그니처) 키로 카운트.
+    module_buckets: Dict[Tuple[int, int, Tuple[str, ...]], int] = {}
     for c in comps:
         if not isinstance(c, (Module, Vertical3Module)):
             continue
         xmin, ymin, _z0, xmax, ymax, _z1 = _aabb(c)
         a, b = sorted([round((xmax - xmin) / 1000.0, 2), round((ymax - ymin) / 1000.0, 2)])
-        key = (int(a * 1000), int(b * 1000))
+        a_mm = int(a * 1000); b_mm = int(b * 1000)
+        secs = tuple(_collect_module_sections(c))
+        key = (a_mm, b_mm, secs)
         module_buckets[key] = module_buckets.get(key, 0) + 1
+
+    # 2) 외곽별로 변형 그룹핑 → 알파벳·변형 번호 부여.
+    outer_to_variants: Dict[Tuple[int, int],
+                             List[Tuple[Tuple[str, ...], int]]] = {}
+    for (a_mm, b_mm, secs), n in module_buckets.items():
+        outer_to_variants.setdefault((a_mm, b_mm), []).append((secs, n))
+    # 외곽 그룹 정렬: 총 개수 많은 외곽 먼저.
+    outer_sorted = sorted(
+        outer_to_variants.items(),
+        key=lambda kv: (-sum(n for _, n in kv[1]), kv[0]),
+    )
     modules_by_type: List[Dict[str, Any]] = []
     name_iter = iter("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
-    for key, n in sorted(module_buckets.items(), key=lambda kv: (-kv[1], kv[0])):
-        a_mm, b_mm = key
-        modules_by_type.append({
-            "name": next(name_iter, "X") + "타입",
-            "width_m": a_mm / 1000.0,
-            "length_m": b_mm / 1000.0,
-            "count": int(n),
-            "area_m2": round(a_mm * b_mm / 1.0e6, 2),
-        })
+    for (a_mm, b_mm), variants in outer_sorted:
+        alpha = next(name_iter, "X")
+        # 변형 내부 정렬: 개수 많은 변형 먼저.
+        variants.sort(key=lambda v: (-v[1], v[0]))
+        single = (len(variants) == 1)
+        for vi, (secs, n) in enumerate(variants, 1):
+            type_name = f"{alpha}타입" if single else f"{alpha}-{vi}타입"
+            modules_by_type.append({
+                "name": type_name,
+                "width_m": a_mm / 1000.0,
+                "length_m": b_mm / 1000.0,
+                "count": int(n),
+                "area_m2": round(a_mm * b_mm / 1.0e6, 2),
+                "sections": ", ".join(secs) if secs else "—",
+            })
 
     panels = {
         "floor_panel": sum(1 for c in comps if isinstance(c, FloorPanel)),
@@ -148,13 +277,222 @@ def _build_members(comps: List[Component]) -> Dict[str, Any]:
         "interior_wall": sum(1 for c in comps if isinstance(c, InteriorWall)),
         "core_slab": sum(1 for c in comps if isinstance(c, CoreSlab)),
     }
+    # [2026-05-31 옵션 B] 패널도 같은 방식 — (class, 외곽) 그룹 내부에서
+    # 강재 시그니처 다르면 '바닥패널-1 / 바닥패널-2' 변형 번호.
+    _PANEL_CLASS_KO = {
+        FloorPanel: "바닥패널",
+        StructWall: "구조벽",
+        InteriorWall: "내벽",
+        CoreSlab: "코어슬래브",
+    }
+    panel_buckets: Dict[Tuple[str, int, int, Tuple[str, ...]], int] = {}
+    for c in comps:
+        cls_label = None
+        for cls, label in _PANEL_CLASS_KO.items():
+            if isinstance(c, cls):
+                cls_label = label
+                break
+        if cls_label is None:
+            continue
+        try:
+            w = float(c.dimensions.get("width", 0.0))
+            d = float(c.dimensions.get("depth", 0.0))
+            h = float(c.dimensions.get("height", 0.0))
+        except Exception:
+            w = d = h = 0.0
+        sides = sorted([w, d, h], reverse=True)
+        a_mm = int(round(sides[0] / 100.0) * 100)
+        b_mm = int(round(sides[1] / 100.0) * 100)
+        secs = tuple(_collect_panel_sections(c))
+        key = (cls_label, a_mm, b_mm, secs)
+        panel_buckets[key] = panel_buckets.get(key, 0) + 1
+
+    # (class, 외곽) 별로 변형 묶기
+    pnl_outer_to_variants: Dict[Tuple[str, int, int],
+                                 List[Tuple[Tuple[str, ...], int]]] = {}
+    for (label, a_mm, b_mm, secs), n in panel_buckets.items():
+        pnl_outer_to_variants.setdefault((label, a_mm, b_mm), []).append((secs, n))
+    pnl_outer_sorted = sorted(
+        pnl_outer_to_variants.items(),
+        key=lambda kv: (kv[0][0], -sum(n for _, n in kv[1]), kv[0][1:]),
+    )
+    panels_by_type: List[Dict[str, Any]] = []
+    for (label, a_mm, b_mm), variants in pnl_outer_sorted:
+        variants.sort(key=lambda v: (-v[1], v[0]))
+        single = (len(variants) == 1)
+        for vi, (secs, n) in enumerate(variants, 1):
+            class_name = label if single else f"{label}-{vi}"
+            panels_by_type.append({
+                "class_label": class_name,
+                "width_m": round(a_mm / 1000.0, 2),
+                "depth_m": round(b_mm / 1000.0, 2),
+                "count": int(n),
+                "sections": ", ".join(secs) if secs else "—",
+            })
+
     attached = {
         "cantilever_beam": sum(1 for c in comps if isinstance(c, CantileverBeam)),
         "cantilever_slab": sum(1 for c in comps if isinstance(c, CantileverSlab)),
         "mid_beam": sum(1 for c in comps if isinstance(c, MidBeam)),
         "mid_column": sum(1 for c in comps if isinstance(c, MidColumn)),
     }
-    return {"modules_by_type": modules_by_type, "panels": panels, "attached": attached}
+    # 그룹화 자체에 sections 가 들어가 있으므로 _enrich_with_sections 호출 불필요.
+
+    return {
+        "modules_by_type": modules_by_type,
+        "panels": panels,
+        "panels_by_type": panels_by_type,
+        "attached": attached,
+    }
+
+
+def _section_label(obj: Any) -> Optional[str]:
+    """기둥/보/슬래브 sub-component → 'SHS 200×200×8' 같은 라벨.
+
+    [2026-05-31] BeamData/ColumnData 는 section_type('shs'|'h') + section_w/h/t 로
+    구성. 라벨을 그 둘을 합쳐 생성한다 (예: 'SHS 200×200×8', 'H 200×100×8').
+    SlabData 는 thickness 만 → 'T150'.
+    """
+    # 1) 사람이 미리 박아둔 라벨이 있으면 그대로 사용
+    for attr in ("section_label", "section_name"):
+        v = getattr(obj, attr, None)
+        if v:
+            return str(v)
+    # 2) BeamData / ColumnData — 형상 + 치수 조합
+    sw = getattr(obj, "section_w", None)
+    sh = getattr(obj, "section_h", None)
+    st = getattr(obj, "section_t", None)
+    if sw is not None and sh is not None:
+        stype = getattr(obj, "section_type", None)
+        head = "H" if (stype and str(stype).lower() == "h") else "SHS"
+        if st is not None:
+            return f"{head} {int(sw)}×{int(sh)}×{int(st)}"
+        return f"{head} {int(sw)}×{int(sh)}"
+    # 3) SlabData — 두께만
+    thick = getattr(obj, "thickness", None)
+    if thick is not None:
+        return f"T{int(thick)}"
+    # 4) dict 형식 fallback
+    if isinstance(obj, dict):
+        for k in ("section_label", "section_name"):
+            v = obj.get(k)
+            if v:
+                return str(v)
+        if "section_w" in obj and "section_h" in obj:
+            sw_ = obj["section_w"]; sh_ = obj["section_h"]; st_ = obj.get("section_t")
+            stype = obj.get("section_type")
+            head = "H" if (stype and str(stype).lower() == "h") else "SHS"
+            return (f"{head} {int(sw_)}×{int(sh_)}×{int(st_)}"
+                    if st_ is not None
+                    else f"{head} {int(sw_)}×{int(sh_)}")
+        if "thickness" in obj:
+            return f"T{int(obj['thickness'])}"
+    # 5) 마지막 fallback — section_type 만이라도
+    v = getattr(obj, "section_type", None)
+    if v:
+        return str(v).upper()
+    return None
+
+
+def _collect_module_sections(c: Component) -> List[str]:
+    """한 모듈에서 사용된 기둥·보 단면 라벨 수집 (중복 제거)."""
+    found: List[str] = []
+    for attr in ("columns", "top_beams", "bottom_beams",
+                 "edge_beams", "beams"):
+        seq = getattr(c, attr, None)
+        if not seq:
+            continue
+        try:
+            for item in seq:
+                lbl = _section_label(item)
+                if lbl and lbl not in found:
+                    found.append(lbl)
+        except TypeError:
+            pass
+    return found
+
+
+def _collect_panel_sections(c: Component) -> List[str]:
+    """패널(바닥패널/벽패널/코어슬래브)의 단면 라벨 수집."""
+    found: List[str] = []
+    # 가장자리 보 / 보
+    for attr in ("edge_beams", "beams", "studs", "posts"):
+        seq = getattr(c, attr, None)
+        if not seq:
+            continue
+        try:
+            for item in seq:
+                lbl = _section_label(item)
+                if lbl and lbl not in found:
+                    found.append(lbl)
+        except TypeError:
+            pass
+    # 슬래브 — SlabData 자체에 thickness 있음, _section_label 이 'T150' 로 만든다.
+    slab = getattr(c, "slab", None)
+    if slab is not None:
+        lbl = _section_label(slab)
+        if lbl and lbl not in found:
+            found.append(lbl)
+    return found
+
+
+def _enrich_with_sections(modules_by_type: List[Dict[str, Any]],
+                           panels_by_type: List[Dict[str, Any]],
+                           comps: List[Component]) -> None:
+    """타입별 사용 단면을 'sections' 키에 문자열로 부착."""
+    # 모듈 — 같은 (폭, 길이) 버킷에 들어간 첫 모듈에서 단면 추출.
+    mod_section_cache: Dict[Tuple[int, int], List[str]] = {}
+    for c in comps:
+        if not isinstance(c, (Module, Vertical3Module)):
+            continue
+        xmin, ymin, _z0, xmax, ymax, _z1 = _aabb(c)
+        a, b = sorted([round((xmax - xmin) / 1000.0, 2), round((ymax - ymin) / 1000.0, 2)])
+        key = (int(a * 1000), int(b * 1000))
+        if key in mod_section_cache:
+            continue
+        secs = _collect_module_sections(c)
+        if secs:
+            mod_section_cache[key] = secs
+    for mt in modules_by_type:
+        key = (int(round(mt["width_m"] * 1000)), int(round(mt["length_m"] * 1000)))
+        secs = mod_section_cache.get(key, [])
+        mt["sections"] = ", ".join(secs) if secs else "—"
+
+    # 패널 — (class, 폭mm, 깊이mm) 버킷별 첫 인스턴스에서 단면 추출.
+    pnl_section_cache: Dict[Tuple[str, int, int], List[str]] = {}
+    cls_ko_map = {
+        FloorPanel: "바닥패널", StructWall: "구조벽",
+        InteriorWall: "내벽", CoreSlab: "코어슬래브",
+    }
+    for c in comps:
+        cls_label = None
+        for cls, lbl in cls_ko_map.items():
+            if isinstance(c, cls):
+                cls_label = lbl
+                break
+        if cls_label is None:
+            continue
+        try:
+            w = float(c.dimensions.get("width", 0.0))
+            d = float(c.dimensions.get("depth", 0.0))
+            h = float(c.dimensions.get("height", 0.0))
+        except Exception:
+            w = d = h = 0.0
+        sides = sorted([w, d, h], reverse=True)
+        a_mm = int(round(sides[0] / 100.0) * 100)
+        b_mm = int(round(sides[1] / 100.0) * 100)
+        key = (cls_label, a_mm, b_mm)
+        if key in pnl_section_cache:
+            continue
+        secs = _collect_panel_sections(c)
+        if secs:
+            pnl_section_cache[key] = secs
+    for p in panels_by_type:
+        key = (p["class_label"],
+               int(round(p["width_m"] * 1000)),
+               int(round(p["depth_m"] * 1000)))
+        secs = pnl_section_cache.get(key, [])
+        p["sections"] = ", ".join(secs) if secs else "—"
 
 
 # ── C. 물량·자재비 ────────────────────────────────────────
@@ -365,7 +703,24 @@ def build_evaluation_data(
         "transport_ok": bool(transport.get("available")),
         "schedule_ok": bool(schedule.get("available")),
     }
+    # [2026-05-31] 케이스 식별 헤더 — 지역·착공일·평가작성일.
+    # project_settings 의 region_city / start_date 그대로 노출.
+    # eval_date 는 평가 시점에 시스템 날짜로 채움(없으면 빈 문자열).
+    case: Dict[str, Any] = {}
+    if project_settings is not None:
+        case["region"] = str(getattr(project_settings, "region_city", "") or "")
+        case["start_date"] = str(getattr(project_settings, "start_date", "") or "")
+        # 프로젝트명 필드가 추후 추가될 수 있으니 우선 안전 접근.
+        name = getattr(project_settings, "project_name", None)
+        if name:
+            case["name"] = str(name)
+    try:
+        from datetime import date
+        case["eval_date"] = date.today().isoformat()
+    except Exception:
+        pass
     return {
+        "case": case,
         "headline": headline,
         "members": members,
         "materials": materials,

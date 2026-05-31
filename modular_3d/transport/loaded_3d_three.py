@@ -174,6 +174,11 @@ def _serialize_attached_part(
         "width_m": part.width_mm / 1000.0,
         "height_m": part.height_mm / 1000.0,
         "section_name": part.section_name,
+        # H형강 운송 렌더 — 보면 I자 압출 + 웨브 방향(운송 좌표계).
+        "section_type": getattr(part, "section_type", "shs"),
+        "web_dir": [getattr(part, "web_dx", 0.0),
+                    getattr(part, "web_dy", 0.0),
+                    getattr(part, "web_dz", 1.0)],
     }
 
 
@@ -196,178 +201,16 @@ def _serialize_body_parts(
             "length_m": bp.length_mm / 1000.0,
             "width_m": bp.width_mm / 1000.0,
             "height_m": bp.height_mm / 1000.0,
+            # H형강 운송 렌더 — 보면 I자 압출 + 웨브 방향(운송 좌표계).
+            "section_type": getattr(bp, "section_type", "shs"),
+            "web_dir": [getattr(bp, "web_dx", 0.0),
+                        getattr(bp, "web_dy", 0.0),
+                        getattr(bp, "web_dz", 1.0)],
         })
     return out
 
 
-def _serialize_module_parts_LEGACY(
-    item: Module, x0_m: float, y0_m: float, z0_m: float,
-    L_m: float, W_m: float, H_m: float,
-) -> Dict:
-    """[폐기 — Phase 3-fix] 추정 분해. body_parts 우선 사용. 호환용 보존.
 
-    모듈을 *기둥 4 + 하부보 4 + 상부보 4 + 슬래브* 부재로 분해.
-
-    [좌표 규약 — 배치 설계 모델(_SECTION_W=200mm) 과 정합]
-    - 기둥: 4 모서리, 모듈 표면에서 *반단면* 인셋. 높이 = H 전체.
-    - 보: 둘레 4변 × 상하 2단 = 8 개. 상부보 z = H-beam_h, 하부보 z = 0.
-    - 슬래브: *바닥* (하부보 위) 150mm 두께. 수직 N-모듈은 N장.
-    - is_vertical_lying=True (수직 N-모듈 눕힘 운송) 면 슬래브가 *측면* 방향
-      (운송 시 width 방향 = 원래 모듈 두께) 으로 N장 분포.
-    """
-    col_w_m = item.column_section.width / 1000.0
-    col_d_m = item.column_section.height / 1000.0  # SHS 는 width==height
-    beam_w_m = item.beam_section.width / 1000.0
-    beam_h_m = item.beam_section.height / 1000.0
-    slab_t_m = 0.15
-    n_floors = max(1, int(getattr(item, "n_floors", 1) or 1))
-    is_v_lying = bool(getattr(item, "is_vertical_lying", False))
-    # 인셋 — 배치 모델은 기둥 중심을 (half_s, half_s) 에 두므로 기둥 *바깥면* 이
-    # 모듈 표면(0,0) 과 일치. 즉 기둥 좌하단 = (0,0). 보는 기둥 사이에 위치.
-    inset = col_w_m  # 보가 기둥 안쪽으로 들어가는 길이
-
-    # 4 모서리 기둥
-    columns = []
-    corners = [
-        (0.0, 0.0),
-        (L_m - col_w_m, 0.0),
-        (L_m - col_w_m, W_m - col_d_m),
-        (0.0, W_m - col_d_m),
-    ]
-    for (cx_off, cy_off) in corners:
-        columns.append({
-            "x_m": x0_m + cx_off, "y_m": y0_m + cy_off, "z_m": z0_m,
-            "length_m": col_w_m, "width_m": col_d_m, "height_m": H_m,
-        })
-
-    # 보 8개 (상하 × 둘레 4변)
-    beams = []
-    for z_off, level in [(0.0, "bottom"), (H_m - beam_h_m, "top")]:
-        # X 방향 보 2개 (y=0 변, y=W-beam_w 변) — 기둥 사이만 잇도록 inset
-        for by in [0.0, W_m - beam_w_m]:
-            beams.append({
-                "x_m": x0_m + inset, "y_m": y0_m + by, "z_m": z0_m + z_off,
-                "length_m": L_m - 2 * inset, "width_m": beam_w_m,
-                "height_m": beam_h_m, "level": level,
-            })
-        # Y 방향 보 2개 (x=0 변, x=L-beam_w 변)
-        for bx in [0.0, L_m - beam_w_m]:
-            beams.append({
-                "x_m": x0_m + bx, "y_m": y0_m + inset, "z_m": z0_m + z_off,
-                "length_m": beam_w_m, "width_m": W_m - 2 * inset,
-                "height_m": beam_h_m, "level": level,
-            })
-
-    # 슬래브 — 위치는 모듈 *바닥*(하부보 위). 수직 N-모듈은 N장 분포.
-    slabs = []
-    if not is_v_lying:
-        # 일반 (또는 세움) 모듈: z 방향 N층 분포
-        for fi in range(n_floors):
-            # 한 층의 z 시작 (단순화: H/n_floors 등간격)
-            slab_z = z0_m + beam_h_m + fi * (H_m / n_floors)
-            slabs.append({
-                "x_m": x0_m + inset, "y_m": y0_m + inset, "z_m": slab_z,
-                "length_m": L_m - 2 * inset, "width_m": W_m - 2 * inset,
-                "height_m": slab_t_m,
-            })
-    else:
-        # 수직 N-모듈 눕힘 — 원래 *수직 적층 슬래브* 가 이제 *길이 방향 (X)* 분포.
-        # 즉 운송 length(=원래 height) 를 N 등분한 위치마다 슬래브가 *모듈
-        # 단면* (W × H) 으로 솟음. 시각적으로 N층임을 알 수 있게.
-        slab_segment = L_m / n_floors
-        for fi in range(n_floors):
-            slabs.append({
-                "x_m": x0_m + fi * slab_segment + inset, "y_m": y0_m + inset,
-                "z_m": z0_m + beam_h_m,
-                "length_m": slab_t_m, "width_m": W_m - 2 * inset,
-                "height_m": H_m - beam_h_m * 2,
-            })
-
-    return {"columns": columns, "beams": beams, "slabs": slabs}
-
-
-def _serialize_floor_panel_parts(
-    item: Panel, x0_m: float, y0_m: float, z0_m: float,
-    L_m: float, W_m: float, h_m: float,
-) -> Dict:
-    """floor 패널 = 둘레 보 4 + 슬래브 1 분해."""
-    beam_w_m = item.beam_section.width / 1000.0
-    beam_h_m = item.beam_section.height / 1000.0
-    slab_t_m = item.thickness / 1000.0
-    beams = []
-    # 4 둘레 보 (z=0 단)
-    for by in [0.0, W_m - beam_w_m]:
-        beams.append({
-            "x_m": x0_m, "y_m": y0_m + by, "z_m": z0_m,
-            "length_m": L_m, "width_m": beam_w_m, "height_m": beam_h_m,
-            "level": "perimeter",
-        })
-    for bx in [0.0, L_m - beam_w_m]:
-        beams.append({
-            "x_m": x0_m + bx, "y_m": y0_m + beam_w_m, "z_m": z0_m,
-            "length_m": beam_w_m, "width_m": max(W_m - 2 * beam_w_m, 0.001),
-            "height_m": beam_h_m, "level": "perimeter",
-        })
-    # 슬래브 — 보 위
-    slab = {
-        "x_m": x0_m + beam_w_m, "y_m": y0_m + beam_w_m,
-        "z_m": z0_m + beam_h_m,
-        "length_m": max(L_m - 2 * beam_w_m, 0.001),
-        "width_m": max(W_m - 2 * beam_w_m, 0.001),
-        "height_m": slab_t_m,
-    }
-    return {"beams": beams, "slabs": [slab]}
-
-
-def _serialize_wall_panel_parts(
-    item: Panel, x0_m: float, y0_m: float, z0_m: float,
-    L_m: float, W_m: float, h_m: float, posture: Posture,
-) -> Dict:
-    """벽 패널(kind='wall') = 양쪽 기둥 2 + 위·아래 보 2 + 채움 분해.
-
-    [좌표 규약] Panel(kind='wall') 의 운송 매핑:
-      LYING:   length=벽 길이, width=벽 두께(thickness, 작음), height=벽 높이
-      STANDING: length=벽 길이, width=벽 두께(작음 → 높이방향), height=벽 *길이* 가 아닌
-                width 가 높이방향이 됨 (A-frame). 단 본 함수는 LYING 기준 분해만
-                반환 — STANDING 시각화는 본체 박스 + attached 만으로 충분.
-    벽 두께 W_m 가 매우 얇아서 기둥/보 단면이 W_m 보다 두꺼울 수 있음 → 최소
-    clamp 로 처리.
-    """
-    if posture == Posture.STANDING or item.column_section is None:
-        return {"beams": [], "slabs": [], "columns": []}
-    col_w_m = item.column_section.width / 1000.0
-    col_d_m = item.column_section.height / 1000.0
-    beam_w_m = item.beam_section.width / 1000.0
-    beam_h_m = item.beam_section.height / 1000.0
-    fill_t_m = item.thickness / 1000.0  # 채움 두께
-
-    columns = []
-    # 양쪽 기둥 (x=0, x=L-col_w)
-    for cx_off in [0.0, L_m - col_w_m]:
-        columns.append({
-            "x_m": x0_m + cx_off, "y_m": y0_m + (W_m - col_d_m) / 2,
-            "z_m": z0_m,
-            "length_m": col_w_m, "width_m": min(col_d_m, W_m),
-            "height_m": h_m,
-        })
-    # 위·아래 보
-    beams = []
-    for z_off, level in [(0.0, "bottom"), (h_m - beam_h_m, "top")]:
-        beams.append({
-            "x_m": x0_m + col_w_m, "y_m": y0_m + (W_m - beam_w_m) / 2,
-            "z_m": z0_m + z_off,
-            "length_m": max(L_m - 2 * col_w_m, 0.001),
-            "width_m": min(beam_w_m, W_m), "height_m": beam_h_m,
-            "level": level,
-        })
-    # 채움 (벽 패널 본체 — 시각적으로 얇은 박스)
-    fill = {
-        "x_m": x0_m + col_w_m, "y_m": y0_m + (W_m - fill_t_m) / 2,
-        "z_m": z0_m + beam_h_m,
-        "length_m": max(L_m - 2 * col_w_m, 0.001),
-        "width_m": fill_t_m, "height_m": max(h_m - 2 * beam_h_m, 0.001),
-    }
-    return {"columns": columns, "beams": beams, "fills": [fill]}
 
 
 def _serialize_placement(p: Placement, truck: Truck) -> Dict:
@@ -1101,6 +944,109 @@ function _addGroupLabels(data) {
   }
 }
 
+// H형강 보 — 박스 대신 I자 단면을 길이방향으로 압출. (2026-05-28)
+// 좌표·치수 규약은 _addPyBox 와 동일(Python x=길이축성분, y=폭, z=높이 → three
+// X=길이, Y=높이, Z=폭). 단면은 200×200 고정(웨브 t1=8, 플랜지 t2=12mm).
+// webDirPy: *운송(Python) 좌표계* 웨브(강축) 단위벡터 [dx,dy,dz]. 건물 단면을
+// 그대로 회전시킨 값이라, 이 방향으로 웨브를 세워 강축/약축을 정확히 표현한다.
+function _addBeamHsection(g, trip, x_m, y_m, z_m, L_m, W_m, H_m, webDirPy, color, opts) {
+  opts = opts || {};
+  const T1 = 0.008, T2 = 0.012;   // 웨브/플랜지 두께(m) — H200×200 카탈로그
+  // 박스 중심 (three 좌표)
+  const cx = trip.x_offset_m + x_m + L_m / 2;
+  const cy = z_m + H_m / 2;
+  const cz = y_m + W_m / 2;
+  // three 축별 박스 치수: [X=길이방향, Y=높이, Z=폭]
+  const dims = [L_m, H_m, W_m];
+  // 길이축 = 최장축
+  let lenAxis = 0;
+  if (dims[1] > dims[lenAxis]) lenAxis = 1;
+  if (dims[2] > dims[lenAxis]) lenAxis = 2;
+  // 웨브축(three) — webDirPy(Python x,y,z) → three(x, z, y)
+  const wt = [webDirPy[0], webDirPy[2], webDirPy[1]];
+  let webAxis = 0;
+  for (let i = 1; i < 3; i++) if (Math.abs(wt[i]) > Math.abs(wt[webAxis])) webAxis = i;
+  if (webAxis === lenAxis) {
+    // 안전장치 — 직교가 깨지면 박스로 폴백.
+    _addPyBox(g, trip, x_m, y_m, z_m, L_m, W_m, H_m, color, opts);
+    return;
+  }
+  const flangeAxis = 3 - lenAxis - webAxis;  // 나머지 축
+  const length = dims[lenAxis];
+  const Hsec = dims[webAxis];     // 단면 높이(웨브 방향)
+  const Bsec = dims[flangeAxis];  // 플랜지 폭
+
+  // I자 2D 단면 (로컬 X=플랜지폭, Y=웨브높이) — mesh_builder.build_h_section 과 동일.
+  const hb = Bsec / 2, hh = Hsec / 2, tw = T1 / 2, hw = hh - T2;
+  const shape = new THREE.Shape();
+  const pts = [
+    [-hb, -hh], [hb, -hh], [hb, -hw], [tw, -hw],
+    [tw, hw], [hb, hw], [hb, hh], [-hb, hh],
+    [-hb, hw], [-tw, hw], [-tw, -hw], [-hb, -hw],
+  ];
+  shape.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i][0], pts[i][1]);
+  shape.closePath();
+  const geom = new THREE.ExtrudeGeometry(shape, { depth: length, bevelEnabled: false });
+  geom.translate(0, 0, -length / 2);  // 길이 중심 정렬(로컬 Z)
+
+  // 로컬축(X=플랜지, Y=웨브, Z=길이) → three 월드축 정렬 회전행렬.
+  // [중요] 축 단위벡터를 그대로 makeBasis 하면 길이축이 X 인 경우 행렬식이
+  // -1(반사)이 되어 setRotationFromMatrix 가 90° 틀어진 회전으로 근사한다.
+  // 플랜지 방향을 (웨브 × 길이) 외적으로 구해 항상 오른손 좌표(det=+1)를 보장.
+  const e = (i) => {
+    const v = new THREE.Vector3(0, 0, 0);
+    v.setComponent(i, 1);
+    return v;
+  };
+  const lenVec = e(lenAxis);
+  const webVec = e(webAxis);
+  if (wt[webAxis] < 0) webVec.multiplyScalar(-1);
+  const flangeVec = new THREE.Vector3().crossVectors(webVec, lenVec).normalize();
+  const basis = new THREE.Matrix4().makeBasis(flangeVec, webVec, lenVec);
+
+  const mat = new THREE.MeshStandardMaterial({
+    color: color,
+    roughness: opts.roughness !== undefined ? opts.roughness : 0.7,
+    metalness: opts.metalness !== undefined ? opts.metalness : 0.0,
+    transparent: true,
+    opacity: opts.opacity !== undefined ? opts.opacity : 0.95,
+  });
+  const mesh = new THREE.Mesh(geom, mat);
+  mesh.setRotationFromMatrix(basis);
+  mesh.position.set(cx, cy, cz);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  mesh.userData.baseOpacity = mat.opacity;
+  mesh.userData.role = opts.role || 'cargo';
+  if (opts.label) mesh.userData.label = opts.label;
+  g.add(mesh);
+  if (opts.role === 'cargo' || !opts.role) allCargoMeshes.push(mesh);
+  if (opts.withEdges !== false) {
+    const edges = new THREE.EdgesGeometry(mesh.geometry);
+    const edgeColor = opts.edgeColor !== undefined ? opts.edgeColor : 0x222222;
+    const line = new THREE.LineSegments(
+      edges, new THREE.LineBasicMaterial({ color: edgeColor })
+    );
+    line.setRotationFromMatrix(basis);
+    line.position.copy(mesh.position);
+    g.add(line);
+  }
+  return mesh;
+}
+
+// 보 부재 1개를 그린다 — H형강이면 I자, 아니면 박스. (분기 진입점)
+function _addPartMesh(g, trip, part, color, opts) {
+  if (part.kind === 'beam' && part.section_type === 'h' && part.web_dir) {
+    _addBeamHsection(g, trip, part.x_m, part.y_m, part.z_m,
+                     part.length_m, part.width_m, part.height_m,
+                     part.web_dir, color, opts);
+  } else {
+    _addPyBox(g, trip, part.x_m, part.y_m, part.z_m,
+              part.length_m, part.width_m, part.height_m, color, opts);
+  }
+}
+
 // Python(x=길이,y=폭,z=높이,m) 좌표의 박스 → Three.js mesh (Y=높이, Z=폭).
 // trip.x_offset_m 은 *그룹 X 오프셋* (회차마다 다름) — 본 함수는 *trip 로컬* 좌표
 // (즉 트럭 좌측 끝 기준) 의 좌하단을 받아 trip.x_offset_m 만 더해 배치.
@@ -1207,9 +1153,7 @@ function buildPlacement(g, trip, p) {
   if (bodyParts.length > 0) {
     for (const bp of bodyParts) {
       const styled = _stylePart(bp, p, 'own');
-      _addPyBox(g, trip, bp.x_m, bp.y_m, bp.z_m,
-                bp.length_m, bp.width_m, bp.height_m,
-                styled.color, styled.opts);
+      _addPartMesh(g, trip, bp, styled.color, styled.opts);
     }
   } else {
     // Fallback — body_parts 없는 화물 단일 박스
@@ -1231,9 +1175,7 @@ function buildPlacement(g, trip, p) {
   // ── attached_parts — 종속 컴포넌트의 *모든 부재* (보·기둥·슬래브 별도) ─
   for (const ap of (p.attached_parts || [])) {
     const styled = _stylePart(ap, p, ap.source_kind || 'own');
-    _addPyBox(g, trip, ap.x_m, ap.y_m, ap.z_m,
-              ap.length_m, ap.width_m, ap.height_m,
-              styled.color, styled.opts);
+    _addPartMesh(g, trip, ap, styled.color, styled.opts);
   }
 
   // wall_segments — 종속 floor 의 솟은 벽

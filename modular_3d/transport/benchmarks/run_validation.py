@@ -24,7 +24,6 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from modular_3d.transport import legacy_packer
-from modular_3d.transport.models import SiteLimit, SpacingParams
 from modular_3d.transport.packer import PackResult
 from modular_3d.transport.packer_core import EcoOptions, default_eco_options
 from modular_3d.transport.packer_meta import (

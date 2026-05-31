@@ -45,7 +45,7 @@ def test_transport_tab_has_core_methods():
         "_build_ui", "_build_area_status", "_build_area_options",
         "_build_area_metrics", "_build_area_subtabs",
         "_build_subtab_trip_table", "_build_subtab_util_chart",
-        "_build_subtab_views", "_build_subtab_economics",
+        "_build_subtab_economics",
         "set_scene_and_model", "set_design_result", "set_state",
         "_read_options", "_read_spacing", "_read_economics_options",
         "_run_transport",

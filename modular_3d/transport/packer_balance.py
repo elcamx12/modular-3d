@@ -188,10 +188,21 @@ def _balance_one_trip(trip: Trip, sp: SpacingParams) -> None:
     """같은 단·자리 내에서 10 mm 격자 슬라이드 — 회차 COG 거리 최소화.
 
     in-place 수정 — trip.placements 만 갱신. 비용 영향 0.
+
+    [버그 fix — 2026-05-28]
+    적층 자식 패널 (parent_idx != None) 은 슬라이드 안 함. 그런데 *적층 부모*
+    가 슬라이드 시 *자식이 따라가지 않아* 자식이 *부모 위에서 벗어나 다른 패널
+    영역으로 돌출* → 시각화 충돌 발생. 자식 동행 추적 코드는 부모-자식 관계
+    인덱스 명시가 필요한데 현재 BLF 가 parent_idx=0 마커만 설정 — 실제 부모
+    인덱스 식별 불가. 안전을 위해 *적층이 있는 회차는 슬라이드 자체 비활성화*.
     """
     placements = list(trip.placements)
     if len(placements) <= 1:
         return  # 화물 1 개 이하면 슬라이드 의미 없음
+
+    # 적층 있는 회차는 슬라이드 X (자식 동행 추적 불가, BB 좌표 보전)
+    if any(p.parent_idx is not None for p in placements):
+        return
 
     improved = True
     it = 0

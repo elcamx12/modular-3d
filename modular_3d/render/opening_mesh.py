@@ -231,7 +231,10 @@ def resolve_opening_face(comp, wx, wy):
                 best_d, best_i = d, i
         w = float(comp.dimensions.get('width', 3000.0))
         dd = float(comp.dimensions.get('depth', 6000.0))
-        band = min(700.0, 0.3 * min(w, dd))
+        # 클릭점이 벽으로 인식되는 폭 임계 — 부재 짧은 변의 30% 또는 700mm 중 작은 값.
+        WALL_HIT_BAND_MAX_MM = 700.0
+        WALL_HIT_BAND_RATIO = 0.3
+        band = min(WALL_HIT_BAND_MAX_MM, WALL_HIT_BAND_RATIO * min(w, dd))
         if best_i >= 0 and best_d <= band:
             return f'wall_{best_i}'
         if getattr(comp, 'slab', None) is not None:

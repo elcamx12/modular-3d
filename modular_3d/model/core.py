@@ -111,6 +111,20 @@ def _rotate_local_to_world(lx: float, ly: float, lz: float,
     return pos + np.array([rx, ry, lz], dtype=np.float64)
 
 
+def make_local_to_world(ax: float, ay: float, rotation: int,
+                        pos: np.ndarray):
+    """부재의 anchor·rotation·position 을 캡처한 로컬→월드 변환 closure 반환.
+
+    각 sub-component 생성/추출 시 자기 부재의 ax/ay/rotation/pos 를 captures
+    해서 (lx, ly, lz) → 월드 좌표 변환 함수를 만든다. 이전엔 21개 nested
+    `def to_world` 가 같은 closure 패턴을 반복했는데, 본 factory 한 줄로 통일.
+    분리 의도(부재별 캡처)는 보존.
+    """
+    def to_world(lx, ly, lz):
+        return _rotate_local_to_world(lx - ax, ly - ay, lz, rotation, pos)
+    return to_world
+
+
 # ── 부재 클래스 ──────────────────────────────────────────────
 
 @dataclass
@@ -281,9 +295,7 @@ class Module(Component):
         rot = self.rotation
         pos = self.position
 
-        def to_world(lx, ly, lz):
-            return _rotate_local_to_world(lx - ax, ly - ay, lz, rot, pos)
-
+        to_world = make_local_to_world(ax, ay, rot, pos)
         # 기둥 4개 (코너, 하부보 하면 ~ 상부보 상면)
         self.columns = []
         col_bot = -half_s          # 하부보 하면
@@ -387,9 +399,7 @@ class FloorPanel(Component):
         rot = self.rotation
         pos = self.position
 
-        def to_world(lx, ly, lz):
-            return _rotate_local_to_world(lx - ax, ly - ay, lz, rot, pos)
-
+        to_world = make_local_to_world(ax, ay, rot, pos)
         # 가장자리 보 4개 (z=0)
         self.edge_beams = []
         for by in [half_s, d - half_s]:
@@ -439,9 +449,7 @@ class StructWall(Component):
         rot = self.rotation
         pos = self.position
 
-        def to_world(lx, ly, lz):
-            return _rotate_local_to_world(lx - ax, ly - ay, lz, rot, pos)
-
+        to_world = make_local_to_world(ax, ay, rot, pos)
         # 양쪽 기둥 (하부런너 하면 ~ 상부런너 상면)
         col_bot = -half_s
         col_top = h - half_s  # h - s + half_s
@@ -503,9 +511,7 @@ class InteriorWall(Component):
         rot = self.rotation
         pos = self.position
 
-        def to_world(lx, ly, lz):
-            return _rotate_local_to_world(lx - ax, ly - ay, lz, rot, pos)
-
+        to_world = make_local_to_world(ax, ay, rot, pos)
         # 채움 판 — 면 코너 [원점, +u, +u+v, +v] (u=길이 x, v=높이 z).
         # 두께 방향(y)은 중심선 half_d 한 평면, 메시가 thickness 만큼 양쪽 확장.
         wz0 = half_s
@@ -561,9 +567,7 @@ class Vertical3Module(Component):
         rot = self.rotation
         pos = self.position
 
-        def to_world(lx, ly, lz):
-            return _rotate_local_to_world(lx - ax, ly - ay, lz, rot, pos)
-
+        to_world = make_local_to_world(ax, ay, rot, pos)
         # ── 4 코너 기둥 (3층 통기둥, 분절은 토폴로지에서) ──
         col_bot = -half_s
         col_top = 2 * H + h - half_s   # = 6840 + 3300 = 10140
@@ -660,9 +664,7 @@ class Core(Component):
         rot = self.rotation
         pos = self.position
 
-        def to_world(lx, ly, lz):
-            return _rotate_local_to_world(lx - ax, ly - ay, lz, rot, pos)
-
+        to_world = make_local_to_world(ax, ay, rot, pos)
         # 벽 중앙 평면 좌표 — wide-column frame 의 양 끝 노드 위치.
         cx = w / 2.0
         cy = d / 2.0
@@ -711,9 +713,7 @@ class CoreSlab(Component):
         rot = self.rotation
         pos = self.position
 
-        def to_world(lx, ly, lz):
-            return _rotate_local_to_world(lx - ax, ly - ay, lz, rot, pos)
-
+        to_world = make_local_to_world(ax, ay, rot, pos)
         # 슬래브 하면 = position.z (월드).
         self.slab = SlabData(
             corners=np.array([
@@ -742,9 +742,7 @@ class CantileverBeam(Component):
         rot = self.rotation
         pos = self.position
 
-        def to_world(lx, ly, lz):
-            return _rotate_local_to_world(lx - ax, ly - ay, lz, rot, pos)
-
+        to_world = make_local_to_world(ax, ay, rot, pos)
         self.beam = BeamData(
             start=to_world(0, half_s, 0), end=to_world(w, half_s, 0))
         self._apply_beam_section_type()
@@ -768,9 +766,7 @@ class CantileverSlab(Component):
         rot = self.rotation
         pos = self.position
 
-        def to_world(lx, ly, lz):
-            return _rotate_local_to_world(lx - ax, ly - ay, lz, rot, pos)
-
+        to_world = make_local_to_world(ax, ay, rot, pos)
         # 3변 보 (접합면 제외: x=0 쪽이 모듈 접합면).
         # 좌·우변 빔(축이 길이 방향)은 공칭 길이 w 그대로 보존 → 끝점 x=w.
         # 끝변 빔(축이 폭 방향)만 x = w - half_s 로 안쪽 이동.
@@ -812,9 +808,7 @@ class MidBeam(Component):
         rot = self.rotation
         pos = self.position
 
-        def to_world(lx, ly, lz):
-            return _rotate_local_to_world(lx - ax, ly - ay, lz, rot, pos)
-
+        to_world = make_local_to_world(ax, ay, rot, pos)
         self.beam = BeamData(
             start=to_world(0, half_s, 0), end=to_world(w, half_s, 0))
         self._apply_beam_section_type()
@@ -836,9 +830,7 @@ class MidColumn(Component):
         rot = self.rotation
         pos = self.position
 
-        def to_world(lx, ly, lz):
-            return _rotate_local_to_world(lx - ax, ly - ay, lz, rot, pos)
-
+        to_world = make_local_to_world(ax, ay, rot, pos)
         self.column = ColumnData(
             base=to_world(half_s, half_s, -half_s),
             top=to_world(half_s, half_s, h - half_s))

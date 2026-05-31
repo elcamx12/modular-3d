@@ -162,18 +162,6 @@ class OpsModel:
 # ── 인터페이스 검출 ────────────────────────────────────────────
 
 
-def _is_cantilever_node(model: AnalysisModel, nid: int) -> bool:
-    """노드가 캔틸레버 부재(`cantilever_beam`/`cantilever_slab_beam`)에 속하면 True.
-
-    캔틸레버는 휨모멘트를 모듈로 전달해야 하므로 핀이 아니라 강체로 묶어야 한다.
-    """
-    for m in model.members.values():
-        if nid not in (m.n1, m.n2):
-            continue
-        if 'cantilever' in m.role:
-            return True
-    return False
-
 
 # ── OpenSees 빌드 ──────────────────────────────────────────────
 
@@ -220,11 +208,25 @@ def _section_props(member: AnalysisMember) -> Tuple[float, float, float, float]:
         # 가 부재별 등가 단면 폭/높이를 계산해 넣음.
         A = float(member.section_w) * float(member.section_h)
         return A, 0.0, 0.0, 0.0
+    # [2026-05-31 단면 설계 수렴] 배정 단면(design_section)이 *있을 때만* 그 강성을 쓴다.
+    #   - 단면 설계 탭의 수렴이 그룹 선정 단면을 부재에 write-back 한 경우만 해당.
+    #   - 미설계(design_section=None) 부재는 아래 기존 분기(공칭) 그대로 → 단면 설계 전
+    #     구조해석/물량 결과 *완전* 불변. 일부 부재는 section_w/h/t 가 비표준(슬래브 격자
+    #     등) 이라 그 치수로 SHS 물성을 계산하면 특이강성→analyze 실패(-3) 가 나므로,
+    #     미설계 부재는 반드시 고정 공칭(SHS_200x200x8)을 쓴다.
+    ds = getattr(member, 'design_section', None)
+    if ds is not None:
+        # H형강 단면 객체는 Ix(강축)·Iy(약축) 보유 → Iz 자리에 Ix 매핑(strength_check 일관).
+        if getattr(member, 'section_type', 'shs') == 'h':
+            return ds.A, ds.Iy, ds.Ix, ds.J
+        # 각형강관(SHSSection) — Iy/Iz 그대로.
+        return ds.A, ds.Iy, ds.Iz, ds.J
     # H형강 보 — 공칭 H200×200 강성(자동설계 전 초기값). 강축(Ix)을 Iz 로,
     # 약축(Iy)을 Iy 로 매핑 → 해석 Mz(로컬 z 모멘트)=강축, strength_check 와 일관.
     if member.kind == 'beam' and getattr(member, 'section_type', 'shs') == 'h':
         hs = _nominal_h_section()
         return hs.A, hs.Iy, hs.Ix, hs.J
+    # 각형강관(SHS) — 고정 공칭(기존 동작). 단면 설계로 design_section 이 박히면 위에서 처리.
     p = SHS_200x200x8
     return p['A'], p['Iy'], p['Iz'], p['J']
 
@@ -536,46 +538,6 @@ def _step_fix_base_nodes(om: OpsModel, am: AnalysisModel) -> None:
     if om.spec is not None:
         om.spec.base_z = om.base_z
 
-
-def _step_fix_first_floor_panel_nodes(om: OpsModel, am: AnalysisModel, scene) -> None:
-    """[2026-05-11] 1층(z=base) 의 FloorPanel 코너 노드를 6DOF 고정.
-
-    v6 정책으로 FLOOR_PANEL 의 floor_index 0 (z=base) 도 자동 생성되므로,
-    그 패널의 자중·하중이 베이스로 빠지지 않도록 지면 안착 모델로 처리한다.
-
-    동작:
-    - scene 의 FLOOR_PANEL 중 position.z ≈ base_z 인 것의 comp_to_nodes 노드 중
-      z ≈ base_z 인 노드를 fixed_nodes 에 추가.
-    - 이미 fixed 된 노드(코너 기둥 베이스 등)는 중복 호출 없이 skip.
-    """
-    if scene is None or not am.nodes:
-        return
-    from modular_3d.model import ComponentType as _CT
-    base_z = float(om.base_z)
-    already = set(om.fixed_nodes)
-    extra: Set[int] = set()
-    for cid, comp in scene.components.items():
-        if comp.comp_type != _CT.FLOOR_PANEL:
-            continue
-        if abs(float(comp.position[2]) - base_z) > 1.0:
-            continue
-        for nid in am.comp_to_nodes.get(cid, []):
-            n = am.nodes.get(nid)
-            if n is None:
-                continue
-            if abs(float(n.coord[2]) - base_z) > _SAME_NODE_TOL:
-                continue
-            if nid in already or nid in extra:
-                continue
-            extra.add(nid)
-    from modular_3d.analysis.model_spec import FixRec as _FR
-    for nid in sorted(extra):
-        ops.fix(nid, 1, 1, 1, 1, 1, 1)
-        if om.spec is not None:
-            om.spec.fixes.append(_FR(tag=nid, dofs=(1, 1, 1, 1, 1, 1)))
-    if extra:
-        om.fixed_nodes = sorted(set(om.fixed_nodes) | extra)
-        dprint('ops_builder', f'[ops_builder] 1층 바닥패널 베이스 고정: {len(extra)}개 노드')
 
 
 def build_ops_model(analysis_model: AnalysisModel, scene=None) -> OpsModel:

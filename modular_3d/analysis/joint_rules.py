@@ -30,6 +30,11 @@ from modular_3d.카탈로그.geometry import (
     RULE_NODE_OFFSET_R03,
     RULE_NODE_OFFSET_R09,
 )
+from modular_3d.카탈로그.tolerances import (
+    USER_ADD_SNAP_TOL_MM,
+    USER_ADD_LINE_TOL_MM,
+    USER_ADD_MIN_SEGMENT_MM,
+)
 from modular_3d._utils.debug import dprint
 
 
@@ -1293,34 +1298,6 @@ def _collect_wall_data(om) -> Dict[int, Dict]:
     return out
 
 
-def _wall_vertical_edges(om, allowed_nodes: Set[int]
-                         ) -> List[Tuple[int, int, int]]:
-    """벽 기둥(wall_column) 분절 → [(mid, nA, nB), ...].
-
-    [정책 2026-05-17]
-    mid_beam/mid_column 끝점이 wall_column 직선 위에 사영되어 host wall_column
-    이 분할된 경우, 각 분절의 양 끝점이 allowed_nodes(=벽 cid 의 전체 노드
-    집합) 에 모두 들어 있으면 모서리로 등록. 분할 없으면 부재 양 끝 = 4 코너
-    중 2개 → 양쪽 모두 corners 에 속해 (a) 코너-코너로 처리되므로 (b) 매칭은
-    자연 통과.
-    """
-    am = om.analysis_model
-    if am is None:
-        return []
-    out: List[Tuple[int, int, int]] = []
-    for mid in am.members_by_role('wall_column'):
-        m = am.members[mid]
-        if m.kind != 'column':
-            continue
-        if m.n1 in allowed_nodes and m.n2 in allowed_nodes:
-            c1 = om.node_tags.get(m.n1)
-            c2 = om.node_tags.get(m.n2)
-            if c1 is None or c2 is None:
-                continue
-            if abs(c1[2] - c2[2]) > _Z_TOL:
-                out.append((mid, m.n1, m.n2))
-    return out
-
 
 def _collect_floor_panel_corners(om) -> Dict[int, List[int]]:
     """바닥패널만의 코너 → {cid: [4 nid]}.
@@ -1940,19 +1917,14 @@ def apply_core_joint(
             c2 = om.node_tags[n2]
             # 선 방향별 사영점 좌표 + 검사.
             if axis == 'z':
-                # 코어 column. Q'.x=c1.x, Q'.y=c1.y, Q'.z=P.z.
-                z_lo = min(c1[2], c2[2])
-                z_hi = max(c1[2], c2[2])
-                if not (z_lo + _Z_TOL < cP[2] < z_hi - _Z_TOL):
-                    continue
-                dx = abs(cP[0] - c1[0])
-                dy = abs(cP[1] - c1[1])
-                # 정렬 임계 _CORE_ALIGN_TOL(=55mm), 결합 거리 _CORE_LATERAL_MAX(=255mm).
-                cond_x = dx <= _CORE_ALIGN_TOL and (_Z_TOL < dy <= _CORE_LATERAL_MAX)
-                cond_y = dy <= _CORE_ALIGN_TOL and (_Z_TOL < dx <= _CORE_LATERAL_MAX)
-                if not (cond_x or cond_y):
-                    continue
-                proj = np.array([c1[0], c1[1], cP[2]], dtype=float)
+                # [2026-05-28 사용자 정책] 코어 column (z 평행) 분기 비활성.
+                # 기존엔 사영점 Q' = (선.xy, P.z) 를 생성하고 column 끝점 n1 과
+                # 6 DOF 강결합으로 묶었으나, n1.z ≠ Q'.z 라 분석 모델에 "수직
+                # R09 결합" 이 박혔다. 시공 현장엔 그 결합이 존재하지 않는
+                # 모델링 인공물이므로 분기 자체를 건너뛴다.
+                # → 외부 노드 ↔ 코어 결합은 (a) 직접 노드 매칭 + (b) x/y 평행
+                #   수평보 사영만 인정. 모두 같은 z 평면(수평).
+                continue
             elif axis == 'x':
                 # 수평보 (x 평행). Q'.x=P.x, Q'.y=c1.y, Q'.z=c1.z.
                 if abs(cP[2] - c1[2]) > _Z_TOL:
@@ -2150,7 +2122,7 @@ def candidate_joint_points(om, p, exclude_comp=0,
             if blen < 1.0:
                 continue
             proj2, dxy, t = _user_point_seg(p0, a2, b2)
-            if t * blen < 50.0 or (1.0 - t) * blen < 50.0:
+            if t * blen < USER_ADD_MIN_SEGMENT_MM or (1.0 - t) * blen < USER_ADD_MIN_SEGMENT_MM:
                 continue   # 보 끝점 영역 제외
             if dxy <= tol or dxy > max_dist:
                 continue   # 평면으로 안 떨어지면 수직 직선(직각 아님)
@@ -2203,7 +2175,7 @@ def _user_point_seg(p, a, b):
     return proj, float(np.linalg.norm(p - proj)), t
 
 
-def _split_member_at_point(om, point, line_tol=80.0):
+def _split_member_at_point(om, point, line_tol=USER_ADD_LINE_TOL_MM):
     """point 에 가장 가까운 보 element 를 그 점에서 분할하고 새 노드 tag 반환.
     가까운 보가 없거나 끝점 근처(스냅 영역)면 None.
 
@@ -2245,7 +2217,7 @@ def _split_member_at_point(om, point, line_tol=80.0):
             continue
         proj, d, t = _user_point_seg(P, cc1, cc2)
         # 끝점 50mm 이내는 분할 안 함(스냅 영역).
-        if t * blen < 50.0 or (1.0 - t) * blen < 50.0:
+        if t * blen < USER_ADD_MIN_SEGMENT_MM or (1.0 - t) * blen < USER_ADD_MIN_SEGMENT_MM:
             continue
         if d < best_d:
             best_d, best_ele, best_proj = d, ele, proj
@@ -2328,7 +2300,7 @@ def _split_member_at_point(om, point, line_tol=80.0):
     return Q
 
 
-def _can_anchor(om, x, y, z, snap_tol=120.0, line_tol=80.0, on_edge=False):
+def _can_anchor(om, x, y, z, snap_tol=USER_ADD_SNAP_TOL_MM, line_tol=USER_ADD_LINE_TOL_MM, on_edge=False):
     """(x,y,z) 에 접합 끝점을 만들 수 있는가 — 노드 스냅 또는 보 분할 가능 여부만
     판단(노드를 실제로 만들지 않음). 접합 실패 층에 분할 노드가 남는 것을 막기
     위해, 두 끝점이 모두 가능한 층에서만 실제 분할/연결을 하도록 사전 검사한다.
@@ -2353,14 +2325,14 @@ def _can_anchor(om, x, y, z, snap_tol=120.0, line_tol=80.0, on_edge=False):
         if blen < 1.0:
             continue
         proj, d, t = _user_point_seg(P, c1, c2)
-        if t * blen < 50.0 or (1.0 - t) * blen < 50.0:
+        if t * blen < USER_ADD_MIN_SEGMENT_MM or (1.0 - t) * blen < USER_ADD_MIN_SEGMENT_MM:
             continue
         if d <= line_tol:
             return True
     return False
 
 
-def _anchor_node_at(om, x, y, z, snap_tol=120.0, line_tol=80.0, on_edge=False):
+def _anchor_node_at(om, x, y, z, snap_tol=USER_ADD_SNAP_TOL_MM, line_tol=USER_ADD_LINE_TOL_MM, on_edge=False):
     """(x,y,z) 위치의 접합 끝점 노드 — 가까운 기존 노드가 있으면 스냅,
     없으면 가장 가까운 보를 분할해 새 노드. 둘 다 없으면 None.
 

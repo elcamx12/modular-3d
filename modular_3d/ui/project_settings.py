@@ -82,10 +82,9 @@ class ProjectSettings:
     # 비내력벽 단위중량
     wall_interior_kg_m2: float = 30.0   # 내부 단위중량
     wall_exterior_kg_m2: float = 55.0   # 외부 단위중량
-    # 공기(현장 지역 비작업일·착공일)
+    # 공기(현장 지역·착공일)
+    # [2026-05-30] 비작업일은 공정표 내부 가동율 모델로 산정 → 별표1/별표2 입력 제거.
     region_city: str = _DEFAULT_CITY    # 현장 지역(도시 라벨)
-    nonwork_days_foundation: int = 177  # 별표1 — 기초공사 비작업일/년
-    nonwork_days_frame: int = 167       # 별표2 — 골조공사 비작업일/년
     start_date: str = "2026-01-01"      # 착공 예정일 (ISO yyyy-mm-dd)
 
 
@@ -120,6 +119,9 @@ class ProjectSettingsDialog(QDialog):
         self._cost_mode_combo.addItem("트레일러별 km단가", "per_km")
         self._cost_mode_combo.addItem("트레일러별 1회 고정비", "fixed_per_trip")
         tf.addRow("운임 방식:", self._cost_mode_combo)
+        # 운임 방식이 거리와 무관한 'fixed_per_trip' 일 때 거리 입력 칸 비활성.
+        self._cost_mode_combo.currentIndexChanged.connect(
+            self._on_cost_mode_changed)
 
         # 트럭 종류별 km단가 (per_km 방식에서 사용)
         self._lowbed_per_km_spin = QSpinBox()
@@ -210,16 +212,7 @@ class ProjectSettingsDialog(QDialog):
         self._region_combo.currentIndexChanged.connect(self._on_region_changed)
         af.addRow("현장 지역:", self._region_combo)
 
-        self._bp1_spin = QSpinBox()
-        self._bp1_spin.setRange(0, 364)
-        self._bp1_spin.setSuffix(" 일/년")
-        af.addRow("기초공사 비작업일 [별표1]:", self._bp1_spin)
-
-        self._bp2_spin = QSpinBox()
-        self._bp2_spin.setRange(0, 364)
-        self._bp2_spin.setSuffix(" 일/년")
-        af.addRow("골조공사 비작업일 [별표2]:", self._bp2_spin)
-
+        # [2026-05-30] 기초/골조 비작업일 입력 제거 — 공정표 가동율 모델로 일괄 계산.
         self._start_date_edit = QDateEdit()
         self._start_date_edit.setCalendarPopup(True)
         self._start_date_edit.setDisplayFormat("yyyy-MM-dd")
@@ -271,13 +264,8 @@ class ProjectSettingsDialog(QDialog):
             self._region_combo.addItem(f"  {city}", (city, bp1, bp2))
 
     def _on_region_changed(self, _idx: int) -> None:
-        """지역 도시 선택 시 별표1/별표2 자동 채움(헤더 선택은 무시)."""
-        data = self._region_combo.currentData()
-        if not data:
-            return
-        _city, bp1, bp2 = data
-        self._bp1_spin.setValue(int(bp1))
-        self._bp2_spin.setValue(int(bp2))
+        """지역 도시 선택 — [2026-05-30] 별표1/별표2 자동입력 제거 (가동율 모델로 대체)."""
+        return
 
     def _select_city(self, city: str) -> None:
         """도시 라벨로 콤보 항목을 선택한다(없으면 무시)."""
@@ -287,6 +275,13 @@ class ProjectSettingsDialog(QDialog):
                 self._region_combo.setCurrentIndex(i)
                 return
 
+    # ── 운임 방식 → 거리 입력 활성/비활성 ───────────────────
+    def _on_cost_mode_changed(self) -> None:
+        """운임 방식이 'fixed_per_trip' (회차당 고정비) 이면 거리 입력 무의미.
+        편도거리 SpinBox 를 비활성·회색으로 만들어 사용자 혼란 차단."""
+        mode = str(self._cost_mode_combo.currentData() or "")
+        self._distance_spin.setEnabled(mode != "fixed_per_trip")
+
     # ── 설정값 ↔ 위젯 ─────────────────────────────────────
     def _load_from_settings(self) -> None:
         s = self._settings
@@ -294,6 +289,8 @@ class ProjectSettingsDialog(QDialog):
         idx = self._cost_mode_combo.findData(s.cost_mode)
         if idx >= 0:
             self._cost_mode_combo.setCurrentIndex(idx)
+        # 초기 로드 후 활성 상태 동기화.
+        self._on_cost_mode_changed()
         self._lowbed_per_km_spin.setValue(int(s.lowbed_per_km_krw))
         self._extend_per_km_spin.setValue(int(s.extendable_per_km_krw))
         self._aframe_per_km_spin.setValue(int(s.aframe_per_km_krw))
@@ -312,11 +309,8 @@ class ProjectSettingsDialog(QDialog):
         self._site_height_spin.setEnabled(s.site_limit_height_enabled)
         self._interior_spin.setValue(float(s.wall_interior_kg_m2))
         self._exterior_spin.setValue(float(s.wall_exterior_kg_m2))
-        # 지역 선택 → currentIndexChanged 가 별표1/별표2 를 자동 채운 뒤,
-        # 저장된 값으로 다시 덮어써 사용자가 수정한 값도 보존한다.
+        # [2026-05-30] 비작업일 자동입력 제거 → 지역 선택만 복원.
         self._select_city(s.region_city)
-        self._bp1_spin.setValue(int(s.nonwork_days_foundation))
-        self._bp2_spin.setValue(int(s.nonwork_days_frame))
         d = QDate.fromString(s.start_date, "yyyy-MM-dd")
         if d.isValid():
             self._start_date_edit.setDate(d)
@@ -352,7 +346,6 @@ class ProjectSettingsDialog(QDialog):
         data = self._region_combo.currentData()
         if data:
             s.region_city = data[0]
-        s.nonwork_days_foundation = int(self._bp1_spin.value())
-        s.nonwork_days_frame = int(self._bp2_spin.value())
+        # [2026-05-30] 비작업일 필드 제거 — 가동율 모델로 대체.
         s.start_date = self._start_date_edit.date().toString("yyyy-MM-dd")
         self.accept()

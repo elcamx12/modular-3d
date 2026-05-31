@@ -21,8 +21,12 @@ from PyQt5.QtWidgets import (
 
 from modular_3d.model import Scene
 from modular_3d.render.viewer import Viewer3D
+# UI 마이그레이션 M2 — Strangler 어댑터. 정의 탭도 배치 탭과 같은 패턴.
+from modular_3d.render.viewer_strangler import ViewerStrangler
 from modular_3d.ui.ui_panel import DimensionInputPanel
-from modular_3d.ui.alignment_view import AlignmentDockPanel
+from modular_3d.ui.alignment.alignment_view import AlignmentDockPanel
+# UI 마이그레이션 M3-b — three.js 2D 평면 뷰 어댑터.
+from modular_3d.ui.alignment.alignment_dock_three import AlignmentDockPanelThree
 from modular_3d.ui.controls import Controller
 from modular_3d.ui.palette_panel import PalettePanel
 from modular_3d.ui.design_props_panel import DesignPropertiesPanel
@@ -40,10 +44,12 @@ class DefineTab(QWidget):
         self._library = library
 
         # ── 자체 모델·뷰·컨트롤러 ─────────────────────────
+        # UI 마이그레이션 M2 — 정의 탭도 독립 ViewerStrangler. 배치 탭과 격리.
         self._scene = Scene()
-        self._viewer = Viewer3D()
-        self._canvas_widget = self._viewer.get_native_widget()
+        self._viewer = ViewerStrangler()
+        self._canvas_widget = self._viewer.vispy.get_native_widget()
         self._canvas_widget.setFocusPolicy(Qt.StrongFocus)
+        self._three_widget = self._viewer.three.get_native_widget()
         self._dim_panel = DimensionInputPanel()
         self._props = DesignPropertiesPanel(self._scene)
         self._room_props = RoomPropertiesPanel()
@@ -57,6 +63,10 @@ class DefineTab(QWidget):
         self._controller.single_floor_mode = True
         # 2D 캔버스 패널
         self._f5_panel = AlignmentDockPanel(self._controller)
+        # UI 마이그레이션 M3-b — three.js 2D 평면 뷰 (vispy 옆 세로 분할).
+        # AlignmentCanvas.paintEvent 끝 후크에 자기 sync 등록.
+        self._f5_panel_three = AlignmentDockPanelThree()
+        self._f5_panel_three.attach_to(self._f5_panel.canvas)
         if hasattr(self._controller, 'set_f5_dock'):
             self._controller.set_f5_dock(None, self._f5_panel)
         # 단일층 작업공간이므로 층수 입력 컨트롤을 숨긴다.
@@ -80,12 +90,10 @@ class DefineTab(QWidget):
         # 층수는 F5 패널 상단 SpinBox 가 단일 컨트롤(controller 직접 연결).
 
         # 좌측 팔레트
-        _regen = getattr(self._controller, 'regenerate_all_core_slabs', None)
         self._palette = PalettePanel(
-            on_select=self._on_palette_select, on_regen_core_slabs=_regen,
+            on_select=self._on_palette_select,
             on_room_draw=self._on_room_draw,
-            on_room_mode_toggle=self._on_room_mode_toggle,
-            on_opening_mode_toggle=self._on_opening_mode_toggle,
+            on_detail_mode_toggle=self._on_detail_mode_toggle,
             on_opening_add=self._on_opening_add,
             on_wall_place=self._on_wall_place)
         self._palette.setFixedWidth(220)
@@ -117,8 +125,27 @@ class DefineTab(QWidget):
         cv.setContentsMargins(0, 0, 0, 0)
         cv.setSpacing(0)
         split = QSplitter(Qt.Horizontal)
-        split.addWidget(self._canvas_widget)
-        split.addWidget(self._f5_panel)
+        # UI 마이그레이션 M8-b — 정의 탭도 three.js 단독 표시.
+        #  · 좌 3D: vispy 자리(_canvas_widget) 0 크기, three.js 전체.
+        self._left_split = QSplitter(Qt.Vertical)
+        self._left_split.addWidget(self._canvas_widget)
+        self._left_split.addWidget(self._three_widget)
+        self._left_split.setStretchFactor(0, 0)
+        self._left_split.setStretchFactor(1, 1)
+        self._left_split.setSizes([0, 800])
+        self._left_split.setChildrenCollapsible(True)
+        split.addWidget(self._left_split)
+        #  · 우 2D: _f5_panel 은 상단 컨트롤만 얇게(hide_canvas), three.js 가 평면뷰 전담.
+        self._right_split = QSplitter(Qt.Vertical)
+        self._right_split.addWidget(self._f5_panel)
+        self._right_split.addWidget(self._f5_panel_three)
+        self._right_split.setStretchFactor(0, 0)
+        self._right_split.setStretchFactor(1, 1)
+        self._right_split.setSizes([40, 800])
+        self._right_split.setChildrenCollapsible(True)
+        if hasattr(self._f5_panel, 'hide_canvas'):
+            self._f5_panel.hide_canvas()
+        split.addWidget(self._right_split)
         split.setStretchFactor(0, 7)
         split.setStretchFactor(1, 3)
         split.setSizes([700, 300])
@@ -139,7 +166,7 @@ class DefineTab(QWidget):
         h.addWidget(right)
 
     def _build_library_panel(self) -> QWidget:
-        box = QGroupBox("정의 라이브러리")
+        box = QGroupBox("컴포넌트 라이브러리")
         v = QVBoxLayout(box)
         self._lib_list = QListWidget()
         v.addWidget(self._lib_list, stretch=1)
@@ -177,42 +204,43 @@ class DefineTab(QWidget):
         v.addWidget(hint)
         return box
 
-    # ── 실 모드/그리기/편집 (2단계) ───────────────────────
-    def _on_room_mode_toggle(self, checked: bool):
+    # ── 상세 설계 모드/실 지정/개구부 (2026-05-30 단일 모드 통합) ──
+    def _on_detail_mode_toggle(self, checked: bool):
+        """'상세 설계' 토글 → 캔버스 모드 정리(세부 모드는 각 버튼이 전환)."""
         canvas = getattr(self._f5_panel, 'canvas', None)
         if canvas is not None and hasattr(canvas, 'set_edit_mode'):
-            canvas.set_edit_mode('room' if checked else 'component')
+            canvas.set_edit_mode('component')
         if not checked:
             self._show_room_props(None)
 
     def _on_room_draw(self):
+        """'실 지정' → 실 편집 모드 진입 + 실 그리기 시작."""
         canvas = getattr(self._f5_panel, 'canvas', None)
-        if canvas is not None and hasattr(canvas, 'start_room_draw'):
+        if canvas is None:
+            return
+        if hasattr(canvas, 'set_edit_mode'):
+            canvas.set_edit_mode('room')
+        if hasattr(canvas, 'start_room_draw'):
             canvas.start_room_draw()
 
-    # ── 개구부 모드/추가 (3단계) ──────────────────────────
-    def _on_opening_mode_toggle(self, checked: bool):
-        canvas = getattr(self._f5_panel, 'canvas', None)
-        if canvas is not None and hasattr(canvas, 'set_edit_mode'):
-            canvas.set_edit_mode('opening' if checked else 'component')
-
     def _on_opening_add(self):
+        """'개구부' → 개구부 모드 진입 후 벽/슬래브 클릭으로 배치."""
         canvas = getattr(self._f5_panel, 'canvas', None)
         if canvas is not None and hasattr(canvas, 'start_opening_add'):
             canvas.start_opening_add()
 
     # ── 내벽 배치 (2026-05-24) ────────────────────────────
     def _on_wall_place(self):
-        """'벽 배치(내벽)' → 부재 배치 머신으로 내벽 종속 배치 시작.
+        """'벽' → 부재 배치 머신으로 내벽 종속 배치 시작.
 
         정의 탭은 단일층 모드 — 배치 후 floor_index>0 은 자동 제거되어
-        1층 1세트만 정의에 남는다.
+        1층 1세트만 정의에 남는다. 머신은 component 모드에서만 라우팅되므로
+        캔버스를 component 로 전환한다(상세 설계 토글은 유지).
         """
         from modular_3d.model import ComponentType
         canvas = getattr(self._f5_panel, 'canvas', None)
         if canvas is None:
             return
-        self._palette.clear_special_modes()
         if hasattr(canvas, 'set_edit_mode'):
             canvas.set_edit_mode('component')
         if hasattr(canvas, 'handle_palette_select'):

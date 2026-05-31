@@ -21,7 +21,6 @@ from __future__ import annotations
 
 from typing import Tuple, Optional
 
-import numpy as np
 
 from modular_3d.model import ComponentType
 from modular_3d._utils.geometry import xy_bbox

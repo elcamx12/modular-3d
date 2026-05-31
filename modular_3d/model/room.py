@@ -29,6 +29,11 @@ class Room:
     room_type: str = "living"           # room_types.ROOM_TYPES 의 key
     polygon: List[Tuple[float, float]] = field(default_factory=list)
     floor_index: int = 0
+    # ── 다층 그룹 식별자 (2026-05-28) ──────────────────────────
+    # 한 번의 실 배치는 전체 층(옥상 제외)에 복제되며 같은 group_id 를 공유한다.
+    # 같은 group_id 의 실들은 이동/복사/삭제 시 함께 처리된다(모듈 group_id 와
+    # 별개 네임스페이스 — 실끼리만 매칭). group_id=0 은 단독/레거시 실.
+    group_id: int = 0
     live_load_override: Optional[float] = None   # 활하중 사용자 지정(kN/m²) 또는 None
     sdl_override: Optional[float] = None          # 부가고정하중 사용자 지정(kN/m²) 또는 None
 
@@ -86,6 +91,7 @@ class Room:
             'room_type': str(self.room_type),
             'polygon': [[float(x), float(y)] for (x, y) in self.polygon],
             'floor_index': int(self.floor_index),
+            'group_id': int(self.group_id),
             'live_load_override': (None if self.live_load_override is None
                                    else float(self.live_load_override)),
             'sdl_override': (None if self.sdl_override is None
@@ -103,6 +109,7 @@ class Room:
             room_type=str(d.get('room_type', "living")),
             polygon=poly,
             floor_index=int(d.get('floor_index', 0)),
+            group_id=int(d.get('group_id', 0)),
             live_load_override=(None if llo is None else float(llo)),
             sdl_override=(None if sdlo is None else float(sdlo)),
         )

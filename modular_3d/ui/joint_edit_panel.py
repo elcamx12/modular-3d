@@ -60,6 +60,8 @@ class JointEditPanel(QWidget):
         self._rule_checks: dict = {}
         # rule_id → 가시성 상태 (refresh 시 보존)
         self._rule_visible: dict = {}
+        # 범례 'diaphragm' 줄 체크 상태(다이어프램 표시) — refresh 시 보존
+        self._show_diaphragm: bool = False
         self._setup_ui()
 
     def _setup_ui(self):
@@ -67,43 +69,44 @@ class JointEditPanel(QWidget):
         lay.setContentsMargins(6, 6, 6, 6)
         lay.setSpacing(6)
 
+        # ── 범례 (맨 위) — 규칙 ID 색 + diaphragm 줄(다이어프램 표시) ──
+        legend_title = QLabel('범례')
+        legend_title.setStyleSheet('font-weight: bold; font-size: 11px;')
+        lay.addWidget(legend_title)
+        # spec 의 rule_id 집합으로 refresh_legend 가 동적으로 채운다. 'diaphragm'
+        # 줄은 가시성 토글 대신 다이어프램 표시(diaphragm_toggle)로 동작한다.
+        self._legend_holder = QWidget()
+        self._legend_lay = QVBoxLayout(self._legend_holder)
+        self._legend_lay.setContentsMargins(0, 0, 0, 0)
+        self._legend_lay.setSpacing(2)
+        lay.addWidget(self._legend_holder)
+
+        sep0 = QFrame()
+        sep0.setFrameShape(QFrame.HLine)
+        lay.addWidget(sep0)
+
         # ── 제목 ───────────────────────────────────────
         title = QLabel('접합부 설계')
         title.setStyleSheet('font-weight: bold; font-size: 12px;')
         lay.addWidget(title)
 
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        lay.addWidget(sep)
+        # ── 전체층 적용 (편집·추가 공통, 위로 통합) ──────
+        # OFF(기본) = 클릭한 그 층만 적용 / ON = 같은 평면 위치 모든 층 일괄.
+        self._all_layers_toggle = QCheckBox('전체층 적용')
+        self._all_layers_toggle.setToolTip(
+            '끄면(기본) 클릭한 그 층의 접합에만 적용. 켜면 같은 평면 위치의 '
+            '모든 층에 일괄 적용(제거·핀·강접·추가 공통).')
+        lay.addWidget(self._all_layers_toggle)
 
-        # ── 접합부 편집 활성 토글 ──────────────────────
-        joint_title = QLabel('접합부 변경 모드')
-        joint_title.setStyleSheet('font-weight: bold; font-size: 11px;')
-        lay.addWidget(joint_title)
-
-        self._joint_toggle = QCheckBox('접합부 편집 활성')
-        self._joint_toggle.setToolTip(
-            '켜면 3D 좌클릭이 가장 가까운 컴포넌트 간 접합을 선택한다. '
-            '모듈 내부(보-기둥)는 편집 대상이 아니다.'
-        )
-        self._joint_toggle.toggled.connect(self._on_edit_toggle)
-        lay.addWidget(self._joint_toggle)
-
-        # ── 선택 접합 정보 + 변경 버튼 ─────────────────
-        self._sel_group = QGroupBox('선택 접합')
+        # ── 접합 변경 (기존 접합 수정 — 디폴트 모드) ──────
+        self._sel_group = QGroupBox('접합 변경')
         sel_lay = QVBoxLayout(self._sel_group)
         sel_lay.setContentsMargins(6, 6, 6, 6)
         sel_lay.setSpacing(4)
-        self._sel_info = QLabel('편집을 켜고 접합을 클릭하세요.')
+        self._sel_info = QLabel('접합을 클릭하세요.')
         self._sel_info.setWordWrap(True)
         self._sel_info.setStyleSheet('font-size: 11px;')
         sel_lay.addWidget(self._sel_info)
-
-        self._edit_single_chk = QCheckBox('이 층만 적용 (기본: 모든 층)')
-        self._edit_single_chk.setToolTip(
-            '체크하면 제거·핀·강접을 클릭한 그 층의 접합에만 적용합니다. '
-            '끄면 같은 평면 위치의 모든 층에 일괄 적용합니다.')
-        sel_lay.addWidget(self._edit_single_chk)
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(4)
@@ -127,48 +130,27 @@ class JointEditPanel(QWidget):
         lay.addWidget(self._sel_group)
         self.clear_selection()   # 초기 버튼 비활성
 
-        # 전체 초기화 — 선택과 무관하게 항상 활성. 모든 접합 변경(제거·핀·강접·
-        # 추가)을 지우고 자동 규칙 상태로 되돌린다.
-        self._btn_revert = QPushButton('모든 접합 변경 초기화')
-        self._btn_revert.setToolTip(
-            '이 디자인의 모든 접합 변경(제거·핀·강접·추가)을 지우고 '
-            '자동 규칙 상태로 되돌립니다.')
-        self._btn_revert.clicked.connect(self.joint_revert_requested.emit)
-        lay.addWidget(self._btn_revert)
-
-        # 저장 — 현재 디자인 + 접합 변경을 건물 파일(기존 양식)로 저장. 배치
-        # 설계 탭의 저장과 동일(접합 오버라이드 포함). 불러오기는 배치 설계 탭에서.
-        self._btn_save = QPushButton('디자인 + 접합 변경 저장')
-        self._btn_save.setToolTip(
-            '현재 디자인과 접합 변경을 건물 파일(기존 저장과 같은 양식)로 '
-            '저장합니다. 저장한 파일은 배치 설계·모듈 정의 탭에서 불러올 수 있습니다.')
-        self._btn_save.clicked.connect(self.save_requested.emit)
-        lay.addWidget(self._btn_save)
-
-        # ── 접합 추가 모드 (2단계) ─────────────────────
+        # ── 접합 추가 (수직수평 / 패널-모듈, 상호배타) ──────
+        # 둘 중 하나를 켜면 접합 추가 모드, 둘 다 끄면 접합 변경(편집) 모드.
         self._add_group = QGroupBox('접합 추가')
         add_lay = QVBoxLayout(self._add_group)
         add_lay.setContentsMargins(6, 6, 6, 6)
         add_lay.setSpacing(4)
-        self._add_toggle = QCheckBox('접합 추가 모드')
-        self._add_toggle.setToolTip(
-            '켜면 3D 좌클릭으로 두 점(노드)을 차례로 선택해 신규 접합을 만든다. '
-            '두 점은 다른 부재 + 400mm 이내 + 수평/수직(한 축만 차이) 이어야 한다.'
-        )
-        self._add_toggle.toggled.connect(self._on_add_toggle)
-        add_lay.addWidget(self._add_toggle)
-        self._add_rigid_chk = QCheckBox('강접으로 추가 (기본: 핀)')
-        add_lay.addWidget(self._add_rigid_chk)
-        self._add_single_chk = QCheckBox('이 층만 추가 (다른 층 복제 안 함)')
-        self._add_single_chk.setToolTip(
-            '체크하면 클릭한 그 층의 접합만 만들고 다른 층에는 복제하지 않습니다.')
-        add_lay.addWidget(self._add_single_chk)
-        self._add_right_chk = QCheckBox('직각(ㄴ자) 결합')
-        self._add_right_chk.setToolTip(
-            '두 점이 평면·높이 모두 다를 때, 중간 노드를 거쳐 수직+수평의 ㄴ자로 '
-            '직각 결합합니다(R03 방식). 끄면 두 점을 직선으로 연결합니다.')
-        add_lay.addWidget(self._add_right_chk)
-        self._add_hint = QLabel('추가 모드를 켜고 점1을 클릭하세요.')
+        self._vert_horiz_btn = QPushButton('수직 수평 접합')
+        self._vert_horiz_btn.setCheckable(True)
+        self._vert_horiz_btn.setToolTip(
+            '켜면 3D 좌클릭으로 두 점을 골라 직선(수직/수평) 신규 접합을 만든다. '
+            '핀으로 추가되며, 강접이 필요하면 추가 후 접합 변경에서 바꾼다.')
+        self._vert_horiz_btn.toggled.connect(self._on_vert_horiz_toggle)
+        add_lay.addWidget(self._vert_horiz_btn)
+        self._panel_module_btn = QPushButton('패널-모듈 접합')
+        self._panel_module_btn.setCheckable(True)
+        self._panel_module_btn.setToolTip(
+            '켜면 두 점을 중간 노드를 거쳐 ㄴ자(수직+수평)로 직각 결합한다(R03 방식).')
+        self._panel_module_btn.toggled.connect(self._on_panel_module_toggle)
+        add_lay.addWidget(self._panel_module_btn)
+        self._add_hint = QLabel(
+            '수직 수평 접합 또는 패널-모듈 접합을 켜고 점1을 클릭하세요.')
         self._add_hint.setWordWrap(True)
         self._add_hint.setStyleSheet('font-size: 11px; color: #555;')
         add_lay.addWidget(self._add_hint)
@@ -176,7 +158,7 @@ class JointEditPanel(QWidget):
 
         # ── 합성거동 옵션 (더미) ──────────────────────
         composite_label = QLabel(
-            '상부모듈 바닥보 -\n하부모듈 천창보 합성거동'
+            '상부모듈 바닥보 - 하부모듈 천장보 합성거동'
         )
         composite_label.setWordWrap(True)
         composite_label.setStyleSheet('font-size: 11px;')
@@ -189,79 +171,82 @@ class JointEditPanel(QWidget):
         )
         lay.addWidget(self._composite_action_chk)
 
-        sep_d = QFrame()
-        sep_d.setFrameShape(QFrame.HLine)
-        lay.addWidget(sep_d)
+        # ── 아래쪽(다른 항목보다 아래, 완전 바닥은 아님): 초기화 → 변경 내용 저장 ──
+        lay.addSpacing(16)
+        self._btn_revert = QPushButton('초기화')
+        self._btn_revert.setToolTip(
+            '이 디자인의 모든 접합 변경(제거·핀·강접·추가)을 지우고 '
+            '자동 규칙 상태로 되돌립니다.')
+        self._btn_revert.clicked.connect(self.joint_revert_requested.emit)
+        lay.addWidget(self._btn_revert)
 
-        # ── 다이어프램 시각화 토글 ────────────────────
-        # [2026-05-13 접합부조정탭] 구조해석 탭의 다이어프램 체크박스를 본 탭으로
-        # 이동. 다음 작업에서 다이어프램 재정의 시 본 탭에서 켜고 끄며 확인.
-        diaph_title = QLabel('다이어프램 시각화')
-        diaph_title.setStyleSheet('font-weight: bold; font-size: 11px;')
-        lay.addWidget(diaph_title)
-        self._diaphragm_cb = QCheckBox('다이어프램 표시')
-        self._diaphragm_cb.setToolTip(
-            '컴포넌트별 강체 다이어프램(모듈·바닥패널·코어슬래브 단위) — '
-            '마스터에서 슬레이브로 뻗는 회색 스포크선과 청록 반투명 면을 표시.'
-        )
-        self._diaphragm_cb.toggled.connect(self.diaphragm_toggle.emit)
-        lay.addWidget(self._diaphragm_cb)
-
-        sep2 = QFrame()
-        sep2.setFrameShape(QFrame.HLine)
-        lay.addWidget(sep2)
-
-        # ── 규칙 ID 범례 placeholder (Phase 5 채움) ────
-        legend_title = QLabel('규칙 ID 범례')
-        legend_title.setStyleSheet('font-weight: bold; font-size: 11px;')
-        lay.addWidget(legend_title)
-
-        # spec.iter_* 의 rule_id 집합을 읽어 동적 갱신. 초기 상태는 비어 있고,
-        # 와이어프레임 프리뷰 시 refresh_legend 가 채움.
-        self._legend_holder = QWidget()
-        self._legend_lay = QVBoxLayout(self._legend_holder)
-        self._legend_lay.setContentsMargins(0, 0, 0, 0)
-        self._legend_lay.setSpacing(2)
-        lay.addWidget(self._legend_holder)
+        self._btn_save = QPushButton('변경 내용 저장')
+        self._btn_save.setToolTip(
+            '현재 디자인과 접합 변경을 건물 파일(기존 저장과 같은 양식)로 '
+            '저장합니다. 저장한 파일은 배치 설계·모듈 정의 탭에서 불러올 수 있습니다.')
+        self._btn_save.clicked.connect(self.save_requested.emit)
+        lay.addWidget(self._btn_save)
 
         lay.addStretch(1)
 
-    # ── 모드 토글 (편집 ↔ 추가 배타) ─────────────────────
-    def _on_edit_toggle(self, on: bool):
-        """편집 모드 토글 — 켜면 추가 모드 해제."""
-        if on and self._add_toggle.isChecked():
-            self._add_toggle.setChecked(False)   # add_mode_toggled(False) 발신
-        self.edit_mode_toggled.emit(on)
+    # ── 모드 토글 (편집 디폴트 ↔ 추가 두 종류, 상호배타) ──
+    def _on_vert_horiz_toggle(self, on: bool):
+        """수직 수평 접합(직선 추가) — 켜면 패널-모듈 해제."""
+        if on and self._panel_module_btn.isChecked():
+            self._panel_module_btn.setChecked(False)
+        self._apply_add_mode()
 
-    def _on_add_toggle(self, on: bool):
-        """추가 모드 토글 — 켜면 편집 모드 해제."""
-        if on and self._joint_toggle.isChecked():
-            self._joint_toggle.setChecked(False)  # edit_mode_toggled(False) 발신
-        if on:
+    def _on_panel_module_toggle(self, on: bool):
+        """패널-모듈 접합(ㄴ자 직각 추가) — 켜면 수직 수평 해제."""
+        if on and self._vert_horiz_btn.isChecked():
+            self._vert_horiz_btn.setChecked(False)
+        self._apply_add_mode()
+
+    def _apply_add_mode(self):
+        """두 추가 버튼 상태로 모드 결정 — 하나라도 켜지면 추가, 둘 다 꺼지면 편집."""
+        add_on = (self._vert_horiz_btn.isChecked()
+                  or self._panel_module_btn.isChecked())
+        if add_on:
             self._add_hint.setText('점1을 클릭하세요.')
+            self.edit_mode_toggled.emit(False)
+            self.add_mode_toggled.emit(True)
         else:
-            self._add_hint.setText('추가 모드를 켜고 점1을 클릭하세요.')
-        self.add_mode_toggled.emit(on)
+            self._add_hint.setText(
+                '수직 수평 접합 또는 패널-모듈 접합을 켜고 점1을 클릭하세요.')
+            self.add_mode_toggled.emit(False)
+            self.edit_mode_toggled.emit(True)
 
     def is_add_rigid(self) -> bool:
-        """접합 추가 시 강접으로 만들지(체크) 여부."""
-        return self._add_rigid_chk.isChecked()
+        """[변경] 강접 추가 옵션 제거 — 항상 핀으로 추가(필요 시 추가 후 변경)."""
+        return False
 
     def is_add_single_layer(self) -> bool:
-        """접합 추가 시 이 층만(다른 층 복제 안 함) 여부."""
-        return self._add_single_chk.isChecked()
+        """접합 추가 시 이 층만 여부 — '전체층 적용' 의 반대."""
+        return not self._all_layers_toggle.isChecked()
 
     def is_add_right_angle(self) -> bool:
-        """접합 추가 시 직각(ㄴ자) 결합 여부."""
-        return self._add_right_chk.isChecked()
+        """접합 추가 직각(ㄴ자) — 패널-모듈 접합 버튼이 켜졌을 때."""
+        return self._panel_module_btn.isChecked()
 
     def is_edit_single_layer(self) -> bool:
-        """접합 제거·편집 시 이 층만 적용 여부(체크) — 끄면 모든 층 일괄."""
-        return self._edit_single_chk.isChecked()
+        """접합 변경 시 이 층만 여부 — '전체층 적용' 의 반대."""
+        return not self._all_layers_toggle.isChecked()
 
     def set_add_hint(self, text: str):
         """접합 추가 안내 문구 갱신."""
         self._add_hint.setText(text)
+
+    # ── 탭 표시/숨김에 맞춰 모드 활성화 (디폴트 = 접합 변경/편집) ──
+    def showEvent(self, event):
+        super().showEvent(event)
+        # 접합부 탭 진입 — 추가 버튼 상태대로 모드 복원(둘 다 꺼짐 = 편집 모드).
+        self._apply_add_mode()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        # 탭 이탈 — 픽킹 모드 중지(편집·추가 모두 끔).
+        self.edit_mode_toggled.emit(False)
+        self.add_mode_toggled.emit(False)
 
     # ── 선택 접합 표시 (2026-05-25) ──────────────────────
     def show_selected_joint(self, info: dict):
@@ -289,11 +274,8 @@ class JointEditPanel(QWidget):
             btn.setEnabled(True)
 
     def clear_selection(self):
-        """선택 해제 — 변경 버튼 비활성(전체 초기화 버튼은 항상 활성)."""
-        on = (self._joint_toggle.isChecked()
-              if hasattr(self, '_joint_toggle') else False)
-        self._sel_info.setText(
-            '접합을 클릭하세요.' if on else '편집을 켜고 접합을 클릭하세요.')
+        """선택 해제 — 변경 버튼 비활성(초기화 버튼은 항상 활성)."""
+        self._sel_info.setText('접합을 클릭하세요.')
         for btn in (self._btn_remove, self._btn_pin, self._btn_rigid):
             btn.setEnabled(False)
 
@@ -343,20 +325,30 @@ class JointEditPanel(QWidget):
             row_lay.setContentsMargins(0, 0, 0, 0)
             row_lay.setSpacing(4)
             chk = QCheckBox()
-            visible_init = self._rule_visible.get(rid, True)
-            chk.setChecked(visible_init)
-            chk.setToolTip(
-                f'{rid} 결합선 시각화 토글 (실제 접합은 유지)'
-            )
-            # 클로저로 rid 캡쳐 — 토글 시 시그널 발신 + 내부 상태 갱신.
-            def _on_toggle(state, _rid=rid):
-                vis = bool(state)
-                self._rule_visible[_rid] = vis
-                self.rule_visibility_changed.emit(_rid, vis)
-            chk.toggled.connect(_on_toggle)
+            # [변경] 'diaphragm_component' 줄은 '_component' 를 떼고 'diaphragm' 로
+            # 표시하며, 체크박스는 가시성 토글이 아니라 *다이어프램 표시*로 동작한다.
+            is_diaphragm = (rid == 'diaphragm_component')
+            if is_diaphragm:
+                chk.setChecked(self._show_diaphragm)
+                chk.setToolTip('다이어프램 표시 (마스터→슬레이브 스포크선 + 청록 면)')
+                def _on_diaph(state):
+                    self._show_diaphragm = bool(state)
+                    self.diaphragm_toggle.emit(bool(state))
+                chk.toggled.connect(_on_diaph)
+                disp = 'diaphragm'
+            else:
+                chk.setChecked(self._rule_visible.get(rid, True))
+                chk.setToolTip(f'{rid} 결합선 시각화 토글 (실제 접합은 유지)')
+                # 클로저로 rid 캡쳐 — 토글 시 시그널 발신 + 내부 상태 갱신.
+                def _on_toggle(state, _rid=rid):
+                    vis = bool(state)
+                    self._rule_visible[_rid] = vis
+                    self.rule_visibility_changed.emit(_rid, vis)
+                chk.toggled.connect(_on_toggle)
+                disp = rid
             self._rule_checks[rid] = chk
             row_lay.addWidget(chk)
-            line = QLabel(f'⬤  {rid}')
+            line = QLabel(f'⬤  {disp}')
             line.setStyleSheet(f'color: {hex_color}; font-size: 10px;')
             row_lay.addWidget(line)
             row_lay.addStretch(1)

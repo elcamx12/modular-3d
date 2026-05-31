@@ -1,0 +1,914 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>AlignmentCanvasThree — 2D 평면 뷰</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; overflow: hidden;
+    background: #ffffff;
+    width: 100%; height: 100%;
+    font-family: 'Pretendard', 'Malgun Gothic', sans-serif;
+  }
+  #container { width: 100vw; height: 100vh; position: relative; }
+  #canvas { display: block; width: 100%; height: 100%; }
+  #empty-msg {
+    position: absolute; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    color: #aaa; font-size: 12px;
+    background: rgba(0,0,0,0.45);
+    padding: 12px 18px; border-radius: 8px;
+    border: 1px solid #555;
+  }
+  #info {
+    position: absolute; bottom: 6px; right: 8px; z-index: 10;
+    color: #888; font-size: 10px;
+    background: rgba(0,0,0,0.5);
+    padding: 3px 6px; border-radius: 4px;
+  }
+</style>
+</head>
+<body>
+<div id="container">
+  <div id="empty-msg">2D 평면 three.js 뷰 — M3-a 골격 (paint 대기)</div>
+  <div id="info">2D (top-down) — 읽기 전용</div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<script>
+"use strict";
+
+// ─────────────────────────────────────────────────────────
+// 좌표 정책 (UI_마이그레이션/06_M3_설계.md)
+// - AlignmentCanvas 의 world 좌표 (mm) 그대로 사용
+// - OrthographicCamera, up=(0,1,0), camera.z = +100000, lookAt(cx, cy, 0)
+// - viewport (left/right/top/bottom) 은 vispy 의 zoom·pan 으로 계산
+// ─────────────────────────────────────────────────────────
+
+let scene, camera, renderer;
+let qtBridge = null;
+let currentZoom = 0.08;  // 점 마커 화면 고정 크기 환산용
+
+// M4 — three.js 2D 자체 카메라 (vispy 와 독립). 팬·줌을 직접 받아 60fps 부드러움.
+let camZoom = 0.08, camCx = 3000, camCy = 3000;
+let _cameraInitialized = false;
+
+// 그룹별 메쉬 컨테이너 — 매 paint 마다 dispose 후 재생성
+const groups = {
+  components: new THREE.Group(),
+  rooms: new THREE.Group(),
+  highlights: new THREE.Group(),   // 선택·정렬·방향·기준 등
+  previews: new THREE.Group(),     // F5 PREVIEW·고스트·실 드로잉
+  markers: new THREE.Group(),      // 스냅 마커·점
+  text: new THREE.Group(),         // 도움말·거리 라벨
+};
+
+let lastState = null;
+
+// ─────────────────────────────────────────────────────────
+// 초기화
+// ─────────────────────────────────────────────────────────
+function init() {
+  const container = document.getElementById('container');
+  const w = container.clientWidth, h = container.clientHeight;
+
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xffffff);
+
+  // OrthographicCamera — 초기 viewport 는 더미값. apply_paint_state 가 갱신.
+  camera = new THREE.OrthographicCamera(-1000, 1000, 1000, -1000, 1, 1000000);
+  camera.position.set(0, 0, 100000);
+  camera.up.set(0, 1, 0);
+  camera.lookAt(0, 0, 0);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(w, h);
+  renderer.domElement.id = 'canvas';
+  container.appendChild(renderer.domElement);
+
+  // 광원 — Ortho 라 ambient 만으로 충분
+  scene.add(new THREE.AmbientLight(0xffffff, 1.0));
+
+  // 그룹 컨테이너 등록
+  for (const g of Object.values(groups)) scene.add(g);
+
+  window.addEventListener('resize', onResize);
+  _setupMouseControls();   // M4 — 자체 마우스 입력 (팬·줌·클릭·호버)
+  animate();
+
+  // WebChannel
+  if (typeof QWebChannel !== 'undefined' && typeof qt !== 'undefined'
+      && qt.webChannelTransport) {
+    new QWebChannel(qt.webChannelTransport, function(channel) {
+      qtBridge = channel.objects.bridge || null;
+      if (qtBridge && qtBridge.js_log) {
+        qtBridge.js_log('AlignmentCanvasThree HTML 로드 완료 (M4-a)');
+      }
+    });
+  }
+}
+
+// ─────────────────────────────────────────────────────────
+// M4 — 자체 카메라 적용 + screen↔world 변환
+// ─────────────────────────────────────────────────────────
+function _applyCamera() {
+  const W = renderer.domElement.clientWidth || 1;
+  const H = renderer.domElement.clientHeight || 1;
+  currentZoom = camZoom;
+  const halfW = (W / 2) / camZoom, halfH = (H / 2) / camZoom;
+  camera.left = -halfW; camera.right = halfW;
+  camera.top = halfH; camera.bottom = -halfH;
+  camera.position.set(camCx, camCy, 100000);
+  camera.lookAt(camCx, camCy, 0);
+  camera.updateProjectionMatrix();
+}
+
+function _screenToWorld(clientX, clientY) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  const W = rect.width, H = rect.height;
+  const sx = clientX - rect.left, sy = clientY - rect.top;
+  // _applyCamera 의 역변환 (vispy _screen_to_world 와 동일 컨벤션)
+  const wx = camCx + (sx - W / 2) / camZoom;
+  const wy = camCy - (sy - H / 2) / camZoom;
+  return [wx, wy];
+}
+
+// ─────────────────────────────────────────────────────────
+// M4 — 마우스 컨트롤: 중/우클릭 드래그=팬, 휠=줌(커서기준),
+// 좌클릭(드래그 아님)=선택 → bridge, 이동=호버 → bridge
+// ─────────────────────────────────────────────────────────
+function _setupMouseControls() {
+  const el = renderer.domElement;
+  let panning = false, lastX = 0, lastY = 0;
+  let downX = 0, downY = 0, dragged = false;
+  let moveThrottle = 0;
+
+  el.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  el.addEventListener('mousedown', (e) => {
+    downX = e.clientX; downY = e.clientY; dragged = false;
+    if (e.button === 1 || e.button === 2) {  // 중/우클릭 = 팬
+      panning = true; lastX = e.clientX; lastY = e.clientY;
+      e.preventDefault();
+    }
+  });
+
+  el.addEventListener('mousemove', (e) => {
+    if (panning) {
+      const dx = e.clientX - lastX, dy = e.clientY - lastY;
+      lastX = e.clientX; lastY = e.clientY;
+      camCx -= dx / camZoom;
+      camCy += dy / camZoom;   // 화면 y 아래 = world y 감소
+      _applyCamera();
+      return;
+    }
+    if (Math.abs(e.clientX - downX) + Math.abs(e.clientY - downY) > 4) {
+      dragged = true;
+    }
+    // 호버 → bridge (throttle ~50ms)
+    const now = performance.now();
+    if (qtBridge && qtBridge.on_2d_move && (now - moveThrottle) > 50) {
+      moveThrottle = now;
+      const w = _screenToWorld(e.clientX, e.clientY);
+      qtBridge.on_2d_move(w[0], w[1]);
+    }
+  });
+
+  el.addEventListener('mouseup', (e) => {
+    if (panning && (e.button === 1 || e.button === 2)) {
+      panning = false;
+      return;
+    }
+    if (e.button === 0 && !dragged) {
+      const w = _screenToWorld(e.clientX, e.clientY);
+      if (qtBridge && qtBridge.on_2d_click) {
+        qtBridge.on_2d_click(w[0], w[1], 0);
+      }
+    } else if (e.button === 2 && !dragged) {
+      // 우클릭 (드래그 아님) — 우클릭 액션 (실 그리기 점 취소 등)
+      const w = _screenToWorld(e.clientX, e.clientY);
+      if (qtBridge && qtBridge.on_2d_click) {
+        qtBridge.on_2d_click(w[0], w[1], 2);
+      }
+    }
+  });
+
+  el.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const factor = (e.deltaY < 0) ? 1.15 : (1 / 1.15);
+    const before = _screenToWorld(e.clientX, e.clientY);
+    camZoom *= factor;
+    const after = _screenToWorld(e.clientX, e.clientY);
+    camCx += before[0] - after[0];
+    camCy += before[1] - after[1];
+    _applyCamera();
+  }, { passive: false });
+
+  // 키 입력 — 캔버스가 포커스를 받을 수 있게 + keydown → bridge.
+  // (배치 1~9, 방향 X/Y, 회전/앵커 R/V, 이동/복사 M/C, Del, Enter, Esc 등)
+  el.setAttribute('tabindex', '0');
+  el.style.outline = 'none';
+  el.addEventListener('mousedown', () => el.focus());
+  el.addEventListener('keydown', (e) => {
+    if (qtBridge && qtBridge.on_2d_key) {
+      qtBridge.on_2d_key(e.key, e.key.length === 1 ? e.key : '');
+      // 배치·편집 키는 브라우저 기본 동작 차단 (스크롤 등)
+      e.preventDefault();
+    }
+  });
+}
+
+function onResize() {
+  const container = document.getElementById('container');
+  const w = container.clientWidth, h = container.clientHeight;
+  renderer.setSize(w, h);
+  // 자체 카메라 frustum 을 새 화면 크기로 재계산.
+  if (_cameraInitialized) _applyCamera();
+  if (lastState) window.applyPaintState(lastState);
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  renderer.render(scene, camera);
+}
+
+// ─────────────────────────────────────────────────────────
+// 공용 헬퍼
+// ─────────────────────────────────────────────────────────
+function _disposeGroup(g) {
+  while (g.children.length > 0) {
+    const c = g.children[0];
+    g.remove(c);
+    if (c.geometry) c.geometry.dispose();
+    if (c.material) {
+      if (Array.isArray(c.material)) c.material.forEach(m => m.dispose());
+      else c.material.dispose();
+    }
+    // Sprite texture 누수 방지
+    if (c.userData && c.userData._dispose_texture) {
+      c.userData._dispose_texture.dispose();
+    }
+  }
+}
+
+function _hideEmptyMsg() {
+  const el = document.getElementById('empty-msg');
+  if (el) el.style.display = 'none';
+}
+
+// ─────────────────────────────────────────────────────────
+// viewport 동기화 — vispy zoom/pan → OrthographicCamera frustum
+// ─────────────────────────────────────────────────────────
+function _updateViewport(state) {
+  // M4 — three.js 2D 자체 카메라 도입. vispy viewport 는 *초기 1회만* 채택
+  // (시작 시점 맞추기용). 이후엔 three.js 자체 팬·줌이 우선 (카메라 독립).
+  // 이게 입력 주체 전환 — vispy 동기화 의존 제거로 끊김 해결.
+  if (_cameraInitialized) return;
+  const v = state.viewport || {};
+  camZoom = v.zoom || 0.08;
+  camCx = (v.pan_x !== undefined) ? v.pan_x : 0;
+  camCy = (v.pan_y !== undefined) ? v.pan_y : 0;
+  _cameraInitialized = true;
+  _applyCamera();
+}
+
+// ─────────────────────────────────────────────────────────
+// 외부 API — Python AlignmentCanvasThree.apply_paint_state 가 호출
+// ─────────────────────────────────────────────────────────
+let _lastContentKey = null;
+
+// 카메라만 갱신 — Python 이 콘텐츠 동일 판단 시 호출. 대용량 전송·redraw 없음.
+window.updateViewportOnly = function(viewport) {
+  _updateViewport({ viewport: viewport });
+};
+
+window.applyPaintState = function(state) {
+  lastState = state;
+  // 카메라(viewport) 는 항상 즉시 갱신 — 가벼움 (matrix 갱신뿐).
+  _updateViewport(state);
+
+  // [성능 핵심] 콘텐츠 변경 감지 — 팬·줌으로 viewport 만 바뀌고 부재·실·
+  // 하이라이트·미리보기 내용이 그대로면 *scene 재생성을 스킵*. modular_designer
+  // 처럼 카메라 조작 시 재생성 0 → 끊김 제거.
+  const contentKey = JSON.stringify({
+    c: state.components, r: state.rooms,
+    sid: state.selected_id, hid: state.hover_id,
+    st: state.state, em: state.edit_mode, dir: state.direction,
+    re: state.reference_edge, sb: state.selected_bbox, hb: state.hover_bbox,
+    te: state.target_edge_info, ht: state.help_text, sh: state.snap_hint,
+    fg: state.f5_ghost, rpp: state.room_preview_poly,
+    opp: state.op_preview_poly, ipp: state.import_preview_polys,
+    op: state.openings, rd: state.room_draw, fsp: state.f5_snap_point,
+  });
+  if (contentKey === _lastContentKey) {
+    return;  // 콘텐츠 동일 — 카메라만 갱신, scene 재생성 스킵
+  }
+  _lastContentKey = contentKey;
+
+  // 모든 그룹 비우고 재생성
+  _disposeGroup(groups.components);
+  _disposeGroup(groups.rooms);
+  _disposeGroup(groups.highlights);
+  _disposeGroup(groups.previews);
+  _disposeGroup(groups.markers);
+  _disposeGroup(groups.text);
+
+  // 부재 데이터가 있으면 empty 메시지 숨김
+  if (state && state.components && state.components.length > 0) {
+    _hideEmptyMsg();
+  }
+
+  // M3-b 구현 — 부재 사각형 + 실 폴리곤
+  _drawComponents(state.components);
+  _drawRooms(state.rooms);
+  // M3-c-1 구현 — 하이라이트 + 도움말
+  _drawHighlights(state);
+  _drawText(state);
+  // M3-c-2 구현 — 미리보기·스냅 마커
+  _drawPreviews(state);
+  _drawMarkers(state);
+};
+
+// ─────────────────────────────────────────────────────────
+// 색상 팔레트 — alignment_helpers.TYPE_COLORS 와 일치 (0~255 → 0~1 변환)
+// ─────────────────────────────────────────────────────────
+const TYPE_COLORS = {
+  module:           [80/255, 80/255, 200/255],
+  floor_panel:      [80/255, 180/255, 80/255],
+  struct_wall:      [200/255, 80/255, 80/255],
+  interior_wall:    [230/255, 140/255, 60/255],
+  cantilever_beam:  [180/255, 80/255, 180/255],
+  cantilever_slab:  [180/255, 120/255, 180/255],
+  mid_beam:         [80/255, 180/255, 180/255],
+  mid_column:       [180/255, 180/255, 80/255],
+  vertical_module:  [80/255, 80/255, 200/255],
+  core:             [170/255, 170/255, 170/255],
+  core_slab:        [200/255, 200/255, 200/255],
+};
+const DEFAULT_COLOR = [150/255, 150/255, 150/255];
+
+// 역할별 alpha (vispy alignment_paint 의 role_alphas 와 일치)
+const ROLE_ALPHA = {
+  slab: 55/255, wall: 140/255, beam: 185/255, column: 235/255,
+};
+
+// [2026-05-30 C2] 3D(mesh_builder) 와 통일한 역할별 색 — 부재 종류로 색 구분.
+// (평면뷰는 바닥/천장보 구분이 어려워 보는 바닥보 색으로 통일.)
+const ROLE_COLOR = {
+  slab:   [0.824, 0.824, 0.745],  // 0xD2D2BE 슬래브
+  wall:   [0.467, 0.600, 0.667],  // 0x7799AA 비내력 벽체
+  beam:   [0.133, 0.400, 0.800],  // 0x2266CC 보
+  column: [0.800, 0.200, 0.200],  // 0xCC3333 기둥
+};
+
+// 역할 그리기 순서 (뒤→앞)
+const ROLE_ORDER = ['slab', 'wall', 'beam', 'column'];
+
+// ─────────────────────────────────────────────────────────
+// 부재 사각형 그리기 (역할별 4 layer) + 본체 bbox 외곽선 + 라벨
+// ─────────────────────────────────────────────────────────
+
+// M3-c-1: 하이라이트 카테고리별 base 색 (vispy _pick_base_color 와 동일)
+const HIGHLIGHT_COLORS = {
+  selected:      [80/255, 160/255, 255/255],
+  misaligned:    [220/255, 60/255, 60/255],
+  dep_candidate: [255/255, 240/255, 100/255],
+  same_group:    [120/255, 180/255, 220/255],
+};
+
+function _baseForComp(comp) {
+  if (comp.highlight && HIGHLIGHT_COLORS[comp.highlight]) {
+    return HIGHLIGHT_COLORS[comp.highlight];
+  }
+  return TYPE_COLORS[comp.comp_type] || DEFAULT_COLOR;
+}
+
+function _drawComponents(components) {
+  if (!components) return;
+  // z 분리로 역할 순서. column 은 본체 bbox(Z_BBOX=0.5) 보다 *위*에 두어
+  // 모듈 외곽선이 column 을 가리지 않게 한다 (vispy 의 draw order 와 일치).
+  const Z_BY_ROLE = { slab: 0.1, wall: 0.2, beam: 0.3, column: 0.7 };
+  // renderOrder 도 column 을 가장 위로 — 같은 z 라도 항상 위에 그려짐.
+  const RO_BY_ROLE = { slab: 1, wall: 2, beam: 3, column: 50 };
+
+  for (const ro of ROLE_ORDER) {
+    const alpha = ROLE_ALPHA[ro];
+    const z = Z_BY_ROLE[ro];
+    const renderOrder = RO_BY_ROLE[ro];
+    for (const comp of components) {
+      const base = _baseForComp(comp);
+      for (const r of (comp.rects || [])) {
+        if (r.role !== ro) continue;
+        // column 채움 색은 base 의 *어두운 변형* — vispy 의 alpha 누적 효과와
+        // 동등하게 모듈 본체 색 위에서 *명확히 더 진하게* 보이도록.
+        // [2026-05-30 C2] 3D 와 색 통일 — 역할(기둥/보/슬래브/벽)별 고정색.
+        // highlight(선택·정렬오차 등) 부재는 강조색(base) 유지.
+        const roleCol = comp.highlight ? base : (ROLE_COLOR[ro] || base);
+        // column 은 alpha 1.0 (불투명).
+        const fillAlpha = (ro === 'column') ? 1.0 : alpha;
+        const mesh = _buildRectMesh(r.x0, r.y0, r.x1, r.y1, roleCol,
+                                    fillAlpha, z);
+        mesh.userData.comp_id = comp.id;
+        mesh.renderOrder = renderOrder;
+        groups.components.add(mesh);
+
+        // 기둥 외곽선 — 같은 색의 진한 변형.
+        if (ro === 'column') {
+          const edgeRgb = [roleCol[0] * 0.4, roleCol[1] * 0.4, roleCol[2] * 0.4];
+          const edge = _buildRectOutline(r.x0, r.y0, r.x1, r.y1,
+                                          edgeRgb, z + 0.01);
+          edge.renderOrder = renderOrder + 1;
+          groups.components.add(edge);
+        }
+      }
+    }
+  }
+
+  // 본체 bbox 외곽선 + 라벨 — VERTICAL_MODULE 처럼 rects 비어있는
+  // 부재도 *외곽 + 라벨* 만은 그려야 보임. vispy paintEvent line 151-184 와 일치.
+  // bbox 외곽선의 renderOrder 는 column(50) 보다 *낮게* → column 이 위로 노출.
+  // 단 highlight 가 있는 부재는 두께·색 강조.
+  const Z_BBOX = 0.5;
+  for (const comp of components) {
+    if (!comp.bbox) continue;
+    const [bx0, by0, bx1, by1] = comp.bbox;
+    // bbox 외곽선 색 — highlight 우선, 없으면 type 색.
+    // (highlight 적용 시 _drawComponents 의 채움도 같은 색으로 옅게)
+    let edgeRgb, edgeAlpha;
+    if (comp.highlight === 'selected') {
+      edgeRgb = [120/255, 200/255, 255/255]; edgeAlpha = 1.0;
+    } else if (comp.highlight === 'misaligned') {
+      edgeRgb = [255/255, 100/255, 100/255]; edgeAlpha = 1.0;
+    } else {
+      // [C1] 흰 배경 — 컴포넌트 외곽선은 진회색(타입색은 부재 채움색으로 대체).
+      edgeRgb = [0.35, 0.35, 0.35];
+      edgeAlpha = 0.85;
+    }
+    const edge = _buildRectOutline(bx0, by0, bx1, by1, edgeRgb, Z_BBOX);
+    edge.material.opacity = edgeAlpha;
+    edge.material.transparent = true;
+    edge.renderOrder = 10;
+    edge.userData.comp_id = comp.id;
+    groups.components.add(edge);
+
+    // 라벨 — 좌상단 (vispy 의 rx+4, ry+13 위치와 등가)
+    if (comp.label) {
+      const sprite = _makeTextSprite(comp.label, '#222222');
+      // [C4] 컴포넌트 중심에 배치(좌상단 → 중심).
+      sprite.position.set((bx0 + bx1) / 2, (by0 + by1) / 2, Z_BBOX + 0.1);
+      sprite.renderOrder = 100;
+      groups.components.add(sprite);
+    }
+
+    // 정렬 오차 거리 텍스트 (misaligned 부재만, 라벨 바로 아래)
+    if (comp.mis_label) {
+      const ms = _makeTextSprite(comp.mis_label, '#cc2222');
+      ms.position.set(bx0 + 200, by1 - 700, Z_BBOX + 0.1);
+      ms.renderOrder = 100;
+      groups.components.add(ms);
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────
+// 텍스트 Sprite — Canvas 텍스처 기반 (한글 OK)
+// [성능] 같은 (텍스트, 색) 텍스처는 캐시 재사용 — 매 redraw 마다 canvas +
+// texture 를 새로 만들면 끊긴다. 캐시된 texture 는 dispose 하지 않는다.
+// ─────────────────────────────────────────────────────────
+const _textTexCache = {};  // "text|color" → { texture, w, h }
+
+function _getTextTexture(text, color) {
+  const key = text + '|' + (color || '#f0f0f0');
+  let cached = _textTexCache[key];
+  if (cached) return cached;
+  const canvas = document.createElement('canvas');
+  const ctx0 = canvas.getContext('2d');
+  ctx0.font = 'bold 32px "Malgun Gothic", "Pretendard", sans-serif';
+  const metrics = ctx0.measureText(text);
+  const w = Math.ceil(metrics.width) + 12;
+  const h = 44;
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.font = 'bold 32px "Malgun Gothic", "Pretendard", sans-serif';
+  ctx.fillStyle = color || '#f0f0f0';
+  ctx.textBaseline = 'top';
+  ctx.shadowColor = 'rgba(0,0,0,0.85)';
+  ctx.shadowBlur = 3;
+  ctx.fillText(text, 4, 4);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.minFilter = THREE.LinearFilter;
+  cached = { texture: texture, w: w, h: h };
+  _textTexCache[key] = cached;
+  return cached;
+}
+
+function _makeTextSprite(text, color) {
+  const cached = _getTextTexture(text, color);
+  const mat = new THREE.SpriteMaterial({
+    map: cached.texture, depthTest: false, transparent: true,
+  });
+  const sprite = new THREE.Sprite(mat);
+  sprite.scale.set(cached.w * 8, cached.h * 8, 1);
+  sprite.renderOrder = 100;
+  // 캐시된 texture 는 *공유* 라 dispose 하면 안 됨. material 만 dispose 대상.
+  // (_disposeGroup 의 _dispose_texture 키를 설정하지 않음)
+  return sprite;
+}
+
+function _buildRectMesh(x0, y0, x1, y1, rgb, alpha, z) {
+  const w = Math.abs(x1 - x0);
+  const h = Math.abs(y1 - y0);
+  const cx = (x0 + x1) / 2;
+  const cy = (y0 + y1) / 2;
+  const geom = new THREE.PlaneGeometry(w, h);
+  const mat = new THREE.MeshBasicMaterial({
+    color: new THREE.Color(rgb[0], rgb[1], rgb[2]),
+    transparent: true, opacity: alpha,
+    side: THREE.DoubleSide, depthTest: false,
+  });
+  const mesh = new THREE.Mesh(geom, mat);
+  mesh.position.set(cx, cy, z);
+  return mesh;
+}
+
+function _buildRectOutline(x0, y0, x1, y1, rgb, z) {
+  const positions = new Float32Array([
+    x0, y0, z,  x1, y0, z,
+    x1, y0, z,  x1, y1, z,
+    x1, y1, z,  x0, y1, z,
+    x0, y1, z,  x0, y0, z,
+  ]);
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const mat = new THREE.LineBasicMaterial({
+    color: new THREE.Color(rgb[0], rgb[1], rgb[2]),
+    depthTest: false,
+  });
+  return new THREE.LineSegments(geom, mat);
+}
+
+// ─────────────────────────────────────────────────────────
+// 실 폴리곤 (반투명 채움 + 외곽선)
+// ─────────────────────────────────────────────────────────
+function _drawRooms(rooms) {
+  if (!rooms) return;
+  const Z = 0.45;  // 부재 위 (slab~beam 위, column 아래)
+
+  for (const room of rooms) {
+    const poly = room.polygon;
+    if (!poly || poly.length < 3) continue;
+    // 실 색 — ROOM_TYPE_BY_KEY 색 (dump 에서 0~255 로 전달)
+    const col = room.color || [160, 160, 160];
+    const rgb = [col[0]/255, col[1]/255, col[2]/255];
+    const isSel = !!room.selected;
+    const fillA = isSel ? 110/255 : 70/255;
+
+    const fill = _addPolygonFill(poly, rgb, fillA, Z, 4);
+    if (fill) { fill.userData.room_id = room.id; groups.rooms.add(fill); }
+
+    // 외곽선 — 선택 실은 흰색 굵게, 아니면 실 색
+    const edgeRgb = isSel ? [1, 1, 1] : rgb;
+    const e = _addPolylineLoop(poly, edgeRgb, Z + 0.01, 5, true);
+    if (e) groups.rooms.add(e);
+
+    // 용도명 라벨 — 무게중심
+    if (room.name && room.centroid) {
+      const sprite = _makeTextSprite(room.name, '#ffffff');
+      sprite.position.set(room.centroid[0], room.centroid[1], Z + 0.1);
+      sprite.renderOrder = 100;
+      groups.rooms.add(sprite);
+    }
+  }
+}
+// ─────────────────────────────────────────────────────────
+// M3-c-1: 하이라이트 — 선택 박스 / 호버 박스 / 방향·기준 모서리 / 대상 모서리
+// ─────────────────────────────────────────────────────────
+const Z_HL = 1.0;  // 하이라이트는 모든 컴포넌트 위
+const RO_HL = 200;
+
+function _addBboxStrong(bbox, rgb, lineW, renderOrder) {
+  const [x0, y0, x1, y1] = bbox;
+  const z = Z_HL;
+  const edge = _buildRectOutline(x0, y0, x1, y1, rgb, z);
+  edge.material.opacity = 1.0;
+  edge.material.transparent = true;
+  edge.material.linewidth = lineW || 2;
+  edge.renderOrder = renderOrder || RO_HL;
+  return edge;
+}
+
+function _addVLine(x, rgb, renderOrder) {
+  const yLo = -1e7, yHi = 1e7;
+  const positions = new Float32Array([x, yLo, Z_HL, x, yHi, Z_HL]);
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const mat = new THREE.LineBasicMaterial({
+    color: new THREE.Color(rgb[0], rgb[1], rgb[2]),
+    depthTest: false, transparent: true,
+  });
+  const line = new THREE.LineSegments(geom, mat);
+  line.renderOrder = renderOrder || RO_HL;
+  return line;
+}
+
+function _addHLine(y, rgb, renderOrder) {
+  const xLo = -1e7, xHi = 1e7;
+  const positions = new Float32Array([xLo, y, Z_HL, xHi, y, Z_HL]);
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const mat = new THREE.LineBasicMaterial({
+    color: new THREE.Color(rgb[0], rgb[1], rgb[2]),
+    depthTest: false, transparent: true,
+  });
+  const line = new THREE.LineSegments(geom, mat);
+  line.renderOrder = renderOrder || RO_HL;
+  return line;
+}
+
+function _drawHighlights(state) {
+  // 1) 선택 부재 4 모서리 파란선 (굵게)
+  if (state.selected_bbox) {
+    groups.highlights.add(_addBboxStrong(
+      state.selected_bbox, [120/255, 200/255, 255/255], 2, RO_HL + 5));
+  }
+  // 2) 호버 부재 (REFERENCE 상태, 노랑 굵게)
+  if (state.hover_bbox) {
+    groups.highlights.add(_addBboxStrong(
+      state.hover_bbox, [255/255, 220/255, 100/255], 2, RO_HL + 3));
+  }
+  // 3) 방향 모서리 (DIRECTION/REFERENCE 상태): X 면 vline 2 / Y 면 hline 2
+  if (state.direction && state.selected_bbox
+      && (state.state === 'direction' || state.state === 'reference')) {
+    const [x0, y0, x1, y1] = state.selected_bbox;
+    const yellow = [255/255, 220/255, 80/255];
+    if (state.direction === 'X') {
+      groups.highlights.add(_addVLine(x0, yellow, RO_HL + 1));
+      groups.highlights.add(_addVLine(x1, yellow, RO_HL + 1));
+    } else if (state.direction === 'Y') {
+      groups.highlights.add(_addHLine(y0, yellow, RO_HL + 1));
+      groups.highlights.add(_addHLine(y1, yellow, RO_HL + 1));
+    }
+  }
+  // 4) 기준 모서리 (REFERENCE 상태, 녹색 굵게)
+  if (state.state === 'reference' && state.reference_edge) {
+    const [axis, coord] = state.reference_edge;
+    const green = [120/255, 255/255, 120/255];
+    if (axis === 0) groups.highlights.add(_addVLine(coord, green, RO_HL + 4));
+    else groups.highlights.add(_addHLine(coord, green, RO_HL + 4));
+  }
+  // 5) 대상 모서리 (호버 + REFERENCE) — 주황
+  if (state.target_edge_info) {
+    const t = state.target_edge_info;
+    const orange = [255/255, 180/255, 60/255];
+    if (t.axis === 0) groups.highlights.add(_addVLine(t.coord, orange, RO_HL + 2));
+    else groups.highlights.add(_addHLine(t.coord, orange, RO_HL + 2));
+  }
+}
+
+// ─────────────────────────────────────────────────────────
+// M3-c-1: 도움말 텍스트 (좌상단 고정 DOM)
+// ─────────────────────────────────────────────────────────
+function _ensureHelpDom() {
+  let el = document.getElementById('help-text');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'help-text';
+    el.style.cssText = (
+      'position: absolute; top: 6px; left: 8px; z-index: 11;' +
+      ' color: #dcdcff; font-size: 11px; padding: 4px 8px;' +
+      ' background: rgba(0,0,0,0.55); border-radius: 4px;' +
+      ' font-family: "Pretendard", "Malgun Gothic", sans-serif;' +
+      ' pointer-events: none; max-width: calc(100% - 16px);' +
+      ' overflow: hidden; text-overflow: ellipsis; white-space: nowrap;');
+    document.getElementById('container').appendChild(el);
+  }
+  return el;
+}
+function _ensureHintDom() {
+  let el = document.getElementById('snap-hint');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'snap-hint';
+    el.style.cssText = (
+      'position: absolute; bottom: 24px; left: 8px; z-index: 11;' +
+      ' color: #fff0b4; font-size: 10px; padding: 3px 6px;' +
+      ' background: rgba(0,0,0,0.6); border-radius: 3px;' +
+      ' font-family: "Pretendard", "Malgun Gothic", monospace;' +
+      ' pointer-events: none;');
+    document.getElementById('container').appendChild(el);
+  }
+  return el;
+}
+
+function _drawText(state) {
+  const help = _ensureHelpDom();
+  help.textContent = state.help_text || '';
+  help.style.display = state.help_text ? 'block' : 'none';
+
+  const hint = _ensureHintDom();
+  if (state.snap_hint) {
+    hint.textContent = state.snap_hint;
+    hint.style.display = 'block';
+  } else {
+    hint.style.display = 'none';
+  }
+}
+
+// ─────────────────────────────────────────────────────────
+// M3-c-2 — 미리보기 (F5 고스트·실 이동·개구부·정의 가져오기·기존 개구부)
+// ─────────────────────────────────────────────────────────
+const Z_PV = 1.2;
+const RO_PV = 220;
+
+function _addPolygonFill(pts, rgb, alpha, z, renderOrder) {
+  if (!pts || pts.length < 3) return null;
+  const shape = new THREE.Shape();
+  shape.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i][0], pts[i][1]);
+  shape.closePath();
+  const geom = new THREE.ShapeGeometry(shape);
+  const mat = new THREE.MeshBasicMaterial({
+    color: new THREE.Color(rgb[0], rgb[1], rgb[2]),
+    transparent: true, opacity: alpha,
+    side: THREE.DoubleSide, depthTest: false,
+  });
+  const mesh = new THREE.Mesh(geom, mat);
+  mesh.position.z = z;
+  mesh.renderOrder = renderOrder || RO_PV;
+  return mesh;
+}
+
+function _addPolylineLoop(pts, rgb, z, renderOrder, closed) {
+  if (!pts || pts.length < 2) return null;
+  const n = pts.length;
+  const segCount = closed ? n : (n - 1);
+  const positions = new Float32Array(segCount * 6);
+  for (let i = 0; i < segCount; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % n];
+    positions[i*6+0] = a[0]; positions[i*6+1] = a[1]; positions[i*6+2] = z;
+    positions[i*6+3] = b[0]; positions[i*6+4] = b[1]; positions[i*6+5] = z;
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const mat = new THREE.LineBasicMaterial({
+    color: new THREE.Color(rgb[0], rgb[1], rgb[2]),
+    depthTest: false, transparent: true,
+  });
+  const line = new THREE.LineSegments(geom, mat);
+  line.renderOrder = renderOrder || RO_PV;
+  return line;
+}
+
+// 점 마커 — CircleGeometry 원형 메쉬. PointsMaterial 은 Ortho 카메라에서
+// sizeAttenuation 이 비정상 + 기본 정사각형이라 사용 안 함.
+// pixelRadius 를 받아 현재 zoom 으로 world 반경 환산 → 줌 무관 화면 고정 크기.
+function _addDot(x, y, rgb, pixelRadius, z, renderOrder) {
+  const worldR = (pixelRadius || 6) / (currentZoom || 0.08);
+  const geom = new THREE.CircleGeometry(worldR, 20);
+  const mat = new THREE.MeshBasicMaterial({
+    color: new THREE.Color(rgb[0], rgb[1], rgb[2]),
+    transparent: true, depthTest: false,
+    side: THREE.DoubleSide,
+  });
+  const mesh = new THREE.Mesh(geom, mat);
+  mesh.position.set(x, y, z);
+  mesh.renderOrder = renderOrder || (RO_PV + 5);
+  return mesh;
+}
+
+function _drawPreviews(state) {
+  // 기존 개구부 — 어두운 채움 + 주황 외곽 (선택분은 강조)
+  for (const op of (state.openings || [])) {
+    const fillRgb = op.selected ? [255/255, 120/255, 60/255] : [20/255, 20/255, 20/255];
+    const fillA = op.selected ? 110/255 : 120/255;
+    const f = _addPolygonFill(op.pts, fillRgb, fillA, Z_PV, RO_PV);
+    if (f) groups.previews.add(f);
+    const edgeRgb = op.selected ? [1, 1, 1] : [255/255, 150/255, 60/255];
+    const e = _addPolylineLoop(op.pts, edgeRgb, Z_PV + 0.01, RO_PV + 1, true);
+    if (e) groups.previews.add(e);
+  }
+
+  // F5 PREVIEW 고스트 — 청록 반투명 폴리곤 + 마우스 앵커 노란점
+  if (state.f5_ghost) {
+    const g = state.f5_ghost;
+    const f = _addPolygonFill(g.corners, [80/255, 200/255, 255/255],
+                              90/255, Z_PV + 0.05, RO_PV + 2);
+    if (f) groups.previews.add(f);
+    const e = _addPolylineLoop(g.corners, [80/255, 200/255, 255/255],
+                               Z_PV + 0.06, RO_PV + 3, true);
+    if (e) groups.previews.add(e);
+    if (g.mouse) {
+      groups.previews.add(_addDot(g.mouse[0], g.mouse[1],
+        [255/255, 200/255, 80/255], 5, Z_PV + 0.07, RO_PV + 4));
+    }
+  }
+
+  // 실 이동/복사 미리보기 — 녹색 폴리곤 + 기준 꼭짓점
+  if (state.room_preview_poly) {
+    const rp = state.room_preview_poly;
+    const f = _addPolygonFill(rp.polygon, [120/255, 220/255, 140/255],
+                              80/255, Z_PV + 0.05, RO_PV + 2);
+    if (f) groups.previews.add(f);
+    const e = _addPolylineLoop(rp.polygon, [120/255, 220/255, 140/255],
+                               Z_PV + 0.06, RO_PV + 3, true);
+    if (e) groups.previews.add(e);
+    if (rp.anchor) {
+      groups.previews.add(_addDot(rp.anchor[0], rp.anchor[1],
+        [255/255, 200/255, 80/255], 6, Z_PV + 0.07, RO_PV + 4));
+    }
+  }
+
+  // 개구부 미리보기 — 주황 폴리곤
+  if (state.op_preview_poly) {
+    const f = _addPolygonFill(state.op_preview_poly, [255/255, 150/255, 60/255],
+                              90/255, Z_PV + 0.05, RO_PV + 2);
+    if (f) groups.previews.add(f);
+    const e = _addPolylineLoop(state.op_preview_poly, [255/255, 150/255, 60/255],
+                               Z_PV + 0.06, RO_PV + 3, true);
+    if (e) groups.previews.add(e);
+  }
+
+  // 정의 가져오기 그룹 고스트 — footprints(청록) + room_polys(녹색)
+  if (state.import_preview_polys) {
+    const ip = state.import_preview_polys;
+    for (const fp of (ip.footprints || [])) {
+      const f = _addPolygonFill(fp, [80/255, 200/255, 255/255], 60/255,
+                                Z_PV + 0.05, RO_PV + 2);
+      if (f) groups.previews.add(f);
+      const e = _addPolylineLoop(fp, [80/255, 200/255, 255/255],
+                                 Z_PV + 0.06, RO_PV + 3, true);
+      if (e) groups.previews.add(e);
+    }
+    for (const rp of (ip.room_polys || [])) {
+      const f = _addPolygonFill(rp, [120/255, 220/255, 140/255], 60/255,
+                                Z_PV + 0.05, RO_PV + 2);
+      if (f) groups.previews.add(f);
+      const e = _addPolylineLoop(rp, [120/255, 220/255, 140/255],
+                                 Z_PV + 0.06, RO_PV + 3, true);
+      if (e) groups.previews.add(e);
+    }
+    if (ip.mouse) {
+      groups.previews.add(_addDot(ip.mouse[0], ip.mouse[1],
+        [255/255, 200/255, 80/255], 6, Z_PV + 0.07, RO_PV + 4));
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────
+// M3-c-2 — 스냅 마커 + 실 그리기 진행 점·고무줄선
+// ─────────────────────────────────────────────────────────
+function _drawMarkers(state) {
+  // F5 스냅 마커 — 노란 원 (꼭짓점 스냅)
+  if (state.f5_snap_point) {
+    groups.markers.add(_addDot(state.f5_snap_point[0], state.f5_snap_point[1],
+      [255/255, 220/255, 80/255], 8, Z_PV + 0.1, RO_PV + 10));
+  }
+
+  // 실 그리기 진행 — 점·연결선·고무줄선
+  const rd = state.room_draw;
+  if (rd && rd.active) {
+    const pts = rd.points || [];
+    const cur = rd.cursor;
+    const greenRgb = [120/255, 220/255, 140/255];
+    // 확정점 연결선
+    if (pts.length >= 2) {
+      const e = _addPolylineLoop(pts, greenRgb, Z_PV + 0.1, RO_PV + 11, false);
+      if (e) groups.markers.add(e);
+    }
+    // 고무줄선 (마지막 점 → 커서, 커서 → 첫 점)
+    if (pts.length >= 1 && cur) {
+      const last = pts[pts.length - 1];
+      const rubber = [last, cur];
+      const e1 = _addPolylineLoop(rubber, greenRgb, Z_PV + 0.1, RO_PV + 11, false);
+      if (e1) groups.markers.add(e1);
+      if (pts.length >= 2) {
+        const close = [cur, pts[0]];
+        const e2 = _addPolylineLoop(close, greenRgb, Z_PV + 0.1, RO_PV + 11, false);
+        if (e2) groups.markers.add(e2);
+      }
+    }
+    // 점 마커 — 첫 점 노랑 강조, 나머지 녹색
+    for (let i = 0; i < pts.length; i++) {
+      const rgb = (i === 0) ? [255/255, 200/255, 80/255] : greenRgb;
+      groups.markers.add(_addDot(pts[i][0], pts[i][1], rgb,
+        (i === 0) ? 7 : 5, Z_PV + 0.12, RO_PV + 12));
+    }
+    // 꼭짓점 스냅 마커
+    if (rd.snap_point) {
+      groups.markers.add(_addDot(rd.snap_point[0], rd.snap_point[1],
+        [255/255, 220/255, 80/255], 8, Z_PV + 0.12, RO_PV + 12));
+    }
+  }
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}
+</script>
+</body>
+</html>

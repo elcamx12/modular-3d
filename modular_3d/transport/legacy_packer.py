@@ -273,17 +273,6 @@ def _diagnose_blocked(item, trucks: List[Truck], site: SiteLimit) -> str:
 
 
 # ── 트럭 단일사양 최대 적재 헬퍼 (recheck 진단용) ─────────────────
-def _max_modules_per_truck(module: Module, truck: Truck, spacing: SpacingParams) -> int:
-    if module.width > _eff_truck_width(truck, spacing):
-        return 0
-    if module.height + truck.vehicle_height_offset > truck.max_height:
-        return 0
-    usable = truck.max_length - 2 * spacing.truck_edge_clearance_mm
-    if module.length > usable:
-        return 0
-    n_len = max(int((usable + spacing.panel_gap_mm) // (module.length + spacing.panel_gap_mm)), 1)
-    n_wt = math.floor(truck.max_weight / module.weight) if module.weight > 0 else n_len
-    return min(n_len, n_wt)
 
 
 def _max_floor_panels_per_truck(
@@ -626,9 +615,6 @@ def _pack_dependent_panels(
 
 
 # ── recheck (트럭 교체) ───────────────────────────────────────────
-def _trip_cargo_weight_with_extra(trip: Trip, extra: float = 0.0) -> float:
-    """B-3 정정: stacked_items 무게를 포함한 화물 합."""
-    return trip.cargo_weight + extra
 
 
 def _panel_overcount_reason(

@@ -43,9 +43,7 @@
 """
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Literal, Optional, Tuple
 
 
@@ -131,6 +129,16 @@ class BodyPart:
     width_mm: float
     height_mm: float
     subkind: str = ""   # 시각화 라벨용 — "bottom"/"top"/"perim"/"runner"/...
+    # ── 보 단면 형상 (H형강 운송 렌더용, 2026-05-28) ──
+    # section_type: 'shs'(각형강관)|'h'(H형강). 보(kind="beam")만 의미.
+    # web_dx/dy/dz: *운송 좌표계* 기준 웨브(강축) 방향 단위벡터. 건물에서 보의
+    #   웨브는 연직(=운송 z)이라 정상 자세는 (0,0,1). 부재를 눕혀 운송하면
+    #   좌표 remap 과 동일한 축 순열을 본 벡터에도 적용해 건물 단면을 그대로
+    #   회전시킨다(시각화가 강축/약축을 정확히 표현).
+    section_type: str = "shs"
+    web_dx: float = 0.0
+    web_dy: float = 0.0
+    web_dz: float = 1.0
 
     def __post_init__(self) -> None:
         if self.kind not in _PART_KINDS:
@@ -175,6 +183,11 @@ class AttachedPart:
     height_mm: float
     subkind: str = ""
     section_name: str = ""
+    # ── 보 단면 형상 (H형강 운송 렌더용, 2026-05-28) — BodyPart 와 동일 의미 ──
+    section_type: str = "shs"
+    web_dx: float = 0.0
+    web_dy: float = 0.0
+    web_dz: float = 1.0
 
     def __post_init__(self) -> None:
         if self.kind not in _PART_KINDS:

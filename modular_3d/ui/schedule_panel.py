@@ -84,6 +84,15 @@ class SchedulePanel(QWidget):
         # 로드 완료 시 큐 처리
         self._web.loadFinished.connect(self._on_load_finished)
 
+        # [2026-05-31] 풀스크린 전환 시 바차트 재계산 트리거.
+        # window.resize JS 이벤트가 QWebEngineView 에서 항상 전파되지는 않으므로
+        # Qt 위젯의 resizeEvent 를 우리 손으로 받아서 명시적으로 calc() 호출.
+        from PyQt5.QtCore import QTimer
+        self._recalc_timer = QTimer(self)
+        self._recalc_timer.setSingleShot(True)
+        self._recalc_timer.setInterval(200)
+        self._recalc_timer.timeout.connect(self._fire_recalc)
+
         if _SCHEDULE_HTML.exists():
             self._web.load(QUrl.fromLocalFile(str(_SCHEDULE_HTML)))
         else:
@@ -98,9 +107,85 @@ class SchedulePanel(QWidget):
     def web_view(self):
         return self._web
 
+    # ── 창 크기 변경 — 바차트 재렌더 ──────────────────────
+    # [2026-05-31] QMainWindow 가 풀스크린/창모드 전환 시 SchedulePanel 의
+    # resizeEvent 가 호출됨. 디바운스해서 200ms 후 1 번만 calc() 실행.
+    def resizeEvent(self, e):  # noqa: N802
+        super().resizeEvent(e)
+        if self._page_loaded:
+            # 짧은 시간 안에 여러 번 들어와도 마지막 한 번만 실행
+            self._recalc_timer.start()
+
+    def _fire_recalc(self) -> None:
+        if not self._page_loaded:
+            return
+        self._web.page().runJavaScript(
+            "if (typeof calc === 'function') { try { calc(); } catch(e) {} }"
+        )
+
     def bridge(self) -> "_ScheduleBridge":
         """외부(main)가 schedule_payload_pushed 시그널을 받기 위한 핸들."""
         return self._bridge
+
+    # ── 프로젝트 설정만 즉시 반영 (착공일·지역) ──────────────
+    # [2026-05-31] 프로젝트 설정 모달 확인 → 공정표 페이지의 pickedDate·지역을
+    # 즉시 갱신. 탭을 떠나지 않고도 바차트 날짜가 바로 바뀌도록.
+    def apply_project_settings(self, settings: Any) -> None:
+        if not self._page_loaded:
+            return
+        try:
+            from modular_3d.schedule.schedule_adapter import _region_key_for_html
+        except Exception:
+            _region_key_for_html = lambda x: None  # noqa: E731
+        start_date = str(getattr(settings, "start_date", "") or "")
+        region_city = getattr(settings, "region_city", None)
+        region_key = _region_key_for_html(region_city) if region_city else None
+        proj = {"start_date": start_date, "region_key": region_key}
+        try:
+            proj_js = json.dumps(proj, ensure_ascii=False)
+        except Exception:
+            return
+        js = (
+            "(function(){ try {"
+            f"  var __proj = {proj_js};"
+            "   if (__proj.region_key"
+            "       && typeof REGION_GADONG !== 'undefined'"
+            "       && REGION_GADONG[__proj.region_key] != null) {"
+            "     var sel = document.getElementById('i_지역');"
+            "     if (sel) { sel.value = __proj.region_key; }"
+            "     if (typeof onRegionChange === 'function') { onRegionChange(); }"
+            "   }"
+            "   if (__proj.start_date) {"
+            "     var parts = __proj.start_date.split('-');"
+            "     if (parts.length === 3 && typeof selectDate === 'function') {"
+            "       var y = parseInt(parts[0],10), m = parseInt(parts[1],10)-1,"
+            "           d = parseInt(parts[2],10);"
+            "       if (!isNaN(y) && !isNaN(m) && !isNaN(d)) selectDate(y, m, d);"
+            "     }"
+            "   }"
+            "   if (typeof calc === 'function') { calc(); }"
+            " } catch(e) { console.error('apply_project_settings:', e); } })();"
+        )
+        self._web.page().runJavaScript(js)
+
+    # ── 탭 진입 시 호출 — 어댑터 직접 호출 책임 보유 ────────
+    def on_enter(self, scene_components, project_settings, scene=None) -> None:
+        """탭 활성 시점에 schedule_adapter 로 씬 데이터 산출 후 자동주입.
+
+        main_3d 의 _on_tab_changed 가 어댑터 import·호출을 직접 하지 않고
+        본 메서드 한 번 호출로 일임. 어댑터 import 가 본 모듈에 들어와
+        ui 가 자기 도메인의 데이터 흐름을 소유.
+
+        scene 전달 시 접합부 설계 결과 기반 카테고리별 접합 카운트가
+        summary 에 정확히 반영된다(미전달 시 어댑터가 fallback 사용).
+
+        예외 발생 시 그대로 위로 전파 — 호출 측이 statusBar 등으로 알린다.
+        """
+        from modular_3d.schedule.schedule_adapter import build_scene_data
+        data = build_scene_data(list(scene_components),
+                                project_settings=project_settings,
+                                scene=scene)
+        self.apply_scene_data(data)
 
     # ── 자동주입 진입점 ──────────────────────────────────────
     def apply_scene_data(self, data: Dict[str, Any]) -> None:
@@ -175,6 +260,14 @@ class SchedulePanel(QWidget):
             "     }"
             "   }"
             "   if (typeof calc === 'function') { calc(); }"
+            # [2026-05-28] 표가 열린 상태에서 탭 재진입 시 자동 재렌더.
+            # 접합부 설계 변경 → 탭 재진입 후에도 표 숫자가 갱신되도록.
+            "   if (typeof render접합현황 === 'function') {"
+            "     var __box = document.getElementById('box_접합현황');"
+            "     if (__box && __box.style.display !== 'none' && __box.style.display !== undefined) {"
+            "       try { render접합현황(); } catch(_e) {}"
+            "     }"
+            "   }"
             " } catch(e) { console.error('schedule auto-inject:', e); } })();"
         )
         self._web.page().runJavaScript(js)
