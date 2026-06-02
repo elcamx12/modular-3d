@@ -421,29 +421,30 @@ def _wall_panel_weight_n(net_area_mm2: float, unit_kg_m2: float) -> float:
     return (net_area_mm2 / 1.0e6) * unit_kg_m2 * G_M_PER_S2
 
 
-def _interior_wall_sdl_on_slab(comp, scene: Scene, slab_area_mm2: float) -> float:
+def _interior_wall_sdl_on_slab(comp, iw_by_parent, slab_area_mm2: float) -> float:
     """comp(슬래브 부재) 위에 종속된 내벽들의 무게를 면적평균 사하중(N/mm²)으로.
 
     내벽(INTERIOR_WALL)의 parent_id 가 이 슬래브 부재면 그 무게(개구부 차감)를
     합산해 슬래브 면적으로 나눈다 — 노드 추가 없이 슬래브 압력에 얹는 근사.
+    [2026-06-02 성능] 부모별 내벽 색인(iw_by_parent: parent_id → [내벽])을 받아
+    이 슬래브에 종속된 내벽만 즉시 조회한다(기존 scene 전체 순회 = O(N²) 제거).
     """
     if slab_area_mm2 <= 1e-6:
         return 0.0
     total_w = 0.0
-    for c in scene.components.values():
-        if (c.comp_type == ComponentType.INTERIOR_WALL
-                and getattr(c, 'parent_id', 0) == comp.id):
-            wf = getattr(c, 'wall_fill', None)
-            if wf is None:
-                continue
-            net = _wall_panel_net_area_mm2(
-                wf.corners, _wall_face_openings(c, 'wall'))
-            total_w += _wall_panel_weight_n(net, _INTERIOR_WALL_UNIT_KG_M2)
+    for c in iw_by_parent.get(comp.id, ()):
+        wf = getattr(c, 'wall_fill', None)
+        if wf is None:
+            continue
+        net = _wall_panel_net_area_mm2(
+            wf.corners, _wall_face_openings(c, 'wall'))
+        total_w += _wall_panel_weight_n(net, _INTERIOR_WALL_UNIT_KG_M2)
     return total_w / slab_area_mm2
 
 
 def _comp_slab_pressures(comp, scene: Scene,
-                         roof_top_z: Optional[float]) -> Tuple[float, float]:
+                         roof_top_z: Optional[float],
+                         rooms_by_floor, iw_by_parent) -> Tuple[float, float]:
     """부재 슬래브의 (사하중 압력, 활하중 압력) N/mm² — 실 면적가중 + 옥상 + 내벽.
 
     사하중 = 슬래브 자중(두께×콘크리트) + 부가 고정하중(SDL) + 내벽 면적평균 자중.
@@ -463,12 +464,11 @@ def _comp_slab_pressures(comp, scene: Scene,
         live_kn, sdl_kn = ROOF_LIVE_LOAD_KN_M2, ROOF_SDL_KN_M2
     else:
         fi = getattr(comp, 'floor_index', 0)
-        rooms = [r for r in getattr(scene, 'rooms', {}).values()
-                 if getattr(r, 'floor_index', 0) == fi]
+        rooms = rooms_by_floor.get(fi, ())
         live_kn, sdl_kn = area_weighted_loads(rect, rooms)
     p_live = live_kn * _KN_M2_TO_N_MM2
     p_sdl = sdl_kn * _KN_M2_TO_N_MM2
-    p_iw = _interior_wall_sdl_on_slab(comp, scene, slab_area)
+    p_iw = _interior_wall_sdl_on_slab(comp, iw_by_parent, slab_area)
     return p_slab_self + p_sdl + p_iw, p_live
 
 
@@ -567,6 +567,15 @@ def _apply_slab_loads(scene: Scene, model: AnalysisModel, result: LoadResult) ->
     """
     roof_top_z = _compute_roof_top_z(scene)
     p_dead_v, p_live_v = _slab_pressures()   # 수직3층모듈 기본 압력
+    # [2026-06-02 성능] 슬래브 부재마다 scene 전체를 훑던 O(N²) 두 곳 제거 —
+    # "층별 실"·"부모별 내벽" 색인을 1회 구축해 _comp_slab_pressures 가 즉시 조회.
+    rooms_by_floor = {}
+    for r in getattr(scene, 'rooms', {}).values():
+        rooms_by_floor.setdefault(getattr(r, 'floor_index', 0), []).append(r)
+    iw_by_parent = {}
+    for c in scene.components.values():
+        if c.comp_type == ComponentType.INTERIOR_WALL:
+            iw_by_parent.setdefault(getattr(c, 'parent_id', 0), []).append(c)
 
     for cid, comp in scene.components.items():
         # 수직 3층 모듈은 슬래브 4개(1F·2F·3F 바닥 + 옥상)를 자체 보유 →
@@ -578,7 +587,8 @@ def _apply_slab_loads(scene: Scene, model: AnalysisModel, result: LoadResult) ->
 
         # 일반 슬래브 보유 부재 — 부재별 실 면적가중 압력(활+SDL) + 옥상 검출.
         if isinstance(comp, (Module, FloorPanel, CantileverSlab)):
-            p_dead, p_live = _comp_slab_pressures(comp, scene, roof_top_z)
+            p_dead, p_live = _comp_slab_pressures(
+                comp, scene, roof_top_z, rooms_by_floor, iw_by_parent)
 
         # 어떤 부재가 슬래브를 지지하는지 role 로 결정
         if isinstance(comp, Module):
@@ -825,20 +835,34 @@ def _apply_wall_loads(scene: Scene, model: AnalysisModel,
             ClassifierOptions,
         )
     except Exception as e:
-        print(f"[load] WARN: wall_classifier 임포트 실패 — 벽 자중 skip ({e})")
+        from modular_3d._utils.debug import log_warn
+        log_warn(f"wall_classifier 임포트 실패 — 벽 자중 skip: {e}", cat='load_calculator')
         return
     copts = ClassifierOptions()
     INT, EXT = _INTERIOR_WALL_UNIT_KG_M2, _EXTERIOR_WALL_UNIT_KG_M2
+    # [2026-06-02 성능] 비내력벽 내/외부 분류는 xy 평면의 인접 부재 노출 패턴만
+    # 의존하고 층(z)에는 무관 → 같은 평면 위치의 벽(=다층 복제)은 분류가 동일.
+    # (comp_type, rotation, xy 위치)를 키로 1회만 분류하고 같은 키는 재사용해
+    # 층수만큼 반복되던 O(N²) 분류를 1/층수 로 줄인다. 결과 동일성은 회귀 검증.
+    def _wkey(c):
+        return (c.comp_type, getattr(c, 'rotation', 0),
+                round(float(c.position[0]), 1), round(float(c.position[1]), 1))
+    _module_face_cache = {}
+    _struct_wall_r_cache = {}
 
     for cid, comp in scene.components.items():
         if isinstance(comp, Module):
             wfs = getattr(comp, 'wall_fills', None) or []
             if not wfs:
                 continue
-            try:
-                faces = classify_module(comp, scene, copts)
-            except Exception:
-                faces = {}
+            _k = _wkey(comp)
+            faces = _module_face_cache.get(_k)
+            if faces is None:
+                try:
+                    faces = classify_module(comp, scene, copts)
+                except Exception:
+                    faces = {}
+                _module_face_cache[_k] = faces
             beams = [mid for mid in model.comp_to_members.get(cid, [])
                      if mid in model.members
                      and model.members[mid].role == 'module_bottom_beam'
@@ -867,11 +891,15 @@ def _apply_wall_loads(scene: Scene, model: AnalysisModel,
             wf = getattr(comp, 'wall_fill', None)
             if wf is None:
                 continue
-            try:
-                fcs = classify_independent_wall(comp, scene, copts)
-                r = 0.5 * (fcs['전면'].exterior_ratio + fcs['후면'].exterior_ratio)
-            except Exception:
-                r = 1.0
+            _k = _wkey(comp)
+            r = _struct_wall_r_cache.get(_k)
+            if r is None:
+                try:
+                    fcs = classify_independent_wall(comp, scene, copts)
+                    r = 0.5 * (fcs['전면'].exterior_ratio + fcs['후면'].exterior_ratio)
+                except Exception:
+                    r = 1.0
+                _struct_wall_r_cache[_k] = r
             unit = r * EXT + (1.0 - r) * INT
             net = _wall_panel_net_area_mm2(
                 wf.corners, _wall_face_openings(comp, 'wall'))

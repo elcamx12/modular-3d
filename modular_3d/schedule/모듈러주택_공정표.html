@@ -8,6 +8,34 @@
   qrc:/// 는 Qt 리소스 스킴 (QtWebEngine 자체 제공). -->
 <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
 <style>
+  /* [2026-06-01] 종합탭·비교탭과 동일한 한국어 폰트 등록.
+     Paperlogy = 헤드라인, Freesentation = 본문. 상대경로는 schedule/ 기준. */
+  @font-face {
+  font-family: 'Freesentation';
+  src: url('../../프리젠테이션/Freesentation-4Regular.ttf') format('truetype');
+  font-weight: 400; font-style: normal;
+  }
+  @font-face {
+  font-family: 'Freesentation';
+  src: url('../../프리젠테이션/Freesentation-6SemiBold.ttf') format('truetype');
+  font-weight: 600; font-style: normal;
+  }
+  @font-face {
+  font-family: 'Freesentation';
+  src: url('../../프리젠테이션/Freesentation-7Bold.ttf') format('truetype');
+  font-weight: 700; font-style: normal;
+  }
+  @font-face {
+  font-family: 'Paperlogy';
+  src: url('../../페이퍼로지/Paperlogy-7Bold.ttf') format('truetype');
+  font-weight: 700; font-style: normal;
+  }
+  @font-face {
+  font-family: 'Paperlogy';
+  src: url('../../페이퍼로지/Paperlogy-8ExtraBold.ttf') format('truetype');
+  font-weight: 800; font-style: normal;
+  }
+
   :root {
   --primary: #1F4E79;
   --critical: #C00000;
@@ -84,14 +112,18 @@
      col 폭 1 개라 자동으로 1 컬럼이 되고, row 가 늘어남. */
   /* [2026-05-31 v3] INPUT 카드 — 입력 자체를 크게 + 행간 확대 → 카드 세로
      자연스럽게 채움. */
-  .input-card-body { gap: 24px; }
-  .input-card-body > .input-grid { row-gap: 24px; }
-  .input-card-body label { font-size: 12px; padding-bottom: 4px; }
+  .input-card-body { gap: 14px; }
+  /* [2026-06-01] 좌측 좁은 컬럼에 맞게 1 column 강제 — minmax(260px,1fr) 가
+     220px 폭 카드를 초과하던 문제 해결. */
+  .input-card-body > .input-grid { grid-template-columns: 1fr; row-gap: 12px; }
+  .input-card-body label { font-size: 14px; font-weight: 600; padding-bottom: 4px; color: #1F4E79; }
   .input-card-body input[type="number"],
   .input-card-body select,
   .input-card-body input[type="text"] {
-  padding: 10px 12px; font-size: 13px;
+  padding: 7px 10px; font-size: 14px;
   }
+  .input-card-body .unit { font-size: 13px; }
+  .input-card-body .note-text { font-size: 11px; }
   /* [2026-05-31 v3] 경제성 표 — 행 패딩 대폭 확대 + 표 자체가 세로 fill */
   #econTable { height: 100%; }
   #econTable th, #econTable td { padding: 14px 8px; font-size: 13px; }
@@ -453,12 +485,29 @@
   border-right: 1px solid #E5EAF0;
   }
 
-  /* ── 마일스톤 목록 ── */
+  /* ── 마일스톤 목록 ──
+     [2026-06-01] 세로 나열 + 컬럼 wrap: 카드 max-height 까지 세로로 쌓이다가
+     넘으면 오른쪽 열로 이어짐. 부모(.card-body)는 flex:1 1 auto 로 남은 높이 차지. */
+  /* [2026-06-01] CSS columns 로 안정적 2 열 분할.
+     8 개의 chip 이 4+4 로 자동 배치. */
   .milestone-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
+  columns: 2;
+  column-gap: 32px;
+  display: block;
+  height: 100%;
+  overflow: hidden;
   }
+  .milestone-list .ms-chip {
+  display: flex;
+  break-inside: avoid;
+  margin-bottom: 14px;
+  font-size: 14px;
+  padding: 9px 18px;
+  width: 100%;
+  box-sizing: border-box;
+  }
+  .milestone-list .ms-chip:last-child { margin-bottom: 0; }
+  .milestone-list .ms-chip .ms-day { font-size: 14px; }
   .ms-chip {
   display: flex;
   align-items: center;
@@ -699,10 +748,19 @@
   margin: 0;
   }
   body {
-  font-family: 'Segoe UI', 'Malgun Gothic', Arial, sans-serif;
+  font-family: 'Freesentation', 'Malgun Gothic', 'Segoe UI', Arial, sans-serif;
   background: #F0F0F0;
   color: #202020;
   font-size: 12px;
+  }
+  /* [2026-06-01] 전역 폰트 강제 — input/select/button/table 등 inherit 안 되는 요소도
+     모두 Freesentation 으로. Paperlogy 는 헤더에서 별도 지정. */
+  body, input, select, button, textarea, table, th, td, span, div, label, p, h1, h2, h3, h4, h5, h6 {
+  font-family: 'Freesentation', 'Malgun Gothic', 'Segoe UI', Arial, sans-serif;
+  }
+  /* Paperlogy 는 .card-header 와 명시된 곳에만. */
+  .card-header, .card-header.blue, .card-header.red, .card-header.purple, .card-header.dark {
+  font-family: 'Paperlogy', 'Malgun Gothic', sans-serif !important;
   }
   .container { padding: 12px 16px; max-width: none; }
   /* [2026-05-30] 3컬럼 자식 카드가 셀 폭을 초과하지 못하도록 — overflow 잘림 방지 */
@@ -718,7 +776,10 @@
   #tab-gantt .gantt-row { flex: 1 1 auto; min-height: 28px; align-items: stretch; }
   #tab-gantt .gantt-track { height: 100%; position: relative; }
   #tab-gantt .gantt-label { align-items: center; }
-  #tab-gantt .gantt-bar { height: 50%; top: 25%; }
+  /* [2026-06-01] 윗공종 바의 아래 모서리 = 아래공종 바의 윗 모서리.
+     종합탭 _GanttMini 와 동일한 정렬 — 행 사이 간격 0. */
+  #tab-gantt .gantt-bar { height: 100%; top: 0; border-radius: 0; }
+  #tab-gantt .gantt-row { border-bottom: 0; }
   /* [2026-05-30] Gantt 컨테이너 max-height 축소 — 페이지 스크롤이 우선 */
   .gantt-container { max-height: 65vh; }
   /* [2026-05-30] 모달 강제 인라인 display:flex 우선 적용을 위해 specificity 낮춤 */
@@ -742,27 +803,30 @@
   padding: 3px 8px;
   }
 
-  /* ── 카드 — Qt GroupBox 톤 ── */
+  /* ── 카드 — [2026-06-01] 종합탭·비교탭과 동일한 흰 카드 + 다크블루 헤더 톤. ── */
   .card {
   background: #FFFFFF;
-  border: 1px solid #B8B8B8;
-  border-radius: 3px;
+  border: 1.5px solid #C9D2DD;
+  border-radius: 16px;
   box-shadow: none;
   margin-bottom: 12px;
+  overflow: hidden;
   }
   .card-header,
   .card-header.blue,
   .card-header.red,
   .card-header.purple,
   .card-header.dark {
-  background: #E8E8E8 !important;
-  color: #202020 !important;
-  border-bottom: 1px solid #C0C0C0;
-  padding: 8px 14px;
-  font-weight: 600;
-  font-size: 12px;
+  background: #1F4E79 !important;
+  color: #FFFFFF !important;
+  border-bottom: none;
+  padding: 10px 16px;
+  font-family: 'Paperlogy', 'Malgun Gothic', sans-serif;
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: 0.2px;
   }
-  .card-body { padding: 12px 14px; }
+  .card-body { padding: 8px 10px; }
 
   /* ── 입력 — Qt LineEdit 톤 (흰바탕·얇은 회색테두리·검정글씨) ── */
   .input-group label {
@@ -1093,11 +1157,8 @@
 </head>
 <body>
 
-<div class="page-header">
-  <div style="flex:1">
-  <h1>모듈러주택 현장공정표</h1>
-  <p>코어병행형 모듈러 | 공기 + 경제성(노무비·경비) 자동 계산 | 입력 즉시 반영</p>
-  </div>
+<!-- [2026-06-01] 페이지 헤더 제거 — 사용자 요청. badge 는 DOM 만 보존(JS 가 갱신). -->
+<div style="display:none">
   <span class="badge" id="total-badge">총 공사기간 계산 중...</span>
   <span class="badge" id="region-badge">천안(충남) 기준</span>
 </div>
@@ -1121,7 +1182,7 @@
 
   <!-- [2026-05-31] min-height 추가 — 3컬럼이 viewport 높이를 채우게.
        헤더/탭바/배너/마일스톤 등 빼고 남는 영역을 INPUT/바차트/경제성이 모두 차지. -->
-  <div style="display:grid; grid-template-columns: minmax(260px, 0.9fr) minmax(520px, 2fr) minmax(280px, 1fr); gap:14px; align-items:stretch; min-height: calc(100vh - 280px);">
+  <div style="display:grid; grid-template-columns: minmax(220px, 0.55fr) minmax(560px, 2.25fr) minmax(280px, 1.05fr); grid-template-rows: minmax(0, 1fr); gap:10px; align-items:stretch; height: calc(100vh - 180px); min-height: 600px;">
 
   <!-- A. 건물 기본정보 — [2026-05-29 레이아웃] 화면 숨김. moduleTypeBody·hidden input 보존용. -->
   <div class="card" style="display:none">
@@ -1229,7 +1290,7 @@
 
   <!-- B. INPUT — [2026-05-29 레이아웃] 사용자 직접 입력 8개. -->
   <div class="card">
-  <div class="card-header red">INPUT (변수 입력)</div>
+  <div class="card-header red">설정</div>
   <!-- [2026-05-31] 카드 내부 첫번째 .input-grid 가 남는 높이를 차지하도록 flex 부여
        (CSS 에서 처리). 콘텐츠가 위에 고정되어 빈공간이 아래로 가던 문제 해결. -->
   <div class="card-body input-card-body">
@@ -1400,7 +1461,7 @@
   <span class="note-text">OTKCRK p.47 천안두정: 대지 971.2㎡ − 건축 402.16㎡ = <b>569.04㎡</b>·40작업일 → <b>14.23㎡/일</b>. 사용자 입력 면적 ÷ 14.23 = 부대공사 작업일.</span>
   </div>
   <div class="input-group" style="grid-column: 1 / -1;">
-  <button id="btn_접합현황" class="ref-btn ref-btn-inline" style="font-size:12px; padding:6px 14px;" onclick="toggle접합현황()">층별 R01-R09 접합 현황 보기</button>
+  <button id="btn_접합현황" class="ref-btn ref-btn-inline" style="font-size:12px; padding:6px 14px; width:100%; max-width:100%; box-sizing:border-box; white-space:normal; justify-content:center; text-align:center; display:flex;" onclick="toggle접합현황()">층별 R01-R09 접합 현황 보기</button>
   <!-- [2026-05-30] INPUT 카드 아웃라인 안에서 표시. 9열 표는 박스 안에서 가로 스크롤. -->
   <div id="box_접합현황" style="display:none; margin-top:10px; padding:10px 12px; background:#F5F8FA; border:1px solid #BFC9D4; border-radius:4px; overflow-x:auto;">
   <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
@@ -1495,10 +1556,15 @@
   </div>
   </div>
 
+  <!-- [2026-06-01] 가운데 컬럼 wrapper — [바차트 카드] + [주요 마일스톤 카드] 세로 분할.
+       바차트는 flex:6, 마일스톤은 flex:4 비율 — 사용자가 그린 빨간 선 위치에 맞춤.
+       마일스톤 카드 bottom 은 grid stretch 로 좌측 설정 카드 bottom 과 일치. -->
+  <div style="display:flex; flex-direction:column; gap:10px; min-width:0; min-height:0; height:100%; overflow:hidden;">
+
   <!-- [2026-05-30] 가운데 — 바차트 (간트차트) — 3컬럼 중앙, 가장 넓은 폭 -->
-  <div class="card" id="tab-gantt" style="min-width:0;">
+  <div class="card" id="tab-gantt" style="min-width:0; flex: 1 1 auto; min-height: 0; overflow: hidden;">
   <div class="card-header dark" style="display:flex; align-items:center; gap:10px;">
-  <span>바차트 (간트차트) — 30일 단위</span>
+  <span>공정바</span>
   <span style="margin-left:auto; display:inline-flex; gap:6px; align-items:center; font-weight:600;">
   <button onclick="zoomGantt(-1)" title="축소"
   style="background:#fff; color:#333; border:1px solid #ccc; border-radius:4px; width:24px; height:22px; cursor:pointer; font-weight:700;">−</button>
@@ -1526,9 +1592,20 @@
   </div>
   </div>
 
+  <!-- [2026-06-01] 주요 마일스톤 — 중앙 컬럼 wrapper 안 (공정바 카드 바로 아래).
+       세로 나열 + max-height 도달 시 우측 열로 wrap. -->
+  <div class="card" style="flex: 0 0 280px; min-height: 0; display:flex; flex-direction:column; overflow:hidden;">
+  <div class="card-header">주요 마일스톤</div>
+  <div class="card-body" style="flex: 1 1 auto; min-height: 0; overflow: hidden;">
+  <div class="milestone-list" id="milestoneList"></div>
+  </div>
+  </div>
+
+  </div><!-- /가운데 컬럼 wrapper -->
+
   <!-- F. 경제성 (노무비 + 경비) — [2026-05-30] 3컬럼 우측 -->
   <div class="card">
-  <div class="card-header" style="background:#385723;">경제성 산출 (노무비 + 경비)</div>
+  <div class="card-header">경제성 산출 (노무비 + 경비)</div>
   <!-- [2026-05-31] 표가 card-body 의 남은 높이를 모두 차지하도록 flex 부여. -->
   <div class="card-body" style="gap: 10px;">
   <button type="button" onclick="openCrew()" style="padding:6px 14px; background:#F0F0F0; border:1px solid #ABADB3; border-radius:2px; color:#202020; font-size:11px; font-weight:600; cursor:pointer; position:relative; z-index:5; pointer-events:auto; flex: 0 0 auto;">공종별 작업조(인부) 구성 보기</button>
@@ -1567,13 +1644,6 @@
   </div>
   </div>
 
-  <!-- 마일스톤 — 항상 표시 (전체 폭) -->
-  <div class="card">
-  <div class="card-header purple" style="background:#7030A0;">주요 마일스톤</div>
-  <div class="card-body">
-  <div class="milestone-list" id="milestoneList"></div>
-  </div>
-  </div>
 
 </div><!-- /container -->
 

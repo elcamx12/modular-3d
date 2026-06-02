@@ -12,9 +12,11 @@ from typing import List, Sequence, Tuple
 import numpy as np
 
 
-# 실 색면이 놓이는 z 높이(mm). 1층 바닥 슬래브(약 200mm) 위에 살짝 띄워 z-fighting
-# 회피. (정밀 슬래브 상면 추적은 추후 — 2단계는 시각화 목적의 근사 높이.)
-ROOM_PLANE_Z_MM = 250.0
+# 실 색면이 놓이는 z 높이(mm). 모듈/바닥패널 바닥 슬래브 상면 = z=100
+# (보 중심 z=0, 단면폭 200 → 상면 half_s=100; model/core.py:340). 그 위로 5mm 만
+# 띄워 z-fighting 만 피한다. 다층은 _render_room_3d 에서 floor_index×FLOOR_HEIGHT 를
+# 가산하므로 모든 층에서 동일하게 슬래브 위 5mm 가 유지된다.
+ROOM_PLANE_Z_MM = 105.0
 
 
 def _signed_area(pts: Sequence[Tuple[float, float]]) -> float:

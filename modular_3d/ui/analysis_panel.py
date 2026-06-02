@@ -19,7 +19,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
     QTreeWidget, QTreeWidgetItem, QLabel, QComboBox,
     QTableWidget, QTableWidgetItem, QRadioButton, QButtonGroup,
-    QSplitter, QHeaderView, QAbstractItemView,
+    QSplitter, QHeaderView, QAbstractItemView, QSizePolicy,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont, QColor, QBrush, QStandardItem, QStandardItemModel
@@ -36,38 +36,14 @@ from modular_3d.카탈로그.geometry import FLOOR_HEIGHT  # noqa: E402
 # → 한국어 role 매핑 + 컴포넌트 위계(타입+xy위치+층) + 5 컬럼 분리.
 # ─────────────────────────────────────────────────────────
 
-# 부재 role(영어) → 한글 표시명. 트리 내부의 "역할" 묶음 헤더에 사용.
-_ROLE_KO = {
-    'module_column':         '기둥',
-    'module_bottom_beam':    '바닥보',
-    'module_top_beam':       '천장보',
-    'floor_edge_beam':       '가장자리보',  # 길이 비교로 장변보/단변보 분기됨
-    'wall_column':           '벽 기둥',
-    'wall_bottom_runner':    '벽 하부보',
-    'wall_top_runner':       '벽 상부보',
-    'cantilever_beam':       '캔틸레버보',
-    'cantilever_slab_beam':  '캔틸슬래브 보',
-    'mid_beam':              '중간보',
-    'mid_column':            '중간기둥',
-    'core_column':           '코어 기둥',
-    'core_bottom_runner':    '코어 하부보',
-    'core_top_runner':       '코어 상부보',
-    'core_truss_v':          '트러스(수직)',
-    'core_truss_h':          '트러스(수평)',
-    'core_truss_d':          '트러스(대각)',
-    'core_slab_beam':        '슬래브 변',
-}
-
-# role 한글명의 정렬 우선순위 — 트리 내부 표시 순서.
-_ROLE_KO_ORDER = [
-    '기둥', '벽 기둥', '코어 기둥', '중간기둥',
-    '천장보', '바닥보',
-    '벽 상부보', '벽 하부보', '코어 상부보', '코어 하부보',
-    '장변보', '단변보', '가장자리보',
-    '중간보', '캔틸레버보', '캔틸슬래브 보',
-    '트러스(수직)', '트러스(수평)', '트러스(대각)',
-    '슬래브 변',
-]
+# [2026-05-31 물량탭 Phase 1] 역할 한글 매핑·분류는 analysis/member_roles.py 로
+# 추출(물량 분해기와 공유). 기존 이름은 별칭으로 유지 — 본 파일 호출부 회귀 방지.
+from modular_3d.analysis.member_roles import (  # noqa: E402
+    ROLE_KO as _ROLE_KO,
+    ROLE_KO_ORDER as _ROLE_KO_ORDER,
+    role_ko_order_key as _role_ko_order_key,
+    classify_role_ko as _classify_role_ko_fn,
+)
 
 # 컴포넌트 타입(한글) 정렬 — RC 코어 계열을 맨 아래로.
 _COMP_TYPE_ORDER = [
@@ -80,12 +56,7 @@ _COMP_TYPE_ORDER = [
 from modular_3d._utils.format import alpha_label as _alpha_label
 
 
-
-def _role_ko_order_key(name: str) -> int:
-    try:
-        return _ROLE_KO_ORDER.index(name)
-    except ValueError:
-        return len(_ROLE_KO_ORDER)
+# _role_ko_order_key 는 member_roles.role_ko_order_key 별칭(상단 import)으로 대체됨.
 
 
 def _comp_type_order_key(tname: str) -> int:
@@ -254,14 +225,12 @@ class AnalysisPanel(QWidget):
         tf = QFont("Consolas")
         tf.setPointSize(9)
         self._tree.setFont(tf)
-        # [2026-05-30] 숫자 4 컬럼은 ResizeToContents(내용 최소폭), 첫 컬럼
-        # (부재명)은 Stretch. 트리 폭이 컬럼 합보다 조금 넓어도(테두리·여백
-        # 슬랙) 부재명 칸이 그 슬랙을 흡수해 *트리 안쪽 우측 여백이 안 생긴다*.
-        # 폭 산정은 sizeHintForColumn(내용 기반, Stretch 무관)이라 부재명 칸이
-        # 과도하게 커지지 않고 최소폭 + 작은 슬랙 수준에 머문다.
+        # [2026-06-01] 모든 컬럼 ResizeToContents — 부재명(col0)도 *내용폭 고정*.
+        # 이전 col0=Stretch 는 패널이 내용보다 넓을 때 부재명 칸이 그 여분을 흡수해
+        # 실제 텍스트(가장 긴 행 = 들여쓰기+텍스트)보다 과도하게 넓어졌다(사용자 지적).
+        # 내용폭 고정으로 부재명 칸이 가장 긴 행 길이에 딱 맞고 더 안 늘어난다.
         hdr = self._tree.header()
-        hdr.setSectionResizeMode(0, QHeaderView.Stretch)
-        for c in range(1, 5):
+        for c in range(5):
             hdr.setSectionResizeMode(c, QHeaderView.ResizeToContents)
         hdr.setStretchLastSection(False)
         self._tree.setUniformRowHeights(True)
@@ -272,7 +241,10 @@ class AnalysisPanel(QWidget):
         self._tree.currentItemChanged.connect(self._on_tree_item_changed)
         member_lay.addWidget(self._tree)
 
-        self._tabs.addTab(member_page, "부재별 내부력")
+        # [2026-06-02 완전 분리] 부재력 트리는 탭 묶음(_tabs) 밖, root 에 직접 둔다.
+        # 탭 묶음(QStackedLayout)은 숨은 페이지(물량/운송)의 최소폭까지 전체 최소폭에
+        # 반영해, 부재력만 봐도 패널이 그 폭 밑으로 안 줄던 문제(우측 흰 공간)를 해소.
+        root.addWidget(member_page)
 
         # ── 탭 3: 물량산출 (2026-05-08 신규) ─────────────────
         self._build_quantity_tab()
@@ -320,21 +292,22 @@ class AnalysisPanel(QWidget):
         """
         # [2026-05-30] '요약' 탭 제거 — 실제 탭은 [부재별 내부력, 물량산출, 운송].
         # show_summary 인자는 호출부 호환 위해 유지하되 무시한다(요약 탭 없음).
-        flags = [show_member, show_quantity, show_transport]
-        # self._tabs.count() 가 더 적으면 (운송탭 미생성 등) 그 범위만 처리
-        n = min(len(flags), self._tabs.count())
+        # [2026-06-02 완전 분리] 부재력 트리는 _tabs 밖(root 직접)이라 항상 표시.
+        # _tabs 는 물량/운송 서브탭 전용(인덱스 0=물량, 1=운송). 둘 다 숨기면
+        # (구조해석 탭) 묶음 자체를 hide 해 부재력 트리 폭에 전혀 영향 없게 한다.
+        tab_flags = [show_quantity, show_transport]
+        n = min(len(tab_flags), self._tabs.count())
         for i in range(n):
-            vis = flags[i]
+            vis = tab_flags[i]
             if hasattr(self._tabs, 'setTabVisible'):
                 self._tabs.setTabVisible(i, bool(vis))
             else:
-                # 폴백: PyQt5 < 5.15 → 탭 자체는 못 숨김. 비활성화만.
                 self._tabs.setTabEnabled(i, bool(vis))
-        # 현재 인덱스가 숨겨졌거나 범위 밖이면 보이는 첫 탭으로 이동
+        self._tabs.setVisible(any(tab_flags[:n]))
         cur = self._tabs.currentIndex()
-        if cur < 0 or cur >= n or not flags[cur]:
+        if any(tab_flags[:n]) and (cur < 0 or cur >= n or not tab_flags[cur]):
             for i in range(n):
-                if flags[i]:
+                if tab_flags[i]:
                     self._tabs.setCurrentIndex(i)
                     break
         # [2026-05-30] 폭 분리 — 진입한 메인 탭의 내용폭으로 패널 폭을 재고정.
@@ -887,24 +860,8 @@ class AnalysisPanel(QWidget):
         self._fit_panel_to_tree()
 
     def _classify_role_ko(self, m, model, mid: int, cid: int) -> str:
-        """부재 role 영어 → 한글 표시명. floor_edge_beam 은 길이로 장/단변 분기."""
-        role = m.role
-        if role != 'floor_edge_beam':
-            return _ROLE_KO.get(role, role)
-        # 같은 패널의 가장자리보 4 개 — 길이로 장변/단변 분류
-        same_role_lens = []
-        for x in model.comp_to_members.get(cid, []):
-            mx = model.members.get(x)
-            if mx is not None and mx.role == 'floor_edge_beam':
-                same_role_lens.append((x, model.get_member_length(x)))
-        if not same_role_lens:
-            return '가장자리보'
-        L_max = max(L for _, L in same_role_lens)
-        L_min = min(L for _, L in same_role_lens)
-        if (L_max - L_min) < 50.0:  # 거의 정사각형 패널
-            return '가장자리보'
-        L = model.get_member_length(mid)
-        return '장변보' if L >= (L_max + L_min) / 2 else '단변보'
+        """부재 role 영어 → 한글 표시명. 공용 함수(member_roles)에 위임."""
+        return _classify_role_ko_fn(m, model, mid, cid)
 
     def _fill_member_tree_flat(self, model, comp_labels, mfs):
         """scene 미주입 폴백 — 옛 단일컬럼식 평탄 트리."""
@@ -1059,40 +1016,65 @@ class AnalysisPanel(QWidget):
                 w = fm.horizontalAdvance(lab.text()) + 12
                 max_w = max(max_w, w)
         panel_min = max(380, max_w + 12)
-        # [2026-05-30] 물량 탭도 자기 pane 폭을 내용폭으로 강제 고정 → 구조해석
-        # 탭과 폭 분리(서로 다른 pane). minimumWidth 는 바닥용으로 같이 지정.
-        self.setMaximumWidth(16777215)
-        self.setMinimumWidth(panel_min)
-        self._force_pane_width(panel_min)
+        # [2026-06-02] 물량 서브탭이 *화면에 보일 때만* 패널 폭을 고정한다.
+        # 구조해석 탭에선 부재력 트리가 _tabs 밖으로 분리되고 _tabs(물량/운송)는
+        # 숨겨지는데, 여기서 par 폭을 건드리면 방금 잡은 부재력 폭(477)을 물량 폭
+        # (567)으로 덮어써 우측 흰 공간이 생겼다(2026-06-02 진단으로 확정).
+        if self._tabs.isVisible():
+            self.setMaximumWidth(16777215)
+            self.setMinimumWidth(panel_min)
+            self._force_pane_width(panel_min)
         self.updateGeometry()
 
     def _fit_panel_to_tree(self):
-        """트리 컬럼 폭 합계에 맞춰 패널의 minimumWidth 를 갱신.
+        """트리 내용폭(헤더 + 모든 행의 실제 텍스트)에 맞춰 패널·우측 pane 폭 고정.
 
-        사용자 정책: 가로 스크롤 비활성 + 내용 길이에 따라 도크 폭이
-        자동 확장. 내용 짤림이 발생하지 않을 만큼만 최소폭으로 잡고,
-        사용자가 마우스로 더 넓히는 것은 허용.
-
-        - 빈 트리: 최소 200 px 정도로 작게 유지.
-        - 내용 있음: 각 컬럼 ResizeToContents 폭 합 + 인덴트·여백.
+        [2026-06-01] 기존 sizeHintForColumn 방식은 col0 Stretch·트리 펼침/현재폭
+        상태에 따라 값이 진동(예: 265↔567)·과대됐다(실제 내용보다 넓게 잡힘).
+        → 항목 텍스트 폭을 *직접* 재서 트리 상태와 무관한 일관 내용폭을 산출한다.
+        col0 = 부재명 + 깊이별 들여쓰기, 숫자칸 = 값/헤더 중 큰 폭. 펼침 여부 무관.
         """
-        # [2026-05-30] 컬럼0(부재명)은 Stretch 라 columnWidth 가 도크 폭에 따라
-        # 변하므로, 폭 산정에는 *내용 기반* sizeHintForColumn 을 쓴다(Stretch 무관).
-        #   col_total = 각 컬럼 내용폭 합 + 트리 테두리 + (세로 스크롤바 보일 때만).
-        #   임의 여백 없이 1px 잘림 방지용 안전치 4 만.
-        col_total = sum(self._tree.sizeHintForColumn(c)
-                        for c in range(self._tree.columnCount()))
-        frame_pad = 2 * self._tree.frameWidth()
-        vbar = self._tree.verticalScrollBar()
+        tree = self._tree
+        ncol = tree.columnCount()
+        fm = tree.fontMetrics()
+        hdr = tree.header()
+        hfm = hdr.fontMetrics() if hdr is not None else fm
+        CELL_PAD = 12   # 셀 좌우 여백(텍스트 1px 잘림 방지)
+        indent = tree.indentation()
+        # 헤더 폭으로 초기화.
+        cw = [0] * ncol
+        hi = tree.headerItem()
+        for c in range(ncol):
+            t = hi.text(c) if hi is not None else ''
+            cw[c] = hfm.horizontalAdvance(t) + CELL_PAD
+        # 모든 항목(펼침 무관) 순회 — col0 만 깊이 들여쓰기 가산.
+        stk = [(tree.topLevelItem(i), 0)
+               for i in range(tree.topLevelItemCount())]
+        while stk:
+            it, d = stk.pop()
+            if it is None:
+                continue
+            for c in range(ncol):
+                w = fm.horizontalAdvance(it.text(c)) + CELL_PAD
+                if c == 0:
+                    w += (d + 1) * indent
+                if w > cw[c]:
+                    cw[c] = w
+            for k in range(it.childCount()):
+                stk.append((it.child(k), d + 1))
+        col_total = sum(cw)
+        frame_pad = 2 * tree.frameWidth()
+        vbar = tree.verticalScrollBar()
         if vbar is not None and vbar.isVisible():
             frame_pad += vbar.sizeHint().width()
         tree_min = max(200, col_total + frame_pad)
-        self._tree.setMinimumWidth(tree_min)
+        tree.setMinimumWidth(tree_min)
         panel_min = tree_min + 8   # root 좌우 마진(4+4)
-        # [2026-05-30] minimumWidth 만으로는 *이미 넓어진* 패널이 안 줄어든다
-        # (최소폭은 바닥일 뿐). 그래서 부모 우측 pane 의 폭 자체를 측정한
-        # 내용폭으로 *강제 고정*(_force_pane_width)해 실제로 그 폭이 되게 한다.
-        # 구조해석·물량은 서로 다른 pane 이라 이렇게 하면 폭이 분리된다.
+        # 부모 우측 pane 을 내용폭으로 고정(minimumWidth 만으론 이미 넓어진 폭이
+        # 안 줄어듦). 직접 측정이라 호출마다 같은 값 → 진동 없음.
+        # 숨은 서브탭은 set_visible_subtabs 에서 가로 Ignored 처리되어 패널 최소폭을
+        # 안 키운다. 따라서 self 최대폭은 풀어둔다(다른 메인탭서 넓은 서브탭 노출 시
+        # 클리핑 방지). 패널 폭은 부모 pane setFixedWidth 로 고정.
         self.setMaximumWidth(16777215)
         self.setMinimumWidth(panel_min)
         self._force_pane_width(panel_min)

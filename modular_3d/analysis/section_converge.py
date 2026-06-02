@@ -66,6 +66,7 @@ class ConvergeResult:
     iterations: int                              # 실제 반복 횟수
     converged: bool                              # True=단면 안정, False=진동(안전측 종료)
     am: Optional[AnalysisModel] = None           # 수렴에 쓴 해석 모델(타입 파생·렌더용)
+    ops_results: Optional[dict] = None           # 수렴 단면 기준 케이스별 해석 결과(층간변위비 검토용)
 
 
 # ── 색(role) 분류 ────────────────────────────────────────────
@@ -460,7 +461,9 @@ def converge_sections(scene, options: ConvergeOptions,
     it = 0
 
     for it in range(1, max_iter + 1):
-        results = solve_all_cases(scene, prebuilt_am=am)
+        # [2026-06-02 성능] 첫 반복만 모델 검증(verify=True). 이후 반복은 토폴로지·
+        # 등록 구조가 동일(단면 강성만 변경)하므로 검증 생략 — 빌드가 가벼워진다.
+        results = solve_all_cases(scene, prebuilt_am=am, verify=(it == 1))
         demands = extract_envelope_demands(am, results)
         assign, ratios, critical, group_of, ng = _select_all(
             am, scene, options, demands, locked_ids)
@@ -502,6 +505,7 @@ def converge_sections(scene, options: ConvergeOptions,
         iterations=it,
         converged=converged,
         am=am,
+        ops_results=results,
     )
 
 
@@ -538,16 +542,38 @@ def _type_summary(am: AnalysisModel, secs: Dict[int, object],
     return ' / '.join(parts), max_ratio, (max_ratio <= 1.0)
 
 
+def _comp_section_sig(cid: int, am: AnalysisModel, secs: Dict[int, object],
+                      scene=None) -> tuple:
+    """컴포넌트 cid 의 단면 시그니처 — *자체 부재 + 종속 부재* 단면 모두 포함.
+
+    [2026-06-01] 종전엔 자체 부재(comp_to_members)만 봐서, 종속 부재(캔틸보·슬래브·
+    중간보·중간기둥)의 단면이 달라도 같은 타입으로 묶였다. scene 이 주어지면
+    find_dependent_comp_ids 로 직접 종속 cid 를 찾아 그 단면도 시그니처에 합친다.
+    자체/종속을 구분 표기(접두어)해 "자체는 같고 종속만 다른" 경우도 분리되게 한다.
+    """
+    own = sorted(getattr(secs.get(mid), 'name', '?')
+                 for mid in am.comp_to_members.get(cid, []) if mid in secs)
+    sig = ['own:' + n for n in own]
+    if scene is not None:
+        dep_names = []
+        for dcid in find_dependent_comp_ids(scene, cid):
+            for mid in am.comp_to_members.get(dcid, []):
+                if mid in secs:
+                    dep_names.append(getattr(secs.get(mid), 'name', '?'))
+        sig += ['dep:' + n for n in sorted(dep_names)]
+    return tuple(sig)
+
+
 def _derive_from_labels(am: AnalysisModel, secs: Dict[int, object],
                         ratios: Dict[int, float], labels: Dict[int, str],
-                        floor_of_comp: Dict[int, int] = None):
+                        floor_of_comp: Dict[int, int] = None, scene=None):
     """base 라벨(모듈A-1)별로 단면 배정 시그니처가 다르면 -1/-2 로 분기.
 
     Returns: (types: List[dict], comp_type_label: Dict[comp_id, full_label]).
     types 각 항목: {label, rep_comp_id, member_ids, summary, max_ratio, ok,
                    comp_ids, floor_counts(층→개수), count(총개수)}.
-    [한계] 컴포넌트 자체 부재(comp_to_members)만으로 시그니처 — 종속 부재 차이로
-    인한 분기는 P4b 에서 보강(종속 부재 포함).
+    [2026-06-01] 시그니처에 *종속 부재 단면* 포함(scene 전달 시) — 자체 부재가 같아도
+    종속(캔틸 등) 단면이 다르면 다른 타입으로 분기.
     """
     floor_of_comp = floor_of_comp or {}
     by_base: Dict[str, List[int]] = defaultdict(list)
@@ -560,9 +586,7 @@ def _derive_from_labels(am: AnalysisModel, secs: Dict[int, object],
         cids = by_base[base]
         sig_of: Dict[int, tuple] = {}
         for cid in cids:
-            mids = am.comp_to_members.get(cid, [])
-            sig_of[cid] = tuple(sorted(
-                getattr(secs.get(mid), 'name', '?') for mid in mids if mid in secs))
+            sig_of[cid] = _comp_section_sig(cid, am, secs, scene)
         # 시그니처 → 변형 순번(등장 순, comp id 정렬로 안정).
         sig_rank: Dict[tuple, int] = {}
         order: List[tuple] = []
@@ -686,6 +710,10 @@ def _is_indep_steel_comp(scene, cid: int) -> bool:
         return False
     if int(getattr(c, 'sub_index', 0) or 0) != 0:
         return False
+    # 바닥패널에 흡수된 구조벽(merged_fp_id)은 별도 타입이 아니라 부모 패널 구성에
+    # 포함된다 → 단면설계 타입 목록에서 제외(라벨은 배치설계 표시용으로만 부여).
+    if getattr(c, 'merged_fp_id', None):
+        return False
     try:
         from modular_3d.model import ComponentType as _CT
         return getattr(c, 'comp_type', None) in (
@@ -715,4 +743,5 @@ def derive_section_types(result: ConvergeResult, scene):
     floor_of_comp = {cid: int(getattr(comps.get(cid), 'floor_index', 0) or 0) + 1
                      for cid in labels}
     return _derive_from_labels(am, result.member_sections,
-                               result.member_ratios, labels, floor_of_comp)
+                               result.member_ratios, labels, floor_of_comp,
+                               scene=scene)

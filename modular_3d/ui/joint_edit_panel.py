@@ -69,21 +69,18 @@ class JointEditPanel(QWidget):
         lay.setContentsMargins(6, 6, 6, 6)
         lay.setSpacing(6)
 
-        # ── 범례 (맨 위) — 규칙 ID 색 + diaphragm 줄(다이어프램 표시) ──
+        # ── 범례 위젯 생성만 (배치는 __init__ 끝 '변경 내용 저장' 버튼 아래) ──
         legend_title = QLabel('범례')
         legend_title.setStyleSheet('font-weight: bold; font-size: 11px;')
-        lay.addWidget(legend_title)
         # spec 의 rule_id 집합으로 refresh_legend 가 동적으로 채운다. 'diaphragm'
         # 줄은 가시성 토글 대신 다이어프램 표시(diaphragm_toggle)로 동작한다.
         self._legend_holder = QWidget()
         self._legend_lay = QVBoxLayout(self._legend_holder)
         self._legend_lay.setContentsMargins(0, 0, 0, 0)
         self._legend_lay.setSpacing(2)
-        lay.addWidget(self._legend_holder)
 
         sep0 = QFrame()
         sep0.setFrameShape(QFrame.HLine)
-        lay.addWidget(sep0)
 
         # ── 제목 ───────────────────────────────────────
         title = QLabel('접합부 설계')
@@ -186,6 +183,11 @@ class JointEditPanel(QWidget):
             '저장합니다. 저장한 파일은 배치 설계·모듈 정의 탭에서 불러올 수 있습니다.')
         self._btn_save.clicked.connect(self.save_requested.emit)
         lay.addWidget(self._btn_save)
+
+        # ── 범례 (변경 내용 저장 버튼 아래) — 구분선 + 규칙 ID 색 + diaphragm 줄 ──
+        lay.addWidget(sep0)
+        lay.addWidget(legend_title)
+        lay.addWidget(self._legend_holder)
 
         lay.addStretch(1)
 

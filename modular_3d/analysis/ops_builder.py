@@ -540,7 +540,8 @@ def _step_fix_base_nodes(om: OpsModel, am: AnalysisModel) -> None:
 
 
 
-def build_ops_model(analysis_model: AnalysisModel, scene=None) -> OpsModel:
+def build_ops_model(analysis_model: AnalysisModel, scene=None,
+                    verify: bool = True) -> OpsModel:
     """AnalysisModel → OpenSees 3D 프레임 모델 등록.
 
     [Pipeline — 단계 D (2026-05-08 정리)]
@@ -657,20 +658,24 @@ def build_ops_model(analysis_model: AnalysisModel, scene=None) -> OpsModel:
         # [Phase 7] 검증 스위치 — spec self-consistency + OpenSees 실등록 대조.
         # Q5=가 (불일치 시 빌드 실패) 정책으로 strict=True.
         # critical 항목만 차단 — 결합 충돌 같은 비-critical 항목은 issues 누적만.
-        try:
-            self_res = om.spec.validate(strict=False)
-            if self_res.critical:
-                raise RuntimeError(
-                    f'[build_ops_model] ModelSpec self-validate critical '
-                    f'{len(self_res)} 건:\n  - '
-                    + '\n  - '.join(self_res.issues[:10])
-                )
-            ops_res = om.spec.verify_against_opensees(tol_mm=1e-2, strict=True)
-        except RuntimeError as e:
-            # 검증 실패 시에도 빌드 자체는 끝났으므로 om 을 반환할 수 있음.
-            # 정책상 RuntimeError 를 재발생시켜 호출자에게 알림.
-            dprint('ops_builder', f'[ops_builder] 검증 실패: {e}')
-            raise
+        # [2026-06-02 성능] verify=False 면 검증 생략 — 단면설계 수렴 2~N 반복은
+        # 토폴로지·등록 구조가 첫 빌드와 동일(단면 강성만 변경)하므로 첫 빌드의
+        # 검증으로 충분하다. 첫 빌드(verify=True)에서 통과하면 이후 빌드는 안전.
+        if verify:
+            try:
+                self_res = om.spec.validate(strict=False)
+                if self_res.critical:
+                    raise RuntimeError(
+                        f'[build_ops_model] ModelSpec self-validate critical '
+                        f'{len(self_res)} 건:\n  - '
+                        + '\n  - '.join(self_res.issues[:10])
+                    )
+                ops_res = om.spec.verify_against_opensees(tol_mm=1e-2, strict=True)
+            except RuntimeError as e:
+                # 검증 실패 시에도 빌드 자체는 끝났으므로 om 을 반환할 수 있음.
+                # 정책상 RuntimeError 를 재발생시켜 호출자에게 알림.
+                dprint('ops_builder', f'[ops_builder] 검증 실패: {e}')
+                raise
 
     return om
 

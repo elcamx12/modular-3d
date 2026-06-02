@@ -79,7 +79,12 @@ class JointEditController:
             dprint('JOINT-EDIT', f'[JOINT-EDIT] 해석 모듈 import 실패: {e}')
             return
         try:
-            am = build_analysis_model(self.window._scene)
+            # 토폴로지 공유 제공자 경유 — 실패 시 기존 빌드 폴백(동작 보존).
+            try:
+                from modular_3d.analysis.model_provider import get_analysis_model
+                am = get_analysis_model(self.window._scene)
+            except Exception:
+                am = build_analysis_model(self.window._scene)
             om_view = build_ops_model(am, scene=self.window._scene)
             # 접합 픽킹을 위해 마지막 빌드 결과 보관.
             self._joint_om = om_view

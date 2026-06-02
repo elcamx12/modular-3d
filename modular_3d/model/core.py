@@ -783,11 +783,13 @@ class CantileverSlab(Component):
         ]
 
         # 슬래브 (상면 = 보 상면 = z=half_s)
+        # 끝변(닫힌 ㅣ변, x=w 쪽)도 긴 변과 동일하게 단면폭 s 만큼 안쪽으로 들여
+        # 끝변 보 안쪽 면(x=w-s)에 맞춘다. x=0 은 모듈 접합면(보 없음)이라 그대로 둔다.
         slab_bot = half_s - 150.0
         self.slab = SlabData(
             corners=np.array([
-                to_world(0, s, slab_bot), to_world(w, s, slab_bot),
-                to_world(w, d - s, slab_bot), to_world(0, d - s, slab_bot),
+                to_world(0, s, slab_bot), to_world(w - s, s, slab_bot),
+                to_world(w - s, d - s, slab_bot), to_world(0, d - s, slab_bot),
             ]), thickness=150.0)
         self._apply_beam_section_type()
 

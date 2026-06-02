@@ -148,7 +148,13 @@ class F6Mixin:
 
         dprint('ANALYSIS', '[ANALYSIS] F6 → OpenSees 하중조합 자동 해석 시작')
         try:
-            am = build_analysis_model(self._scene)
+            # 토폴로지 공유 제공자 경유 — 해석·단면·접합뷰·공정이 같은 am 을
+            # 재사용. 제공자 실패 시 기존 직접 빌드로 폴백(동작 보존).
+            try:
+                from modular_3d.analysis.model_provider import get_analysis_model
+                am = get_analysis_model(self._scene)
+            except Exception:
+                am = build_analysis_model(self._scene)
             # 시각화용으로 한 번 빌드 (마지막 케이스의 ops 상태가 남음 — 시각화엔 영향 없음)
             om_view = build_ops_model(am, scene=self._scene)
             print(om_view.summary())
@@ -167,7 +173,10 @@ class F6Mixin:
                 dprint('ANALYSIS', '[ANALYSIS] self_check 통과')
 
             # KDS 하중조합 일괄 해석 (1.4D, D+L, 지진/풍 ±조합, 전도방지)
-            results = solve_all_cases(self._scene)
+            # [2026-06-02 성능] 위에서 get_analysis_model 로 확보한 am 을 그대로
+            # 넘겨 토폴로지(해석모델) 중복 빌드를 1회 줄인다. 미전달 시 solve_all_cases
+            # 가 build_analysis_model 을 다시 호출해(캐시 우회) 같은 토폴로지를 또 짓는다.
+            results = solve_all_cases(self._scene, prebuilt_am=am)
             for name, res in results.items():
                 print(res.summary())
 
@@ -461,9 +470,8 @@ class F6Mixin:
             self._run_quantity_takeoff_for_case(am, all_results, case_name)
             print(f'[QTY] 재산정 완료')
         except Exception as e:
-            import traceback
-            print(f'[QTY] 기둥 층구간 재산정 실패: {e}')
-            traceback.print_exc()
+            from modular_3d._utils.debug import log_error
+            log_error(f'기둥 층구간 재산정 실패: {e}', cat='controls_f6', exc=True)
 
     def attach_deformed_controls(self, checkbox, slider, label):
         """main_3d 가 만든 변형 형상 컨트롤 위젯들을 컨트롤러에 연결 (Phase 4-B)."""

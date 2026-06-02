@@ -242,7 +242,12 @@ def _categorize_joints_by_rule(
     except Exception:
         return {}, 0, 0, 0, 0
     try:
-        am = build_analysis_model(scene)
+        # 토폴로지 공유 제공자 경유 — 실패 시 기존 빌드 폴백(동작 보존).
+        try:
+            from modular_3d.analysis.model_provider import get_analysis_model
+            am = get_analysis_model(scene)
+        except Exception:
+            am = build_analysis_model(scene)
         om = build_ops_model(am, scene=scene)
     except Exception:
         return {}, 0, 0, 0, 0

@@ -1,31 +1,30 @@
-"""운송탭 UI — 분석 ⑤ 영역 ①~④ 구현 (Phase 6).
+"""운송탭 UI — AnalysisPanel 운송 탭 (개편: 우측 단일 패널 + 중앙 3D 오버레이 실행).
 
-[탭 구조 — AnalysisPanel 의 4번째 탭으로 추가]
-    영역 ① 상단 상태바 (정책 라벨 + 8단계 인디케이터)
-    영역 ② 옵션 패널 (도로/거리/속도/간격/단가/캔틸/비내력벽 SpinBox + 자동재계산 OFF)
-    영역 ③ 결과 메트릭 5 카드
-    영역 ④ sub-탭 (회차표 / 적재율 / Top+Rear 도식 / 경제성)
-    [▷ 운송 계산 실행] 버튼이 진입점 — 사용자 결정 ⑧-1: 자동 OFF 기본
+[구조 — main_3d 운송 탭이 *중앙 3D + 우측 결과* 2단으로 조립]
+    우측 결과 패널(_right_pane_scroll):
+        ② 운송 옵션 (거리 / 운임 방식 / 트럭별 km단가 / 벽 단위중량)
+        ③ 결과 요약 카드 (회차·평균적재율·거리·총 운임)
+        ④ sub-탭 (회차표 / 적재율 / 경제성)
+        ⑤ 회차별 트럭 override 표
+        ⑦ 참고자료 버튼 (최하단)
+    실행 버튼(_run_btn)은 main_3d 가 중앙 3D 뷰 우상단 오버레이로 reparent 한다.
+    문제(운송 불가·경고)는 누적 패널 대신 알림창(QMessageBox)으로 표시한다.
 
-[Phase 7 추가]
-- ⑤ 회차별 트럭 override 표 — `_build_area_overrides`
-- (회차표 우클릭 컨텍스트 메뉴는 2026-05-26 제거 — ⑤ 표 콤보만 사용)
-- 상단 [트럭 카탈로그 관리...] 버튼 — `_open_catalog_dialog`
-
-[영역 ⑥~⑧ 는 후속 페이즈]
-- ⑥ 수동 시뮬레이션 → Phase 8
-- ⑦ 참고자료 → Phase 8
-- ⑧ 진단 영역 → Phase 9 (본 페이즈에서는 간단한 QTextEdit 만)
+[개편 이력 — 2026-05-31 운송탭 개편]
+- 좌측 입력 패널·① 상태바·트럭 카탈로그 버튼·디버그 버튼·자동 재계산 제거.
+- 비내력벽 자동판별 ON·격자 100mm·FloorPanel 장애물 포함은 코드 고정값.
+- 진단 누적(QTextEdit) → 문제만 뜨는 알림창.
 
 [외부 주입 API]
     tab.set_scene_and_model(scene, model)
     tab.set_design_result(design_result_dict, current_policy)
-    tab.set_state(state)
-호출 후 사용자가 [▷ 운송 계산 실행] 누르면 어댑터+패커+운임 자동 실행.
+    tab.set_state(state) / tab.apply_project_settings(settings)
+    tab.populate_transport(design_results, policy)  — main_3d 경유
 
 [발신 시그널]
 - transport_member_highlight(list[int]) — 회차표 행 더블클릭 시 cid 리스트
 - transport_blocked(int) — 운송 불가 항목 수
+- transport_pack_updated / transport_trip_clicked — 중앙 3D 도식 연동
 """
 from __future__ import annotations
 
@@ -43,14 +42,14 @@ except Exception:
     pass
 
 from PyQt5.QtCore import Qt, QTimer, QUrl, pyqtSignal
-from PyQt5.QtGui import QColor, QBrush, QFont
+from PyQt5.QtGui import QColor, QBrush
 from PyQt5.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog,
-    QDialogButtonBox, QDoubleSpinBox, QFormLayout, QFrame, QGroupBox,
+    QDialogButtonBox, QFormLayout, QFrame, QGroupBox,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMenu, QMessageBox, QPushButton, QScrollArea, QSizePolicy,
-    QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget,
-    QTextEdit, QVBoxLayout, QWidget,
+    QSpinBox, QSplitter, QTableWidget, QTableWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 from modular_3d.transport.adapter import (
@@ -123,15 +122,7 @@ class TransportTab(QWidget):
         # override 적용 후의 trip (사용자에게 보여줄 실제 trip 리스트)
         self._displayed_trips: List[Trip] = []
 
-        # [Phase 6 점검 패치 — 결정 4] 자동 재계산 디바운스 (500ms 단발).
-        # 사용자가 SpinBox 를 빠르게 연타해도 마지막 변경 후 500ms 지나야 1회만
-        # _run_transport 호출. 같은 타이머를 start() 재호출하면 자동 리셋.
-        # 사용자 결정 ⑧-2: 500ms.
-        self._debounce_timer = QTimer(self)
-        self._debounce_timer.setSingleShot(True)
-        self._debounce_timer.setInterval(500)
-        self._debounce_timer.timeout.connect(self._run_transport)
-
+        # [개편] 자동 재계산 디바운스 타이머 제거 — 수동 실행만 지원.
         self._build_ui()
         self.set_state("NoDesign")
 
@@ -163,8 +154,8 @@ class TransportTab(QWidget):
         _lock_spin('_lowbed_per_km_spin', int(settings.lowbed_per_km_krw))
         _lock_spin('_extend_per_km_spin', int(settings.extendable_per_km_krw))
         _lock_spin('_aframe_per_km_spin', int(settings.aframe_per_km_krw))
-        _lock_spin('_interior_spin', float(settings.wall_interior_kg_m2))
-        _lock_spin('_exterior_spin', float(settings.wall_exterior_kg_m2))
+        # [2026-06-02] 벽 단위중량 입력은 운송 탭에서 제거됨 — 잠금 대상 아님.
+        #   값은 _read_options 가 self._proj_settings 에서 직접 읽는다.
 
         combo = getattr(self, '_cost_mode_combo', None)
         if combo is not None:
@@ -195,32 +186,16 @@ class TransportTab(QWidget):
 
     # ── UI 빌드 ───────────────────────────────────────────
     def _build_ui(self) -> None:
-        # [2026-05-27] 좌·우 패널 분리.
-        #   좌측 = 입력 (트럭 카탈로그 / 상태 / 옵션 + 운송 계산 실행 / 참고자료)
-        #   우측 = 결과 (요약 / 회차표·적재율·경제성 / 회차별 트럭 변경 / 진단)
-        # main_3d 운송 탭이 진입 시 *_left_pane_wrap* / *_right_pane_wrap* 을
-        # 좌·우 영역에 *직접 reparent* 한다. TransportTab 자체로 표시될 땐 (다른
-        # 곳에서 보임 가정 없음) splitter 안에 둘 다 들어있음.
+        # [개편] 좌측 입력 패널 제거 — 카탈로그 버튼·① 상태·옵션·참고자료가
+        #   모두 좌측에 있었으나, 입력(옵션·참고자료)만 우측 단일 패널로 통합한다.
+        #   카탈로그 버튼·① 상태는 폐지. main_3d 는 우측 pane(_right_pane_scroll)만
+        #   reparent 한다(_left_pane_scroll 은 더는 만들지 않음 → main_3d 의
+        #   좌측 부착 분기는 hasattr 가드로 자동 skip, Phase 4 에서 2단으로 정리).
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # ── 좌측 입력 패널 ─────────────────────────────────
-        from PyQt5.QtWidgets import QSplitter
-        self._left_pane_wrap = QWidget()
-        left_scroll = QScrollArea()
-        left_scroll.setWidgetResizable(True)
-        left_scroll.setWidget(self._left_pane_wrap)
-        left_lay = QVBoxLayout(self._left_pane_wrap)
-        left_lay.setContentsMargins(4, 4, 4, 4)
-        left_lay.setSpacing(8)
-        left_lay.addWidget(self._build_area_toolbar())       # 카탈로그 버튼
-        left_lay.addWidget(self._build_area_status())        # ① 상태
-        left_lay.addWidget(self._build_area_options())       # ② 옵션 + [▷ 실행]
-        left_lay.addWidget(self._build_area_references())    # ⑦ 참고자료
-        left_lay.addStretch(1)
-
-        # ── 우측 결과 패널 ─────────────────────────────────
+        # ── 우측(단일) 패널 — 옵션 + 결과 ─────────────────
         self._right_pane_wrap = QWidget()
         right_scroll = QScrollArea()
         right_scroll.setWidgetResizable(True)
@@ -228,40 +203,15 @@ class TransportTab(QWidget):
         right_lay = QVBoxLayout(self._right_pane_wrap)
         right_lay.setContentsMargins(4, 4, 4, 4)
         right_lay.setSpacing(8)
+        right_lay.addWidget(self._build_area_options())      # ② 옵션 + [▷ 실행]
         right_lay.addWidget(self._build_area_metrics())      # ③ 결과 요약
         right_lay.addWidget(self._build_area_subtabs(), stretch=1)  # ④ 회차표/적재율/경제성
         right_lay.addWidget(self._build_area_overrides())    # ⑤ 회차별 트럭 변경
-        right_lay.addWidget(self._build_area_diagnostics())  # ⑧ 진단
+        right_lay.addWidget(self._build_area_references())   # ⑦ 참고자료 (최하단)
 
-        # ── TransportTab 본체 splitter (운송 탭에선 좌·우가 reparent 되어 빔) ─
-        self._main_splitter = QSplitter(Qt.Horizontal)
-        self._main_splitter.addWidget(left_scroll)
-        self._main_splitter.addWidget(right_scroll)
-        self._main_splitter.setStretchFactor(0, 0)
-        self._main_splitter.setStretchFactor(1, 1)
-        self._main_splitter.setSizes([320, 700])
-        root.addWidget(self._main_splitter, stretch=1)
-        # *_left_pane_wrap / _right_pane_wrap* 직접 노출 — main_3d 가 reparent 시 사용
-        self._left_pane_scroll = left_scroll
+        root.addWidget(right_scroll, stretch=1)
+        # main_3d 가 reparent 시 사용. 좌측 pane 은 제거됨.
         self._right_pane_scroll = right_scroll
-
-    def _build_area_toolbar(self) -> QWidget:
-        """[Phase 7] 운송탭 최상단 — 카탈로그 관리 버튼.
-
-        파일 메뉴(MainWindow) 에서도 동일 진입점을 호출하지만, 운송탭
-        내부에서 바로 접근할 수 있도록 버튼을 표면화.
-        """
-        wrap = QWidget()
-        row = QHBoxLayout(wrap)
-        row.setContentsMargins(2, 2, 2, 2)
-        self._catalog_btn = QPushButton("🚚 트럭 카탈로그 관리...")
-        self._catalog_btn.setToolTip(
-            "내장/프로젝트 트럭 카탈로그 보기 · 추가 · 편집 · 삭제 · 복제"
-        )
-        self._catalog_btn.clicked.connect(self._open_catalog_dialog)
-        row.addWidget(self._catalog_btn)
-        row.addStretch(1)
-        return wrap
 
     def _build_area_overrides(self) -> QWidget:
         """[Phase 7] 영역 ⑤ — 회차별 트럭 override 표.
@@ -272,7 +222,7 @@ class TransportTab(QWidget):
         검증 셀에 사유 표시 + override 폐기 + 콤보 원복.
         성공 시 회차표·도식·경제성 재렌더에 그대로 반영.
         """
-        box = QGroupBox("⑤ 회차별 트럭 변경 (override)")
+        box = QGroupBox("회차별 트럭 변경 (override)")
         lay = QVBoxLayout(box)
         lay.setContentsMargins(8, 4, 8, 8)
         info = QLabel(
@@ -313,34 +263,9 @@ class TransportTab(QWidget):
         row.addStretch(1)
         return wrap
 
-    def _build_area_status(self) -> QWidget:
-        """영역 ① — 정책 라벨 + 8단계 인디케이터."""
-        box = QGroupBox("① 상태")
-        lay = QVBoxLayout(box)
-        lay.setContentsMargins(8, 8, 8, 8)
-        lay.setSpacing(4)
-        # 정책 동기화 라벨
-        self._policy_label = QLabel("정책: <b>(미설정)</b>  ·  층구간 분할: 1")
-        self._policy_label.setTextFormat(Qt.RichText)
-        lay.addWidget(self._policy_label)
-        # 8단계 인디케이터
-        ind_row = QHBoxLayout()
-        ind_row.setSpacing(4)
-        self._stage_labels: Dict[int, QLabel] = {}
-        for step, name in _PIPELINE_LABELS:
-            lbl = QLabel(f"[{name} ?]")
-            lbl.setStyleSheet("padding: 2px 6px; background: #eee; border-radius: 3px;")
-            lbl.setToolTip(f"단계 {name} — ✓ 캐시 적중 / ✗ 재계산 필요")
-            ind_row.addWidget(lbl)
-            if step is not None:
-                self._stage_labels[step] = lbl
-        ind_row.addStretch(1)
-        lay.addLayout(ind_row)
-        return box
-
     def _build_area_options(self) -> QWidget:
         """영역 ② — 운송 옵션 패널."""
-        box = QGroupBox("② 운송 옵션")
+        box = QGroupBox("운송 옵션")
         lay = QFormLayout(box)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setHorizontalSpacing(8)
@@ -393,40 +318,14 @@ class TransportTab(QWidget):
         # (2026-05-27 Phase 1) 캔틸 처리 라디오 폐지 — 캔틸레버는 항상 부모
         # 화물에 기하학적 종속 상태로 같은 회차에 운송된다.
 
-        # 비내력벽 자동판별 그룹
-        nb_box = QGroupBox("비내력벽 자동판별")
-        nb_lay = QFormLayout(nb_box)
-        nb_lay.setContentsMargins(8, 4, 8, 4)
-        self._wall_classify_cb = QCheckBox("자동판별 ON")
-        self._wall_classify_cb.setChecked(True)
-        nb_lay.addRow(self._wall_classify_cb)
-        self._interior_spin = QDoubleSpinBox()
-        self._interior_spin.setRange(0.0, 999.0)
-        self._interior_spin.setValue(30.0)
-        self._interior_spin.setSuffix(" kg/m²")
-        nb_lay.addRow("내부 단위중량:", self._interior_spin)
-        self._exterior_spin = QDoubleSpinBox()
-        self._exterior_spin.setRange(0.0, 999.0)
-        self._exterior_spin.setValue(55.0)
-        self._exterior_spin.setSuffix(" kg/m²")
-        nb_lay.addRow("외부 단위중량:", self._exterior_spin)
-        self._segment_spin = QSpinBox()
-        self._segment_spin.setRange(10, 1000)
-        self._segment_spin.setValue(100)
-        self._segment_spin.setSuffix(" mm")
-        nb_lay.addRow("격자 크기:", self._segment_spin)
-        self._floor_obstacle_cb = QCheckBox("FloorPanel 도 인접 장애물로 포함")
-        self._floor_obstacle_cb.setChecked(True)
-        nb_lay.addRow(self._floor_obstacle_cb)
-        lay.addRow(nb_box)
+        # [2026-06-02] 벽 단위중량 입력(내부/외부) 묶음 제거.
+        #   이 두 칸은 프로젝트 설정값을 비춰주고 잠가두는 미러일 뿐이었다.
+        #   단일 출처인 프로젝트 설정에서 값을 직접 읽으므로(_read_options) 운송
+        #   탭에서는 입력 자체를 두지 않는다.
 
-        # 자동 재계산 (기본 OFF — 사용자 결정 ⑧-1)
-        self._auto_recompute_cb = QCheckBox("자동 재계산 (옵션 변경 시 자동 실행)")
-        self._auto_recompute_cb.setChecked(False)
-        lay.addRow(self._auto_recompute_cb)
-
-        # 실행 버튼
-        run_row = QHBoxLayout()
+        # 실행 버튼 — [Phase 4] 옵션 패널에 두지 않는다. main_3d 가 중앙 3D 뷰
+        #   우상단 오버레이로 reparent 한다. 여기서는 생성·스타일·연결만(부모 미지정 —
+        #   self._run_btn 참조로 수명 유지, set_state 가 enable/text 제어).
         self._run_btn = QPushButton("▷ 운송 계산 실행")
         self._run_btn.setStyleSheet(
             "QPushButton { background-color: #2a7ade; color: white; "
@@ -435,27 +334,8 @@ class TransportTab(QWidget):
             "QPushButton:disabled { background-color: #bbb; }"
         )
         self._run_btn.clicked.connect(self._run_transport)
-        run_row.addWidget(self._run_btn)
 
-        # 디버그 트레이스 저장 버튼 (Phase 5-K5)
-        self._debug_btn = QPushButton("🪲 디버그 저장")
-        self._debug_btn.setStyleSheet(
-            "QPushButton { background-color: #888; color: white; "
-            "padding: 6px 12px; border-radius: 3px; }"
-            "QPushButton:hover { background-color: #666; }"
-        )
-        self._debug_btn.setToolTip(
-            "BB 분기한정 패커 트레이스를 바탕화면(bb_trace.txt)에 저장하면서 "
-            "운송 계산을 실행합니다."
-        )
-        self._debug_btn.clicked.connect(self._run_transport_with_trace)
-        run_row.addWidget(self._debug_btn)
-
-        run_row.addStretch(1)
-        run_wrap = QWidget(); run_wrap.setLayout(run_row)
-        lay.addRow(run_wrap)
-
-        # 자동 재계산 ON 시 위젯 변경 → 디바운스(Phase 9) 없이 즉시 실행
+        # 옵션 위젯 변경 → 캐시 무효화 배선(자동 실행은 제거됨).
         self._wire_auto_recompute()
         return box
 
@@ -478,11 +358,7 @@ class TransportTab(QWidget):
             (self._lowbed_per_km_spin.valueChanged, 7),
             (self._extend_per_km_spin.valueChanged, 7),
             (self._aframe_per_km_spin.valueChanged, 7),
-            (self._interior_spin.valueChanged, 6),
-            (self._exterior_spin.valueChanged, 6),
-            (self._wall_classify_cb.toggled, 5),
-            (self._segment_spin.valueChanged, 5),
-            (self._floor_obstacle_cb.toggled, 5),
+            # [2026-06-02] 단위중량 입력 제거 — 변경 시 무효화 배선 대상 아님.
         ]
         for sig, step in wiring:
             sig.connect(lambda *a, s=step: self._on_option_changed(s))
@@ -495,14 +371,13 @@ class TransportTab(QWidget):
         마지막 변경 후 500ms 지나야 1회만 _run_transport. start() 재호출은
         자동 리셋.
         """
+        # [개편] 자동 재계산 제거 — 옵션 변경 시 캐시 무효화만 수행, 실행은
+        #   사용자가 명시적으로 [▷ 운송 계산 실행] 을 눌러야 한다.
         self._cache.invalidate_from(step)
-        self._refresh_stage_indicators()
-        if self._auto_recompute_cb.isChecked():
-            self._debounce_timer.start()  # 500ms 단발 — 연타 시 자동 리셋
 
     def _build_area_metrics(self) -> QWidget:
-        """영역 ③ — 5카드 메트릭."""
-        box = QGroupBox("③ 결과 요약")
+        """영역 ③ — 결과 요약 카드 (총 운임 포함)."""
+        box = QGroupBox("결과 요약")
         lay = QHBoxLayout(box)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(8)
@@ -513,6 +388,7 @@ class TransportTab(QWidget):
             ("total_trips", "총 회차"),
             ("avg_util", "평균 적재율"),
             ("total_distance", "총 거리"),
+            ("total_freight", "총 운임"),
         ]:
             card = QFrame()
             card.setFrameShape(QFrame.StyledPanel)
@@ -539,21 +415,22 @@ class TransportTab(QWidget):
         으로 두려고 했으나 — 부모가 없는 위젯은 Qt 가 GC 해서 _view_combo 등이
         deleted C++ object 가 되어 _render_view_combo 호출 시 RuntimeError 발생.
         """
-        self._sub_tabs = QTabWidget()
-        self._sub_tabs.addTab(self._build_subtab_trip_table(), "회차표")
-        self._sub_tabs.addTab(self._build_subtab_util_chart(), "적재율")
-        self._sub_tabs.addTab(self._build_subtab_economics(), "경제성")
-        return self._sub_tabs
+        # [2026-06-02] 회차표 탭 묶음 제거 — 탭이 "회차표" 하나뿐이라 어색했다.
+        #   탭 위젯 대신 "회차표" 제목을 단 그룹박스로 표만 직접 보여준다.
+        box = QGroupBox("회차표")
+        box_lay = QVBoxLayout(box)
+        box_lay.setContentsMargins(4, 4, 4, 4)
+        box_lay.addWidget(self._build_subtab_trip_table())
+        return box
 
     def _build_subtab_trip_table(self) -> QWidget:
         page = QWidget()
         lay = QVBoxLayout(page)
         lay.setContentsMargins(2, 2, 2, 2)
         self._trip_table = QTableWidget()
-        self._trip_table.setColumnCount(7)
+        self._trip_table.setColumnCount(5)
         self._trip_table.setHorizontalHeaderLabels([
-            "회차", "차량", "종류", "아이템",
-            "화물(kg)", "GVW(kg)", "적재율(%)",
+            "차량", "아이템", "화물중량/최대화물중량", "GVW(kg)", "운임",
         ])
         hh = self._trip_table.horizontalHeader()
         hh.setSectionResizeMode(QHeaderView.ResizeToContents)
@@ -567,74 +444,6 @@ class TransportTab(QWidget):
         # 아래 "회차별 트럭 변경" 표만 사용한다.
         lay.addWidget(self._trip_table)
         return page
-
-    def _build_subtab_util_chart(self) -> QWidget:
-        page = QWidget()
-        lay = QVBoxLayout(page)
-        lay.setContentsMargins(2, 2, 2, 2)
-        # matplotlib 캔버스 — 회차별 (중량/길이) 적재율 막대
-        from matplotlib.figure import Figure
-        from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as Canvas
-        self._util_fig = Figure(figsize=(5, 3), tight_layout=True)
-        self._util_canvas = Canvas(self._util_fig)
-        lay.addWidget(self._util_canvas)
-        return page
-
-    def _build_subtab_economics(self) -> QWidget:
-        page = QWidget()
-        lay = QVBoxLayout(page)
-        lay.setContentsMargins(2, 2, 2, 2)
-        self._eco_table = QTableWidget()
-        self._eco_table.setColumnCount(6)
-        self._eco_table.setHorizontalHeaderLabels([
-            "회차", "차량", "방식", "거리(km)", "적용단가/요금", "운임(원)",
-        ])
-        eh = self._eco_table.horizontalHeader()
-        eh.setSectionResizeMode(QHeaderView.ResizeToContents)
-        eh.setStretchLastSection(True)
-        self._eco_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self._eco_table.setAlternatingRowColors(True)
-        self._eco_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        # [Phase E 추가 — 2026-05-27] 경제성 행 클릭도 회차표·3D 와 동기화
-        self._eco_table.cellClicked.connect(self._on_eco_row_clicked)
-        lay.addWidget(self._eco_table)
-        # 총합 라벨
-        self._eco_total_label = QLabel("총 운임: —")
-        self._eco_total_label.setStyleSheet("font-size: 14px; font-weight: bold; padding: 4px;")
-        lay.addWidget(self._eco_total_label)
-        return page
-
-    def _build_area_diagnostics(self) -> QWidget:
-        """영역 ⑧ — 진단 (누적).
-
-        [Phase 9 C-5 결정] 경고 누적 — 재계산해도 과거 경고 유지. 매 실행마다
-        타임스탬프 헤더와 함께 append. [전체 지우기] 버튼만 제공.
-        """
-        box = QGroupBox("⑧ 진단 (누적)")
-        lay = QVBoxLayout(box)
-        lay.setContentsMargins(8, 4, 8, 8)
-        self._diag_text = QTextEdit()
-        self._diag_text.setReadOnly(True)
-        self._diag_text.setMaximumHeight(150)
-        self._diag_text.setFont(QFont("Consolas", 9))
-        lay.addWidget(self._diag_text)
-        btn_row = QHBoxLayout()
-        clr_btn = QPushButton("전체 지우기")
-        clr_btn.clicked.connect(self._diag_text.clear)
-        btn_row.addWidget(clr_btn)
-        btn_row.addStretch(1)
-        lay.addLayout(btn_row)
-        return box
-
-    def _diag_append(self, text: str, header: bool = False) -> None:
-        """[Phase 9 C-5] 진단 누적 추가 — 타임스탬프 prefix."""
-        import datetime
-        ts = datetime.datetime.now().strftime("%H:%M:%S")
-        if header:
-            self._diag_text.append(f"\n━━━ {ts} ━━━")
-            self._diag_text.append(text)
-        else:
-            self._diag_text.append(f"[{ts}] {text}")
 
     # ── 외부 주입 API ─────────────────────────────────────
     def set_scene_and_model(self, scene, model) -> None:
@@ -689,13 +498,21 @@ class TransportTab(QWidget):
 
     # ── 옵션 → 데이터클래스 ───────────────────────────────
     def _read_options(self) -> TransportOptions:
+        # [개편] 비내력벽 자동판별 ON·격자 100mm·FloorPanel 장애물 포함은
+        #   UI 에서 제거되어 항상 고정값으로 동작한다(사용자 결정 — 코드 기본값).
+        # [2026-06-02] 벽 단위중량은 프로젝트 설정이 단일 출처. 운송 탭 입력 칸을
+        #   제거했으므로 self._proj_settings 에서 직접 읽는다. 설정 주입 전이면
+        #   기본값(내부 30 / 외부 55 kg/m²)을 사용한다.
+        ps = getattr(self, '_proj_settings', None)
+        interior_uw = float(getattr(ps, 'wall_interior_kg_m2', 30.0)) if ps is not None else 30.0
+        exterior_uw = float(getattr(ps, 'wall_exterior_kg_m2', 55.0)) if ps is not None else 55.0
         return TransportOptions(
             include_cantilever=True,
-            wall_classifier_enabled=self._wall_classify_cb.isChecked(),
-            interior_wall_unit_weight=float(self._interior_spin.value()),
-            exterior_wall_unit_weight=float(self._exterior_spin.value()),
-            wall_segment_size_mm=float(self._segment_spin.value()),
-            include_floor_panels_as_obstacle=self._floor_obstacle_cb.isChecked(),
+            wall_classifier_enabled=True,
+            interior_wall_unit_weight=interior_uw,
+            exterior_wall_unit_weight=exterior_uw,
+            wall_segment_size_mm=100.0,
+            include_floor_panels_as_obstacle=True,
         )
 
     def _read_spacing(self) -> SpacingParams:
@@ -714,45 +531,6 @@ class TransportTab(QWidget):
             extendable_fixed_krw=float(getattr(ps, 'extendable_fixed_krw', 700000.0)),
             aframe_fixed_krw=float(getattr(ps, 'aframe_fixed_krw', 800000.0)),
         )
-
-    # ── 디버그 트레이스 실행 ──────────────────────────────
-    def _run_transport_with_trace(self) -> None:
-        """BB 트레이스를 바탕화면 bb_trace.txt 에 기록하면서 운송 계산 실행.
-
-        - 캐시 무효화 → 강제 재계산
-        - packer_bb.set_trace_path() 로 in-process 경로 설정
-        - 실행 후 set_trace_path("") 로 끄고 메시지박스로 결과 알림
-        """
-        import os
-        from modular_3d.transport import packer_bb as _bb
-
-        # 바탕화면 경로 자동 산출
-        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-        if not os.path.isdir(desktop):
-            desktop = os.path.expanduser("~")
-        trace_path = os.path.join(desktop, "bb_trace.txt")
-
-        _bb.set_trace_path(trace_path)
-        # 캐시 무효화 — pack 단계만 (단계 7) 비워서 강제 BB 재실행
-        try:
-            self._cache.invalidate_from(7)
-        except Exception:
-            pass
-        try:
-            self._run_transport()
-        finally:
-            _bb.set_trace_path("")
-        # 결과 알림
-        if os.path.isfile(trace_path):
-            QMessageBox.information(
-                self, "디버그 트레이스 저장 완료",
-                f"BB 트레이스가 저장되었습니다:\n{trace_path}",
-            )
-        else:
-            QMessageBox.warning(
-                self, "디버그 트레이스",
-                "트레이스 파일이 생성되지 않았습니다. (BB 가 호출되지 않았을 수 있음 — 모듈만 있고 패널이 없는 경우)",
-            )
 
     # ── 메인 실행 ─────────────────────────────────────────
     def _run_transport(self) -> None:
@@ -806,11 +584,9 @@ class TransportTab(QWidget):
 
         self._render_metrics(pack)
         self._render_trip_table(pack)
-        self._render_util_chart(pack)
-        # [Phase C 핫픽스] _render_view_combo 호출 제거 — 도식 sub-탭 폐기 후
-        # 위젯 자체가 GC 되어 deleted C++ object 접근 RuntimeError 발생.
+        # [개편] 적재율·경제성 sub-탭 제거 — 해당 렌더 호출 폐지.
+        #   총 운임은 결과 요약 카드, 회차별 운임은 회차표 컬럼으로 표시(eco 는 계산만).
         # 3D 적재 도식은 transport_pack_updated 신호로 MainWindow center pane 에서 처리.
-        self._render_economics(eco)
         self._render_diagnostics(self._cache.transport_input)
         self._render_override_table()
         self._refresh_stage_indicators()
@@ -821,7 +597,7 @@ class TransportTab(QWidget):
         if pack.total_trips == 0:
             self._show_error(
                 "운송 결과 0회차 — 트럭 카탈로그·현장 제한·부재 치수를 확인하세요. "
-                "(진단 탭에 자세한 사유가 표시됩니다.)")
+                "(운송 불가 사유가 있으면 별도 경고 창으로 안내됩니다.)")
         # [Phase C] center pane 3D 도식 갱신 신호
         self.transport_pack_updated.emit(pack, self._read_spacing())
         self.set_state("ResultShown")
@@ -836,45 +612,39 @@ class TransportTab(QWidget):
         # (2026-05-24 운임 개편으로 왕복 토글 제거 — 항상 왕복으로 계산.)
         dist = self._distance_spin.value() * pack.total_trips * 2
         self._metric_labels["total_distance"].setText(f"{dist:,} km")
+        # 총 운임 — 경제성 결과(_last_eco)의 합계. 미산출 시 "—".
+        eco = getattr(self, "_last_eco", None)
+        if eco is not None:
+            self._metric_labels["total_freight"].setText(f"₩{eco.total_cost_krw:,.0f}")
+        else:
+            self._metric_labels["total_freight"].setText("—")
 
     def _render_trip_table(self, pack: PackResult) -> None:
         self._trip_table.setRowCount(len(pack.trips))
+        # 회차 번호는 좌측 행 헤더(1·2·3…)와 중복이라 컬럼에서 제거.
+        # 운임 — 경제성 결과(_last_eco)의 회차별 운임을 trip_no 로 매칭(없으면 "—").
+        eco = getattr(self, "_last_eco", None)
+        cost_by_no: Dict[int, float] = (
+            {tc.trip_no: tc.cost_krw for tc in eco.trips} if eco is not None else {}
+        )
         for row, trip in enumerate(pack.trips):
             items_str = ", ".join(getattr(i, "name", "?") for i in trip.items)
             stacked = [s for s in trip.stacked_items if s is not None]
             if stacked:
                 items_str += " + 적층: " + ", ".join(getattr(s, "name", "?") for s in stacked)
+            # 화물중량/최대화물중량 — 분모는 트럭 적재 한도(truck.max_weight).
+            cargo_max = f"{trip.cargo_weight:,.0f} / {trip.truck.max_weight:,.0f}"
+            fare = cost_by_no.get(trip.trip_no)
+            fare_str = f"₩{fare:,.0f}" if fare is not None else "—"
             for col, val in enumerate([
-                str(trip.trip_no), trip.truck.name, trip.kind, items_str,
-                f"{trip.cargo_weight:,.0f}", f"{trip.gross_weight:,.0f}",
-                f"{trip.utilization:.1f}",
+                trip.truck.name, items_str, cargo_max,
+                f"{trip.gross_weight:,.0f}", fare_str,
             ]):
                 cell = QTableWidgetItem(val)
-                if col in (4, 5, 6):
+                if col in (2, 3, 4):
                     cell.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self._trip_table.setItem(row, col, cell)
 
-    def _render_util_chart(self, pack: PackResult) -> None:
-        self._util_fig.clear()
-        ax = self._util_fig.add_subplot(111)
-        if not pack.trips:
-            ax.text(0.5, 0.5, "회차 없음", ha="center", va="center",
-                    transform=ax.transAxes, color="gray")
-        else:
-            xs = list(range(1, len(pack.trips) + 1))
-            wt = [t.weight_utilization for t in pack.trips]
-            ln = [t.length_utilization for t in pack.trips]
-            w = 0.4
-            ax.bar([x - w / 2 for x in xs], wt, width=w, label="중량 적재율 %", color="#2a7ade")
-            ax.bar([x + w / 2 for x in xs], ln, width=w, label="길이 적재율 %", color="#e07a3b")
-            ax.set_xlabel("회차 #")
-            ax.set_ylabel("적재율 (%)")
-            ax.set_xticks(xs)
-            ax.set_ylim(0, max(105, max(wt + ln) + 5))
-            ax.axhline(100, color="red", linestyle="--", linewidth=0.8)
-            ax.legend(loc="best", fontsize=8)
-            ax.grid(axis="y", linestyle=":", alpha=0.5)
-        self._util_canvas.draw_idle()
 
     def _render_view_combo(self, pack: PackResult) -> None:
         # [Phase C 핫픽스 — 2026-05-26] 도식 sub-탭 폐기 — 위젯 자체가 GC.
@@ -952,14 +722,11 @@ class TransportTab(QWidget):
         except Exception as e:
             import traceback
             tb = traceback.format_exc()
-            # 진단 패널이 있으면 거기 출력, 없으면 콘솔
-            if hasattr(self, "_diag_append"):
-                self._diag_append(
-                    f"[도식 렌더 실패] 회차 #{getattr(trip, 'trip_no', '?')} — {type(e).__name__}: {e}\n{tb}",
-                    header=True,
-                )
-            else:
-                print(f"[도식 렌더 실패] {tb}", flush=True)
+            # [개편] 진단 누적 패널 폐지 — 도식 렌더 실패는 콘솔로만 기록(부차적).
+            print(
+                f"[도식 렌더 실패] 회차 #{getattr(trip, 'trip_no', '?')} "
+                f"{type(e).__name__}: {e}\n{tb}", flush=True,
+            )
             # 도식 위젯에 에러 메시지 직접 표시
             err_html = (
                 "<div style='padding:20px;font-family:sans-serif;color:#cc0000'>"
@@ -1003,95 +770,42 @@ class TransportTab(QWidget):
                 continue
         return ""
 
-    # 운임 방식 코드 → 화면 표시 라벨
-    _MODE_LABELS = {"freight_table": "요금표", "per_km": "km단가"}
-
-    def _render_economics(self, eco) -> None:
-        self._eco_table.setRowCount(len(eco.trips))
-        for row, tc in enumerate(eco.trips):
-            mode_label = self._MODE_LABELS.get(tc.pricing_mode, tc.pricing_mode)
-            for col, val in enumerate([
-                str(tc.trip_no), tc.truck_name, mode_label,
-                f"{tc.distance_km:.1f}", tc.rate_label,
-                f"{tc.cost_krw:,.0f}",
-            ]):
-                cell = QTableWidgetItem(val)
-                if col >= 3:
-                    cell.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                self._eco_table.setItem(row, col, cell)
-        # 운임 방식별 내역 표시
-        mode = getattr(eco.options, "cost_mode", "freight_table")
-        if mode == "freight_table":
-            breakdown = "요금표(전국특송24시콜) 기준"
-        else:
-            breakdown = "트레일러별 km단가 기준"
-        self._eco_total_label.setText(
-            f"총 운임: <b>₩{eco.total_cost_krw:,.0f}</b>  "
-            f"({breakdown})  "
-            f"· 평균/회차 ₩{eco.average_per_trip_krw:,.0f}"
-        )
-        self._eco_total_label.setTextFormat(Qt.RichText)
 
     def _render_diagnostics(self, ti) -> None:
-        """[2026-05-26] 진단 표시 — 사용자에게 의미 있는 항목만, 일관된 형식으로.
+        """[개편] 진단 누적 패널 폐지 — *정말 문제가 있을 때만* 알림창을 띄운다.
 
-        - 코어/코어슬래브(RC) 는 운송 대상이 아니므로 표기하지 않음.
-        - 캔틸레버·모듈 내부 보강재 같은 종속 부재는 개별 나열 대신 종류별
-          요약 한 줄로(예: "캔틸레버 3개 → 부모 모듈에 흡수").
-        - 운송 불가(blocked) 사유는 부재 이름 + 사유 한 묶음으로 표시.
+        표시 대상(문제):
+        - ❌ 운송 불가(blocked) — 부재 이름 + 사유.
+        - ⚠ 경고(diagnostics.warnings) — 어댑터가 실제 문제만 담는 채널.
+        제외 대상(정보성, 사용자 결정):
+        - ℹ info, 흡수/제외(excluded: 캔틸레버 부모 흡수·운송 대상 제외·코어).
+        문제가 한 건도 없으면 아무 창도 띄우지 않는다.
         """
-        lines: List[str] = []
-        if ti is None:
-            self._diag_append("(어댑터 결과 없음)", header=True)
-            return
-        diag = getattr(ti, "diagnostics", None)
+        problems: List[str] = []
+        diag = getattr(ti, "diagnostics", None) if ti is not None else None
         if diag is not None:
             for w in diag.warnings:
-                lines.append(f"⚠ {w}")
-            for info in diag.info:
-                lines.append(f"ℹ {info}")
-        # 제외 항목 — 코어는 숨김, 캔틸/내부보강재 등은 종류별 1줄 요약.
-        from collections import defaultdict
-        excl_by_type: Dict[str, int] = defaultdict(int)
-        for ex in getattr(ti, "excluded", []):
-            tn = getattr(ex, "type_name", "") or ""
-            if "코어" in tn:
-                continue  # RC 코어/슬래브는 표기 안 함
-            excl_by_type[tn] += 1
-        for tn, n in excl_by_type.items():
-            # 캔틸레버·모듈 내부 보강재 같은 종속 부재는 부모에 흡수됨을 명시.
-            if "캔틸" in tn or "보강재" in tn:
-                lines.append(f"ℹ {tn} {n}개 → 부모 모듈에 흡수")
-            else:
-                lines.append(f"ℹ {tn} {n}개 — 운송 대상 제외")
+                problems.append(f"⚠ {w}")
         if self._last_pack is not None:
             for it, reason in self._last_pack.blocked:
-                lines.append(
-                    f"❌ 운송 불가: {getattr(it, 'name', '?')}\n  사유: {reason}"
+                problems.append(
+                    f"❌ 운송 불가: {getattr(it, 'name', '?')}\n   사유: {reason}"
                 )
-        if not lines:
-            lines.append("(경고 없음)")
-        self._diag_append("\n".join(lines), header=True)
+        if problems:
+            QMessageBox.warning(
+                self, "운송 계산 — 확인 필요", "\n\n".join(problems)
+            )
 
     # ── 상태 ──────────────────────────────────────────────
     def _refresh_stage_indicators(self) -> None:
-        flags = self._cache.cache_status_flags()
-        for step, name in _PIPELINE_LABELS:
-            if step is None:
-                continue
-            lbl = self._stage_labels[step]
-            flag = flags.get(step, "✗")
-            color = "#a3e635" if flag == "✓" else "#fca5a5"
-            lbl.setText(f"[{name} {flag}]")
-            lbl.setStyleSheet(
-                f"padding: 2px 6px; background: {color}; border-radius: 3px;"
-            )
+        # [개편] ① 상태 패널(8단계 인디케이터) 제거 — 호출처가 여러 곳이라
+        #   본문만 비워 안전하게 무력화한다(위젯 미존재).
+        return
 
     def _update_policy_label(self) -> None:
-        self._policy_label.setText(
-            f"정책: <b>{self._current_policy}</b>  "
-            f"·  층구간 분할: <i>(물량탭 동기화)</i>"
-        )
+        # [개편] ① 상태 패널의 정책 라벨 제거 — 데이터(_current_policy)는
+        #   on_policy_sync 가 계속 관리하되, 라벨 갱신만 무력화한다.
+        return
 
     # ── 외부 시그널 슬롯 (AnalysisPanel 이 forward) ──────────
     def on_policy_sync(self, policy: str) -> None:
@@ -1105,10 +819,7 @@ class TransportTab(QWidget):
             self._cache.design_fp[policy] = f"design_{id(design)}"
             self._cache.current_policy = policy
         self._cache.invalidate_from(4)  # 분할 이하 무효
-        self._update_policy_label()
-        self._refresh_stage_indicators()
-        if self._auto_recompute_cb.isChecked():
-            self._run_transport()
+        # [개편] 정책 라벨·인디케이터·자동 재계산 제거. 데이터 무효화만 유지.
 
     def on_scene_modified(self) -> None:
         """씬 편집 → 해석부터 다 무효 표시. 자동 트리거 X."""
@@ -1141,41 +852,19 @@ class TransportTab(QWidget):
         trip = pool[row]
         self.select_trip(trip.trip_no)
 
-    def _on_eco_row_clicked(self, row: int, col: int) -> None:
-        """경제성 sub-탭 행 단일 클릭 → 동일 진입점.
-
-        경제성 표의 첫 컬럼이 회차 번호 (str). int 변환 후 select_trip.
-        """
-        if self._last_pack is None:
-            return
-        item = self._eco_table.item(row, 0)
-        if item is None:
-            return
-        try:
-            trip_no = int(item.text())
-        except ValueError:
-            return
-        self.select_trip(trip_no)
-
     def select_trip(self, trip_no: int) -> None:
-        """공통 회차 선택 진입점 — 회차표·경제성표 둘 다 *프로그래밍 선택* 후 신호 emit.
+        """공통 회차 선택 진입점 — 회차표 행 선택 후 3D 강조 신호 emit.
 
-        외부(3D 트럭 클릭) 에서도 호출 가능. 양방향 동기화의 hub.
-        selectRow 는 cellClicked 를 발화 안 시켜서 무한 루프 X.
+        외부(3D 트럭 클릭)·회차표 클릭의 hub. selectRow 는 cellClicked 발화 X.
+        [개편] 회차표에 회차번호 컬럼이 없으므로(컬럼0=차량명) trips 순서로
+        trip_no→row 를 매핑해 행을 찾는다.
         """
-        # 회차표 행 찾아 선택
-        for row in range(self._trip_table.rowCount()):
-            item = self._trip_table.item(row, 0)
-            if item is not None and item.text() == str(trip_no):
+        pool = self._displayed_trips or (
+            self._last_pack.trips if self._last_pack is not None else [])
+        for row, trip in enumerate(pool):
+            if trip.trip_no == trip_no:
                 self._trip_table.selectRow(row)
                 break
-        # 경제성 표 행 찾아 선택
-        for row in range(self._eco_table.rowCount()):
-            item = self._eco_table.item(row, 0)
-            if item is not None and item.text() == str(trip_no):
-                self._eco_table.selectRow(row)
-                break
-        # 3D 도식 강조 신호
         self.transport_trip_clicked.emit(trip_no)
 
     # ── [Phase 7] override 적용 ───────────────────────────
@@ -1217,7 +906,7 @@ class TransportTab(QWidget):
                 self._trip_overrides.pop(trip.trip_no, None)
                 new_trips.append(trip)
         if msgs:
-            self._diag_append("\n".join(msgs))
+            QMessageBox.warning(self, "트럭 변경 거부", "\n\n".join(msgs))
         # PackResult.avg_utilization / total_trips 등은 모두 trips 기반 @property 라
         # trips 만 교체하면 자동 재계산된다 (avg_utilization 은 set 불가 — 대입 금지).
         # blocked 는 원본 유지. dataclasses.replace 로 새 인스턴스 생성.
@@ -1312,14 +1001,13 @@ class TransportTab(QWidget):
         try:
             self._trucks = load_all_trucks(self._project_root, active_only=True)
         except Exception as e:
-            self._diag_append(f"⚠ 트럭 카탈로그 재로드 실패: {e}")
+            QMessageBox.warning(self, "트럭 카탈로그", f"재로드 실패: {e}")
             return
         # 수동 시뮬레이션·세션 커스텀 트럭은 2026-05-26 제거.
         # override 표는 다음 _run_transport 후 갱신되므로 즉시는 손대지 않음
         self._cache.invalidate_from(7)
         self._refresh_stage_indicators()
-        # 진단에 알림 누적
-        self._diag_append(f"ℹ 트럭 카탈로그 재로드 완료 ({len(self._trucks)} 종).")
+        # [개편] 재로드 성공은 정보성 → 알림 생략(카탈로그 다이얼로그가 피드백 제공).
 
     def set_project_root(self, root) -> None:
         """외부(MainWindow) 에서 프로젝트 루트 주입.
@@ -1336,7 +1024,8 @@ class TransportTab(QWidget):
 
     # ── 에러 표시 ─────────────────────────────────────────
     def _show_error(self, msg: str) -> None:
-        self._diag_append(f"❌ {msg}")
+        # [개편] 진단 누적 패널 폐지 → 오류는 알림창으로 직접 표시.
+        QMessageBox.warning(self, "운송 오류", msg)
 
 
 # ── plotly 6.x CSS 호환 처리 ─────────────────────────────

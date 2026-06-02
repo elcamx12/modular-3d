@@ -896,7 +896,7 @@ def _pack_items_bb(
     from .packer_bb import pack_panels_bb
 
     # ── 1단계 — 모듈만 V2 호출 (패널 0개) ──
-    # V2 의 모듈 빠른 경로 (캐시) 활용. 4.5m 합산 예외도 V2 가 처리.
+    # V2 의 모듈 빠른 경로 (캐시) 활용. 6m 합산 예외도 V2 가 처리.
     module_trips: List[Trip] = []
     if modules:
         from .packer_meta import pack_all_seeds_v2

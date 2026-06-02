@@ -2,7 +2,7 @@
 
 [설계 근거]
 - `운송 로직 의사코드.md` § 2.3 ~ § 2.5, § 2.11 그대로 구현.
-- 그리디 전략 4 종 + 가중치 6 조합 + 트럭 선정 정확 시뮬레이션 + 모듈 4.5m 합산.
+- 그리디 전략 4 종 + 가중치 6 조합 + 트럭 선정 정확 시뮬레이션 + 모듈 6m 합산.
 
 [자리·자세·기하 제약 요약]
 - LYING 자세: Module / 종속 floor / 단순 floor / 단순 wall — 트럭 lowbed·extendable
@@ -28,7 +28,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Sequence, Tuple
 
-from .models import Module, Panel, SiteLimit, SpacingParams, Truck
+from .models import (
+    MODULE_PAIR_MAX_LEN_MM, Module, Panel, SiteLimit, SpacingParams, Truck,
+)
 from .packer import (
     PackResult,
     Trip,
@@ -266,7 +268,7 @@ def evaluate_slot(
     # 정책 (2026-05-27 사용자 결정):
     # - 모듈 + 패널 혼적 금지: 한 트럭에 모듈이 있으면 패널 못 넣고, 패널이
     #   있으면 모듈 못 넣음. 현실 운송 관행.
-    # - 모듈끼리 합산 예외: 4.5m 이하 두 모듈만 한 트럭에 옆자리 합산 허용.
+    # - 모듈끼리 합산 예외: 6m 이하 두 모듈만 한 트럭에 옆자리 합산 허용.
     existing_modules = [
         p for p in truck_state.placements if isinstance(p.item, Module)
     ]
@@ -280,11 +282,11 @@ def evaluate_slot(
         # 이미 모듈 2 개면 무조건 거부 (3 개 이상 금지)
         if len(existing_modules) >= 2:
             return float("-inf"), None
-        # 1 개 있고 새 모듈 추가 — 둘 다 4500mm 이하여야
+        # 1 개 있고 새 모듈 추가 — 둘 다 6000mm 이하여야
         if existing_modules:
-            if item.length > 4500.0 + 1e-6:
+            if item.length > MODULE_PAIR_MAX_LEN_MM + 1e-6:
                 return float("-inf"), None
-            if any(p.item.length > 4500.0 + 1e-6 for p in existing_modules):
+            if any(p.item.length > MODULE_PAIR_MAX_LEN_MM + 1e-6 for p in existing_modules):
                 return float("-inf"), None
     elif isinstance(item, Panel):
         # 새 패널 — 기존 모듈 있으면 혼적 금지
@@ -426,9 +428,9 @@ def evaluate_slot_v2(
         if len(existing_modules) >= 2:
             return float("-inf"), None
         if existing_modules:
-            if item.length > 4500.0 + 1e-6:
+            if item.length > MODULE_PAIR_MAX_LEN_MM + 1e-6:
                 return float("-inf"), None
-            if any(p.item.length > 4500.0 + 1e-6 for p in existing_modules):
+            if any(p.item.length > MODULE_PAIR_MAX_LEN_MM + 1e-6 for p in existing_modules):
                 return float("-inf"), None
     elif isinstance(item, Panel):
         if existing_modules:
@@ -1007,12 +1009,12 @@ def _quick_simulate_pack(
 
 
 # ────────────────────────────────────────────────────────────────────
-# 모듈 합산 후처리 — 4.5m 두 모듈 페어링 (계획서 § 5.7 Q20)
+# 모듈 합산 후처리 — 6m 두 모듈 페어링 (계획서 § 5.7 Q20)
 # ────────────────────────────────────────────────────────────────────
 def _merge_small_modules(
     truck_states: List[TruckState], site: SiteLimit, sp: SpacingParams,
 ) -> List[TruckState]:
-    """모듈만 든 회차 중 *모듈 1 개 + 길이 ≤ 4500mm* 인 회차들을 2 개씩 합쳐 회차 절감.
+    """모듈만 든 회차 중 *모듈 1 개 + 길이 ≤ 6000mm* 인 회차들을 2 개씩 합쳐 회차 절감.
 
     합칠 트럭 후보 = 두 회차의 트럭 중 둘 다 들어가는 것 (또는 그 중 하나 — 보수 정책).
     안전 4중 검사 + 모듈 합산 검사 모두 통과해야 채택.
@@ -1024,7 +1026,7 @@ def _merge_small_modules(
         if (
             len(ts.placements) == 1
             and isinstance(ts.placements[0].item, Module)
-            and ts.placements[0].item.length <= 4500.0 + 1e-6
+            and ts.placements[0].item.length <= MODULE_PAIR_MAX_LEN_MM + 1e-6
         ):
             small_states.append((i, ts, ts.placements[0].item))
         else:
@@ -1243,7 +1245,7 @@ def pack_one_seed(
             ts_new, item, PlacementSlot.FLOOR, best_new[0], best_new[1], sp,
         )
 
-    # ③ 모듈 합산 4.5m 후처리
+    # ③ 모듈 합산 6m 후처리
     truck_states = _merge_small_modules(truck_states, site, sp)
 
     # ④ PackResult 조립
@@ -1466,7 +1468,7 @@ def pack_one_seed_v2(
         new_boxes = boxes_of_component(item, best_new[0], (x0, y0, z0))
         grids[-1].insert(new_boxes, owner_id=0)
 
-    # ④ 모듈 합산 4.5m 후처리 (V1 그대로 — grid 영향 없음)
+    # ④ 모듈 합산 6m 후처리 (V1 그대로 — grid 영향 없음)
     truck_states = _merge_small_modules(truck_states, site, sp)
 
     # ⑤ PackResult 조립

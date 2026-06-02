@@ -26,7 +26,7 @@ from modular_3d._utils.debug import dprint
 # ─────────────────────────────────────────────────────────────
 OPS_COLOR_BEAM     = (0.05, 0.05, 0.05, 1.0)   # 검정 — 일반 보·기둥
 OPS_COLOR_SHELL    = (0.45, 0.10, 0.55, 1.0)   # 짙은 보라 — 면 요소 외곽선
-OPS_COLOR_CORE     = (0.45, 0.10, 0.55, 1.0)   # 짙은 보라 — RC 코어 골조 (셸과 통일)
+OPS_COLOR_CORE     = (0.68, 0.52, 0.82, 0.7)   # 연한 보라(라벤더) — RC 코어 골조 (2026-06-02 연하게)
 OPS_COLOR_PIN      = (0.95, 0.85, 0.10, 1.0)   # 노랑 — 핀 결합 (2/3 DOF)
 OPS_COLOR_RIGID6   = (0.70, 0.05, 0.50, 1.0)   # 진한 자홍 — 6 DOF 완전 겹침 강체
 OPS_COLOR_NODE     = (0.30, 0.30, 0.30, 1.0)   # 어두운 회색 점 — 일반 노드
@@ -1599,11 +1599,18 @@ class Viewer3D:
                                        dtype=np.float32), (n_all, 1))
             # 노드 점 크기 — 회색이라 작게 둬도 식별 가능. (Phase 색 정리)
             sizes = np.full(n_all, 4.0, dtype=np.float32)
-            # [2026-05-13 가상 코어 제거] virtual_core_* 분기 폐기 — spec 에 더는
-            # 등록되지 않음. 다이어프램 master 노드만 시각 노이즈 감소를 위해 축소.
+            # [2026-06-02] 코어 부재(core_*) 끝점 노드는 점만 도드라져 보여 작게(2.0).
+            core_node_tags = set()
+            for b in spec.iter_beams():
+                if b.role == 'rc_core' or b.role.startswith('core_'):
+                    core_node_tags.add(b.n1)
+                    core_node_tags.add(b.n2)
+            # 다이어프램 master 노드만 시각 노이즈 감소를 위해 축소.
             for i, n in enumerate(nodes):
                 if n.role == 'diaphragm_master':
                     sizes[i] = 3.0
+                elif n.tag in core_node_tags:
+                    sizes[i] = 2.0
             self._ops_node_markers.set_data(
                 pos=pos, face_color=colors,
                 edge_color=OPS_COLOR_NODE_EDGE, size=sizes,
@@ -1633,7 +1640,7 @@ class Viewer3D:
             arr = np.array(core_segs, dtype=np.float32)
             self._ops_core_lines.set_data(
                 pos=arr, color=OPS_COLOR_CORE,
-                connect='segments', width=3.0,
+                connect='segments', width=1.5,   # [2026-06-02] 3.0→1.5 가늘게
             )
             self._ops_core_lines.visible = True
 
@@ -1907,7 +1914,7 @@ class Viewer3D:
             arr = np.array(core_segs, dtype=np.float32)
             self._ops_core_lines.set_data(
                 pos=arr, color=OPS_COLOR_CORE,
-                connect='segments', width=3.0,
+                connect='segments', width=1.5,   # [2026-06-02] 3.0→1.5 가늘게
             )
             self._ops_core_lines.visible = True
 
@@ -2068,7 +2075,7 @@ class Viewer3D:
             self._deformed_core_lines.set_data(
                 pos=arr, color=(OPS_COLOR_CORE[0], OPS_COLOR_CORE[1],
                                 OPS_COLOR_CORE[2], 0.85),
-                connect='segments', width=3.0,
+                connect='segments', width=1.5,   # [2026-06-02] 3.0→1.5 가늘게
             )
             self._deformed_core_lines.visible = True
 
@@ -2194,6 +2201,28 @@ class Viewer3D:
                 pos=arr, color=col, connect='segments', width=4.0,
             )
             self._ops_member_lines.visible = True
+        # [2026-06-02] 단면설계 화면에서는 다이어프램 중심 노드(master) 마커를
+        # 숨긴다(시각 노이즈). master = 각 다이어프램의 master_node. 노드 마커를
+        # master 제외하고 다시 그린다(구조해석 _draw_from_spec 은 그대로 둠).
+        masters = {d.master_node for d in getattr(ops_model, 'diaphragms', [])}
+        # [2026-06-02] 코어 부재 끝점 노드는 작게(2.0), 그 외 4.0. (master 는 제외)
+        core_nodes = set()
+        for _tag, (cn1, cn2, _k, crole) in ops_model.beam_elements.items():
+            if crole == 'rc_core' or crole.startswith('core_'):
+                core_nodes.add(cn1)
+                core_nodes.add(cn2)
+        node_items = [(nid, c) for nid, c in ops_model.node_tags.items()
+                      if nid not in masters]
+        if node_items:
+            npos = np.array([c for _nid, c in node_items], dtype=np.float32)
+            ncol = np.tile(np.array([list(OPS_COLOR_NODE)], dtype=np.float32),
+                           (len(npos), 1))
+            nsize = np.array([2.0 if nid in core_nodes else 4.0
+                              for nid, _c in node_items], dtype=np.float32)
+            self._ops_node_markers.set_data(
+                pos=npos, face_color=ncol, edge_color=OPS_COLOR_NODE_EDGE,
+                size=nsize)
+            self._ops_node_markers.visible = True
         self.canvas.update()
 
     def show_member_contour(self, ops_model, ratios: Dict[int, float]):

@@ -12,13 +12,15 @@
 - _commit_placement 가 _item_dims_for_posture 로 자세별 차원을 받아 단별 두께 갱신
 
 [모듈 합산 보강 — J]
-- Transfer/Swap/Merge 가 모듈에 적용될 때 결과 회차 모듈 수 ≤ 2 + 둘 다 길이 ≤ 4500 mm 검사
+- Transfer/Swap/Merge 가 모듈에 적용될 때 결과 회차 모듈 수 ≤ 2 + 둘 다 길이 ≤ 6000 mm 검사
 """
 from __future__ import annotations
 
 from typing import List, Optional, Sequence, Tuple
 
-from .models import Module, SiteLimit, SpacingParams, Truck
+from .models import (
+    MODULE_PAIR_MAX_LEN_MM, Module, SiteLimit, SpacingParams, Truck,
+)
 from .packer import PackResult, Trip, _effective_cargo_limit
 from .packer_core import (
     EcoOptions,
@@ -156,7 +158,7 @@ def _check_module_merge_constraint(
     """target_state 에 new_item 을 추가했을 때 모듈 합산 규칙을 만족하는가.
 
     - 두 모듈 회차에 모듈 추가 금지 (3 개 불가)
-    - 한 모듈 회차에 모듈 추가 시 둘 다 길이 ≤ 4500
+    - 한 모듈 회차에 모듈 추가 시 둘 다 길이 ≤ 6000
     """
     if not isinstance(new_item, Module):
         return True
@@ -166,7 +168,7 @@ def _check_module_merge_constraint(
     if len(existing_modules) >= 2:
         return False
     for m in existing_modules:
-        if m.length > 4500.0 + 1e-6 or new_item.length > 4500.0 + 1e-6:
+        if m.length > MODULE_PAIR_MAX_LEN_MM + 1e-6 or new_item.length > MODULE_PAIR_MAX_LEN_MM + 1e-6:
             return False
     return True
 
@@ -344,7 +346,7 @@ def op_merge(
                 continue
             if (
                 len(modules) == 2
-                and not all(m.length <= 4500.0 + 1e-6 for m in modules)
+                and not all(m.length <= MODULE_PAIR_MAX_LEN_MM + 1e-6 for m in modules)
             ):
                 continue
 

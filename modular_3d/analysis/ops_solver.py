@@ -57,6 +57,34 @@ def _apply_penalty_constraints() -> None:
     ops.constraints('Penalty', _PENALTY_ALPHA, _PENALTY_ALPHA)
 
 
+def _reset_domain_between_cases() -> None:
+    """[2026-06-02 성능] 단일 빌드 도메인을 재사용해 다음 하중 케이스를 풀기 위해
+    직전 케이스의 하중·해석 상태만 비운다. 노드/요소/제약(모델)은 보존.
+
+    [함정 경고] 이전 loadPattern 을 반드시 제거해야 한다. 제거하지 않으면 다음
+    케이스 analyze 에 이전 하중이 그대로 누적 적용되어(예: Ex 뒤 Ey 에 Ex 가
+    더해짐) 결과가 조용히 틀어진다. 솔버는 중력(timeSeries/pattern tag 1)·횡력
+    (tag 2)을 매 호출 재등록하므로, tag 재사용 충돌을 막기 위해 timeSeries 도
+    제거한다. reset()+setTime(0) 으로 누적 변위·시간을 0 으로 되돌린다.
+    각 솔버가 numberer/system/analysis 를 다시 설정하므로 wipeAnalysis 로 직전
+    해석 객체를 제거한다.
+    """
+    ops.wipeAnalysis()
+    # pattern 을 먼저 제거(timeSeries 참조 해제) 후 timeSeries 제거. 없으면 무시.
+    for tag in (1, 2):
+        try:
+            ops.remove('loadPattern', tag)
+        except Exception:
+            pass
+    for tag in (1, 2):
+        try:
+            ops.remove('timeSeries', tag)
+        except Exception:
+            pass
+    ops.reset()
+    ops.setTime(0.0)
+
+
 # ── 결과 데이터 ────────────────────────────────────────────────
 
 
@@ -301,6 +329,14 @@ def _extract_member_stations(om: 'OpsModel', am: AnalysisModel,
     for mid in om.member_to_ele_tag.keys():
         mf = res.member_forces.get(mid)
         if mf is None:
+            continue
+        # [2026-06-02 성능] 코어 부재(core_*)는 트러스성 거동(축력 일정·휨 미미)
+        # 이라 분포 단면력 7점 계산이 무의미. 분포 계산을 생략하고 양단 2점만
+        # 넣어 직선 그래프로 표시(설계에 쓰는 양단 단면력 자체는 불변). 호버
+        # 정보창은 stations 가 (2,6) 이면 그 2점을 잇는 직선 AFD/SFD/BMD 를 그린다.
+        m = am.members.get(mid)
+        if m is not None and m.role.startswith('core_'):
+            res.member_stations[mid] = np.array([mf.f_i, mf.f_j], dtype=np.float64)
             continue
         L = am.get_member_length(mid)
         res.member_stations[mid] = _compute_station_forces(
@@ -987,6 +1023,19 @@ def _linear_combo(case_name: str,
                  'total_applied_load_z'):
         setattr(res, attr,
                 sum(coeff * getattr(r, attr) for coeff, r in parts))
+    # 층별 횡변위 — 선형 합(z 키 합집합). 층간변위비 검토(drift_check)가 사용.
+    all_z: set = set()
+    for _, r in parts:
+        all_z.update(r.story_disp.keys())
+    for z in all_z:
+        sx = 0.0
+        sy = 0.0
+        for coeff, r in parts:
+            d = r.story_disp.get(z)
+            if d:
+                sx += coeff * d[0]
+                sy += coeff * d[1]
+        res.story_disp[z] = (sx, sy)
     return res
 
 
@@ -1021,10 +1070,12 @@ def _pm_envelope(case_name: str,
     env.total_applied_load_x = plus.total_applied_load_x
     env.total_applied_load_y = plus.total_applied_load_y
     env.total_applied_load_z = plus.total_applied_load_z
+    # 층별 횡변위 — plus 대표값(node_disps 정책과 동일). 층간변위비 검토용.
+    env.story_disp = plus.story_disp
     return env
 
 
-def solve_all_cases(scene, *, prebuilt_am=None) -> Dict[str, OpsResults]:
+def solve_all_cases(scene, *, prebuilt_am=None, verify: bool = True) -> Dict[str, OpsResults]:
     """KDS 하중조합 자동 해석 — 기본 6 성분 해석 후 조합 합성.
 
     Args:
@@ -1066,21 +1117,27 @@ def solve_all_cases(scene, *, prebuilt_am=None) -> Dict[str, OpsResults]:
     # 부재별 하중은 한 번만 계산하고 모든 기본 해석이 재사용
     lr_cached = calculate_loads(scene, am)
 
-    # ── 1) 기본 성분 해석 6회 (각 케이스마다 ops 모델 재빌드) ──
+    # ── 1) 기본 성분 해석 6회 ──
+    #   [2026-06-02 성능] 모델을 1번만 빌드하고 같은 도메인을 재사용한다. 케이스
+    #   사이에 _reset_domain_between_cases() 로 직전 하중·해석 상태만 비운다(모델
+    #   보존). 이전 6회 재빌드(ops.wipe+전체 재등록) 대비 빌드 6→1. 단면설계
+    #   수렴 반복마다 이 6배가 1배가 되므로 전체 빌드 횟수가 약 1/6 로 준다.
+    #   [함정 경고] 케이스 사이 reset 누락 시 하중이 누적되어 결과가 틀어진다.
+    #   결과 동일성은 analysis/tests/regression_solve.py 로 회귀 검증한다.
     #   D 단독(1.0D), L 단독(1.0L) — 중력 성분. (dl,ll) 로 분리.
-    om = build_ops_model(am, scene=scene)
+    om = build_ops_model(am, scene=scene, verify=verify)
     base_D = solve_vertical(om, scene, load_result=lr_cached,
                             dl_factor=1.0, ll_factor=0.0, case_name='D')
-    om = build_ops_model(am, scene=scene)
+    _reset_domain_between_cases()
     base_L = solve_vertical(om, scene, load_result=lr_cached,
                             dl_factor=0.0, ll_factor=1.0, case_name='L')
-    om = build_ops_model(am, scene=scene)
+    _reset_domain_between_cases()
     base_Ex = solve_seismic(om, scene, 'X', load_result=lr_cached)
-    om = build_ops_model(am, scene=scene)
+    _reset_domain_between_cases()
     base_Ey = solve_seismic(om, scene, 'Y', load_result=lr_cached)
-    om = build_ops_model(am, scene=scene)
+    _reset_domain_between_cases()
     base_Wx = solve_wind(om, scene, 'X')
-    om = build_ops_model(am, scene=scene)
+    _reset_domain_between_cases()
     base_Wy = solve_wind(om, scene, 'Y')
 
     # ── 2) 노출 조합 합성 (선형 중첩) ──

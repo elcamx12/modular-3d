@@ -40,6 +40,10 @@ diag_*.py
 _diag_*.json
 _diag_*.txt
 
+# 데모/추적 생성물 (앱이 만들어내는 산출물 — 저장소 제외)
+_demo_out/
+*_trace.txt
+
 # 데이터 덤프 / 대용량·저작권 참고자료 (저장소에 올리지 않음)
 modular_3d/단가/
 *.zip

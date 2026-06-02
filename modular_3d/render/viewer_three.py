@@ -84,6 +84,9 @@ class ViewerThree:
             html = _TEMPLATE_PATH.read_text(encoding='utf-8')
         else:
             html = '<html><body>ViewerThree template missing</body></html>'
+        # three.js 라이브러리 CDN → 로컬 인라인(오프라인 지원). vendor 없으면 CDN 폴백.
+        from modular_3d.render.three_assets import inline_three_libs
+        html = inline_three_libs(html)
         # baseUrl 은 qrc:///qtwebchannel/qwebchannel.js 가 동작하도록 임의 file URL.
         self._view.setHtml(html, QUrl('about:blank'))
 
@@ -96,7 +99,8 @@ class ViewerThree:
     def _on_load_finished(self, ok: bool) -> None:
         self._loaded = bool(ok)
         if not ok:
-            print('[ViewerThree] HTML 로드 실패')
+            from modular_3d._utils.debug import log_error
+            log_error('ViewerThree HTML 로드 실패', cat='viewer_three')
             return
         # pending JS 일괄 실행
         for js in self._pending_calls:
@@ -249,6 +253,37 @@ class ViewerThree:
         self._run_js(
             f'window.setSectionZ({float(z)}, '
             f'{"true" if enabled else "false"});')
+
+    def set_section_y(self, y: float, enabled: bool) -> None:
+        """[2026-06-01] y축 단면 절단 — enabled 면 y 값 한쪽을 잘라 평면을 본다."""
+        self._run_js(
+            f'window.setSectionY({float(y)}, '
+            f'{"true" if enabled else "false"});')
+
+    def capture_section_front(self, cut_y: float) -> str:
+        """[2026-06-02] 카메라를 외벽 정면 시점으로 이동 + Y축 클리핑 적용 후
+        뷰를 PNG dataURL 로 캡처. 카메라·클리핑은 자동 원복. 비동기 JS 호출을
+        QEventLoop 로 동기처럼 처리.
+
+        반환: 'data:image/png;base64,...' 또는 '' (실패 시).
+        """
+        from PyQt5.QtCore import QEventLoop, QTimer
+        result = {"data": "", "done": False}
+        loop = QEventLoop()
+
+        def _cb(data_url):
+            result["data"] = data_url or ""
+            result["done"] = True
+            loop.quit()
+        try:
+            self._view.page().runJavaScript(
+                f"window.captureSectionFront({float(cut_y)});", _cb)
+        except Exception:
+            return ""
+        # 안전 타임아웃 — 2초 안에 콜백 안 오면 포기
+        QTimer.singleShot(2000, loop.quit)
+        loop.exec_()
+        return result["data"]
 
     def is_ops_view_active(self) -> bool:
         return False

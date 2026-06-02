@@ -72,7 +72,7 @@ function init() {
   const w = container.clientWidth, h = container.clientHeight;
 
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(0xf5f7fa);
+  scene.background = new THREE.Color(0xffffff);  // 3개 three 뷰 공통 흰 배경
 
   // 카메라 — Viewer3D 의 CustomCamera 와 같은 초기값
   // distance=20000mm, fov=45°, elevation=30°, azimuth=-60°, center=(3000,3000,0)
@@ -94,7 +94,7 @@ function init() {
   camera.lookAt(cx, cy, cz);
 
   renderer = new THREE.WebGLRenderer({ antialias: true });
-  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));  // 고DPI 성능 제한(3뷰 공통)
   renderer.setSize(w, h);
   renderer.domElement.id = 'canvas';
   container.appendChild(renderer.domElement);
@@ -104,6 +104,10 @@ function init() {
   // constant 가 절단 높이. 초기 1e9 = 사실상 무한대(전체 보임). setSectionZ 로 조정.
   renderer.localClippingEnabled = true;
   window.sectionPlane = new THREE.Plane(new THREE.Vector3(0, 0, -1), 1e9);
+  // [2026-06-01] y축 단면 절단용 클리핑 평면.
+  // normal (0,1,0) → y + C > 0, 즉 y > -C 영역만 보임 (작은 y 쪽부터 잘림).
+  // setSectionY 가 plane.constant = -y_slider 로 설정 → 슬라이더 y 미만 잘림.
+  window.sectionPlaneY = new THREE.Plane(new THREE.Vector3(0, 1, 0), 1e9);
 
   controls = new THREE.OrbitControls(camera, renderer.domElement);
   controls.target.set(cx, cy, cz);
@@ -185,9 +189,13 @@ function _buildMeshFromMeshData(verticesList, facesList, faceColorsList) {
   geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   geom.computeVertexNormals();
 
+  // [2026-06-01] z·y 두 평면 모두 클리핑에 적용 — 각각 1e9 면 사실상 무한
+  const _planes = [];
+  if (window.sectionPlane) _planes.push(window.sectionPlane);
+  if (window.sectionPlaneY) _planes.push(window.sectionPlaneY);
   const mat = new THREE.MeshLambertMaterial({
     vertexColors: true, side: THREE.DoubleSide,
-    clippingPlanes: window.sectionPlane ? [window.sectionPlane] : [],
+    clippingPlanes: _planes,
   });
   return new THREE.Mesh(geom, mat);
 }
@@ -219,6 +227,66 @@ window.setSectionZ = function(z, enabled) {
   if (window.sectionPlane) {
     window.sectionPlane.constant = enabled ? z : 1e9;
   }
+};
+
+// [2026-06-01] y축 단면 절단 — 반대 방향(작은 y 쪽부터 잘림).
+// normal (0,1,0) + constant=-y  → y > slider 영역만 보임.
+window.setSectionY = function(y, enabled) {
+  if (window.sectionPlaneY) {
+    window.sectionPlaneY.constant = enabled ? -y : 1e9;
+  }
+};
+
+// [2026-06-02] 거실 단면 정보 — 카메라를 외벽 정면 시점으로 이동 + Y축
+// 클리핑 적용 후 그 뷰를 PNG dataURL 로 캡처. 끝나면 카메라·클리핑 원복.
+// 외부에서 모듈 안쪽을 바라보는 시점 → 모듈 mesh 의 진짜 단면(기둥/보/슬래브)
+// 이 그대로 보임.
+window.captureSectionFront = function(cut_y) {
+  if (typeof camera === 'undefined' || typeof renderer === 'undefined' ||
+      typeof scene === 'undefined') return '';
+  var bp = {
+    px: camera.position.x, py: camera.position.y, pz: camera.position.z,
+    tx: controls.target.x, ty: controls.target.y, tz: controls.target.z,
+    up: camera.up.clone(),
+    aspect: camera.aspect,
+    cw: renderer.domElement.clientWidth || renderer.domElement.width,
+    ch: renderer.domElement.clientHeight || renderer.domElement.height,
+    clip: window.sectionPlaneY ? window.sectionPlaneY.constant : 1e9
+  };
+  var url = '';
+  try {
+    if (window.sectionPlaneY) window.sectionPlaneY.constant = -cut_y;
+    var box = new THREE.Box3().setFromObject(scene);
+    var ctr = new THREE.Vector3(); box.getCenter(ctr);
+    var size = new THREE.Vector3(); box.getSize(size);
+    var dist = Math.max(size.x, size.z, 5000) * 1.4;
+    var TW = 1800, TH = 1100;
+    renderer.setSize(TW, TH, false);
+    camera.aspect = TW / TH;
+    // 외부 시점: y < cut_y 쪽에서 +y 방향 바라보기. z 축이 위.
+    camera.position.set(ctr.x, cut_y - dist, ctr.z);
+    camera.up.set(0, 0, 1);
+    camera.lookAt(ctr.x, cut_y + 100, ctr.z);
+    camera.updateProjectionMatrix();
+    renderer.render(scene, camera);
+    url = renderer.domElement.toDataURL('image/png');
+  } catch(e) {
+    console.error('captureSectionFront', e);
+  }
+  // 원복
+  try {
+    camera.position.set(bp.px, bp.py, bp.pz);
+    controls.target.set(bp.tx, bp.ty, bp.tz);
+    camera.up.copy(bp.up);
+    camera.aspect = bp.aspect;
+    if (window.sectionPlaneY) window.sectionPlaneY.constant = bp.clip;
+    renderer.setSize(bp.cw, bp.ch, false);
+    camera.lookAt(controls.target);
+    camera.updateProjectionMatrix();
+    controls.update();
+    renderer.render(scene, camera);
+  } catch(_e) {}
+  return url;
 };
 
 window.removeComponent = function(comp_id) {

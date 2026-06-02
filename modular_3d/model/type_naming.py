@@ -167,6 +167,23 @@ def _signature(comp, scene) -> tuple:
                 float(dd.get('depth', 0.0)),
                 float(dd.get('height', 0.0)),
             ))
+    # [2026-06-01] 흡수된 벽패널(merged_wall_ids) — sub_index=0·다른 group_id 라
+    #   위 루프에 안 잡힌다. 그러나 "벽이 붙은 패널 vs 안 붙은 패널"은 다른 타입이어야
+    #   하므로(사용자), merged_wall_ids 로 직접 찾아 종속 구성에 포함한다.
+    for wid in (getattr(comp, 'merged_wall_ids', None) or []):
+        w = scene.components.get(wid)
+        if w is None:
+            continue
+        wd = w.dimensions
+        wlx, wly = _rot2d_int(float(w.position[0]) - px,
+                              float(w.position[1]) - py, -rot)
+        deps.append((
+            'merged_wall',
+            wlx, wly,
+            float(wd.get('width', 0.0)),
+            float(wd.get('depth', 0.0)),
+            float(wd.get('height', 0.0)),
+        ))
 
     # ── 실(Room) — 같은 층 + 모듈 footprint 안. [10] 면적 비율(%) 구성으로 정밀화 ──
     #   모듈 하나에 여러 실이 들어갈 수 있으므로, 각 실이 모듈 바닥면적의 몇 %인지
@@ -285,6 +302,30 @@ def classify_component_types(scene) -> Dict[int, str]:
             posmap[(lx, ly)] = len(posmap) + 1
         labels[cid] = f"{parent_label} {dep_tname}{posmap[(lx, ly)]}"
 
+    # ── 흡수(합체) 구조벽 라벨 — 부모 바닥패널 라벨 + '구조벽' + 순번 ──
+    # [2026-06-01] merged_fp_id 로 바닥패널에 흡수된 StructWall 은 sub_index==0·
+    # group_id 가 패널과 달라 위 종속 로직(group_id 매칭)에 안 잡힌다. 그래서
+    # 라벨이 비어 배치설계에 부모 없이 나왔다. 부모 패널 기준으로 직접 부여.
+    wall_tname = TYPE_NAMES.get(ComponentType.STRUCT_WALL, '구조벽')
+    merged_pos_num: Dict[str, Dict[tuple, int]] = {}
+    for cid in sorted(scene.components.keys()):
+        c = scene.components[cid]
+        if c.comp_type != ComponentType.STRUCT_WALL:
+            continue
+        mfp = getattr(c, 'merged_fp_id', None)
+        if not mfp:
+            continue
+        parent_label = labels.get(int(mfp))
+        pcomp = scene.components.get(int(mfp))
+        if not parent_label or pcomp is None:
+            continue   # 부모 패널이 라벨 없음(이례) → 미부여
+        lx = _q(float(c.position[0]) - float(pcomp.position[0]))
+        ly = _q(float(c.position[1]) - float(pcomp.position[1]))
+        posmap = merged_pos_num.setdefault(parent_label, {})
+        if (lx, ly) not in posmap:
+            posmap[(lx, ly)] = len(posmap) + 1
+        labels[cid] = f"{parent_label} {wall_tname}{posmap[(lx, ly)]}"
+
     # ── RC 코어 — 코어벽 'RC코어벽{n}'(xy 위치별, 층 무관), 코어 슬래브 'RC코어 슬래브' ──
     core_xy_num: Dict[tuple, int] = {}
     for cid in sorted(scene.components.keys()):
@@ -309,7 +350,8 @@ def dump_type_signatures(scene) -> None:
     try:
         labels = classify_component_types(scene)
     except Exception as e:
-        print(f'[TYPE] classify 실패: {e}')
+        from modular_3d._utils.debug import log_error
+        log_error(f'classify 실패: {e}', cat='type_naming', exc=True)
         return
     comps = getattr(scene, 'components', {}) or {}
     print('[TYPE] ===== 타입 진단 (cid / label / size / signature) =====')

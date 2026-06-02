@@ -575,14 +575,16 @@ def _extract_core(comp: Core) -> _LocalExtract:
 
     to_world = make_local_to_world(ax, ay, rot, pos)
     half_t = t / 2.0
-    # [정책 2026-05-18 코어벽 상단 = 코어 본체 상단(z=h)]
-    # 이전엔 모듈 천장보 z(=h - SECTION_W_MM)와 맞췄으나, 그러면 코어슬래브
-    # 상면(z=h) 코너와 200mm 갭이 생겨 코어벽-코어슬래브 노드 통합 실패 →
-    # 옥상층뿐 아니라 모든 층에서 미접합. 격자 z 범위를 0~h 전체로 확장해
-    # 슬래브 받침 노드(z=h)가 외곽 격자 노드와 일치하도록.
-    # 모듈 천장(z=h-SECTION_W_MM)과의 결합은 R09 코어 결합이 코어 축선 사영으로
-    # 처리하므로 별도 격자 노드 불필요.
-    z_top = h
+    # [정책 2026-06-01 코어벽 상단 = 코어 슬래브 받침 평면(z = h + gap)]
+    # 코어 슬래브 frame 노드는 슬래브윗면 + MODULE_JOINT_GAP_MM(=h+gap) 에 생성
+    # (아래 _build_core_slab 의 z_top_local = t + gap, R09 모듈천장 정합용).
+    # 코어벽 상단을 h 로만 두면 슬래브 노드(h+gap)와 20mm 어긋나 노드 통합 실패
+    # → 코어 슬래브가 벽 위에 안 얹히고 떠서 횡력에 발산(2026-06-01 진단).
+    # 상단을 h+gap 으로 올려 ① 코어 슬래브 받침 노드와 z 일치(자동 통합) ②
+    # 층고 H=h+gap 이므로 상단(k·H+h+gap)=다음층 코어벽 base((k+1)·H) → 층간
+    # 코어벽 연속까지 동시 충족. 모듈 천장(h-SECTION_W) 결합은 R09 축선 사영이라
+    # 격자 z 범위 확장에 영향 없음.
+    z_top = h + MODULE_JOINT_GAP_MM
     # 외곽 두께 안쪽 격자 폭 — 양 끝 노드는 x=half_t, x=L-half_t 에 위치.
     inner_width = L - t
 

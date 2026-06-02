@@ -74,37 +74,39 @@ from modular_3d.ui.joint_edit_panel import JointEditPanel
 from modular_3d.ui.project_settings import ProjectSettings, ProjectSettingsDialog
 from modular_3d.ui.define_tab import DefineTab
 from modular_3d.model.definition_library import DefinitionLibrary
-from modular_3d._utils.debug import dprint
+from modular_3d._utils.debug import dprint, log_error
 
 
 # 메인 탭 인덱스 상수
 # [정책 2026-05-24 디자인 2분리] 맨 앞에 '모듈 정의' 탭 신설. 이하 모두 +1 shift.
 # 외부 코드(컨트롤러 등) 가 이 상수를 참조하므로 정수 리터럴로 비교하지 말고
 # 반드시 본 상수를 사용.
-TAB_DEFINE = 0      # 모듈 정의 탭 (신규)
-TAB_DESIGN = 1      # 배치 설계 탭 (기존 디자인 탭)
+# [2026-06-01 랜딩 페이지 분리] 랜딩은 탭이 아니라 별도 StackedWidget 페이지.
+# 따라서 탭 인덱스는 원래대로 (TAB_DEFINE=0).
+TAB_DEFINE = 0
+TAB_DESIGN = 1
 TAB_JOINT_EDIT = 2
 TAB_ANALYSIS = 3
-# [2026-05-31 단면 설계 탭 신설] 구조해석과 물량 사이. 이후 인덱스 +1.
 TAB_SECTION = 4
 TAB_QUANTITY = 5
 TAB_TRANSPORT = 6
-# [2026-05-27 공정표 이식] 옛 이름 TAB_JOINT_AIR → TAB_SCHEDULE 로 변경.
-# 외부 코드에서 참조하는 경우를 위해 옛 이름은 별칭으로 유지.
 TAB_SCHEDULE = 7
 TAB_JOINT_AIR = TAB_SCHEDULE  # deprecated alias
-# [2026-05-27 평가 탭 이식] 옛 이름 TAB_FINAL → TAB_EVALUATION 으로 변경.
 TAB_EVALUATION = 8
-TAB_FINAL = TAB_EVALUATION  # deprecated alias
-# [2026-05-31] 비교 탭 신설 — 저장된 .case.json 들을 가로로 나란히 비교.
-# 팀원 원본은 8 이었으나 우리 단면설계 탭(4) 삽입으로 뒤 인덱스가 +1 → 9.
+TAB_FINAL = TAB_EVALUATION    # deprecated alias
 TAB_COMPARE = 9
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('모듈러 부재 스터디')
+        # [2026-06-01] 한국어 폰트(Freesentation 본문 / Paperlogy 헤드라인) 등록. (팀원)
+        try:
+            from .fonts import ensure_fonts_loaded
+            ensure_fonts_loaded()
+        except Exception:
+            pass
+        self.setWindowTitle('모듈러 설계 프로그램')
         self.resize(1600, 950)
 
         # ── 모델 ─────────────────────────────────────────
@@ -303,7 +305,27 @@ class MainWindow(QMainWindow):
         self._tabs.addTab(self._tab_evaluation, '종합')
         self._tabs.addTab(self._tab_compare, '비교')
         self._tabs.currentChanged.connect(self._on_tab_changed)
-        self.setCentralWidget(self._tabs)
+
+        # [2026-06-01] 랜딩 페이지 — 탭 UI 가 아닌 단독 화면.
+        # QStackedWidget 으로 page 0 = 랜딩, page 1 = 메인 탭 UI.
+        # 프로그램 시작 시 page 0 (랜딩) 만 보이고 탭바·메뉴는 안 보임.
+        # [2026-06-01] 랜딩 카드에 ProjectSettings 폼이 인라인으로 들어가므로
+        # 현재 settings 인스턴스를 그대로 넘김 → 시작 클릭 시 폼이 자체적으로
+        # settings 에 적용한 뒤 시그널 발화.
+        from PyQt5.QtWidgets import QStackedWidget
+        from .home_panel import HomePanel
+        self._tab_home = HomePanel(self._project_settings)
+        self._tab_home.start_new_project_requested.connect(self._on_home_start_new)
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self._tab_home)   # index 0
+        self._stack.addWidget(self._tabs)        # index 1
+        self.setCentralWidget(self._stack)
+        self._stack.setCurrentIndex(0)
+        # 메뉴바도 랜딩에서는 숨겨 깨끗한 첫 화면. 시작 후 표시.
+        try:
+            self.menuBar().setVisible(False)
+        except Exception:
+            pass
         # [Phase 7] 파일 메뉴 — 운송 카탈로그 진입점.
         self._build_menu_bar()
         # [Phase 7] 운송탭에 프로젝트 루트 전달 + 신호 wiring (운송 탭 객체가
@@ -337,8 +359,11 @@ class MainWindow(QMainWindow):
         act_settings.triggered.connect(self._open_project_settings)
         mb.addAction(act_settings)
 
-    def _open_project_settings(self) -> None:
+    def _open_project_settings(self) -> bool:
         """프로젝트 설정 모달 — 공통 설정 입력. 확인 시 세션 메모리에 보관.
+
+        Returns:
+            True 면 사용자가 확인(Accepted) 했고 변경 반영 완료, False 면 취소.
 
         [정책 2026-05-24] 1단계는 보관까지만. 운송 탭 등 소비처와의 연결은
         다음 단계이므로, 확인을 눌러도 해석/물량/운송 재계산은 트리거하지
@@ -349,7 +374,9 @@ class MainWindow(QMainWindow):
             on_open_catalog=self._open_transport_catalog,
             parent=self,
         )
-        if dlg.exec_() == QDialog.Accepted:
+        if dlg.exec_() != QDialog.Accepted:
+            return False
+        if True:
             # [2026-05-26] 확인 즉시 운송탭 읽기전용 표시(현장제한 등) 갱신.
             # 종전엔 탭을 빠져나갔다 다시 들어와야 반영됐음.
             tt = getattr(self._analysis_panel, '_transport_tab', None)
@@ -362,6 +389,7 @@ class MainWindow(QMainWindow):
                     self._tab_schedule.apply_project_settings(self._project_settings)
             except Exception as e:
                 dprint('SCHEDULE', f'[SCHEDULE] 프로젝트 설정 푸시 실패: {e}')
+        return True
 
     def _open_transport_catalog(self) -> None:
         """파일 메뉴 진입점 — AnalysisPanel 의 _transport_tab 에 위임."""
@@ -405,6 +433,8 @@ class MainWindow(QMainWindow):
             transport_pack = getattr(self, '_last_transport_pack', None)
             transport_tab = getattr(self._analysis_panel, '_transport_tab', None)
             transport_eco = getattr(transport_tab, '_last_eco', None) if transport_tab is not None else None
+            section_types = self._extract_section_types()
+            scene_components_by_id = dict(self._scene.components) if hasattr(self._scene, 'components') else {}
             evaluation_data = build_evaluation_data(
                 components=comps,
                 project_settings=self._project_settings,
@@ -413,6 +443,8 @@ class MainWindow(QMainWindow):
                 transport_pack=transport_pack,
                 transport_eco=transport_eco,
                 schedule_payload=getattr(self, '_schedule_payload', None) or None,
+                section_types=section_types,
+                scene_components_by_id=scene_components_by_id,
             )
             # [2026-05-31 v2] 비교탭 표시용 — 전체 배치 fit-all 캡처.
             # (main_3d 에 typing.Optional 미import → 지역 annotation 생략)
@@ -502,6 +534,10 @@ class MainWindow(QMainWindow):
         self._design_left_lay.addWidget(self._design_left_split, stretch=1)
         # [2026-05-30 B3] 3D 뷰 바로 아래 z축 단면(수평 평면 절단) 슬라이더.
         self._design_left_lay.addWidget(self._build_section_slider())
+        # [2026-06-02] 벽 채움면 / 실 표기 표시 토글 (체크박스 2개). (내 작업)
+        self._design_left_lay.addWidget(self._build_wall_room_toggles())
+        # [2026-06-01] Y축 단면 슬라이더 — Z축과 같은 패턴, normal (0,-1,0) (팀원)
+        self._design_left_lay.addWidget(self._build_section_y_slider())
         self._design_right_pane = QWidget()
         # M3-b 마운트는 빌더 끝에서 _design_right_lay 안에 세로 분할 추가
         # (코드는 아래에서 _design_right_lay 정의 후).
@@ -550,6 +586,9 @@ class MainWindow(QMainWindow):
         rv.addWidget(self._design_props)
         rv.addWidget(self._room_props)
         self._room_props.setVisible(False)
+        # [2026-06-02] 단면 정보 버튼 제거 — 비교탭에서 case 의 scene 으로
+        # 단면을 직접 그리므로 배치설계 탭의 검증용 버튼 불필요.
+        rv.addStretch(1)
         h.addWidget(right)
         return page
 
@@ -578,6 +617,33 @@ class MainWindow(QMainWindow):
         self._section_slider.valueChanged.connect(self._on_section_changed)
         box.setMaximumHeight(34)
         return box
+
+    def _build_wall_room_toggles(self) -> QWidget:
+        """[2026-06-02] 배치설계 표시 토글 — 벽 채움면 + 실 표기를 한 체크박스로.
+
+        '벽·실' 하나로 묶어 동시에 끄고 켠다. 벽=구조벽 채움·내벽(칸막이)·모듈
+        외피 벽 채움(기둥·런너 프레임·슬래브·코어벽은 유지), 실=실 표기 반투명
+        색면. 기본 ON.
+        """
+        box = QWidget()
+        lay = QHBoxLayout(box)
+        lay.setContentsMargins(6, 2, 6, 2)
+        self._wall_room_check = QCheckBox('벽·실 표시')
+        self._wall_room_check.setChecked(True)
+        self._wall_room_check.setToolTip(
+            '벽 채움면(구조벽 채움·내벽·모듈 외피 벽)과 실 표기를 함께 끄거나 '
+            '켭니다. 프레임·슬래브·코어벽은 항상 표시됩니다.')
+        self._wall_room_check.toggled.connect(self._on_wall_room_toggled)
+        lay.addWidget(self._wall_room_check)
+        lay.addStretch(1)
+        box.setMaximumHeight(34)
+        return box
+
+    def _on_wall_room_toggled(self, checked: bool) -> None:
+        if hasattr(self._controller, 'set_wall_fill_visible'):
+            self._controller.set_wall_fill_visible(checked)
+        if hasattr(self._controller, 'set_rooms_visible'):
+            self._controller.set_rooms_visible(checked)
 
     def _update_section_range(self):
         """단면 슬라이더 범위를 -100 ~ 건물 최고점(코어 옥탑 슬래브 끝)으로 갱신.
@@ -614,6 +680,78 @@ class MainWindow(QMainWindow):
         three = getattr(self._viewer, 'three', None)
         if three is not None and hasattr(three, 'set_section_z'):
             three.set_section_z(z, enabled)
+
+    # ── [2026-06-01] Y축 단면 (Z축 슬라이더와 동일 패턴) ─────────────
+    def _build_section_y_slider(self) -> QWidget:
+        """Y축 단면(수직 평면 절단) 컨트롤 — 체크박스 + 슬라이더 + 라벨.
+
+        체크 ON 이면 슬라이더 y(mm) 한쪽을 잘라 평면을 본다(three.js 클리핑).
+        normal (0,-1,0) → y < constant 영역만 보임.
+        """
+        box = QWidget()
+        lay = QHBoxLayout(box)
+        lay.setContentsMargins(6, 2, 6, 2)
+        self._section_y_check = QCheckBox('단면 Y')
+        self._section_y_check.setToolTip(
+            '체크 시 슬라이더 y 값 한쪽을 잘라 평면을 봅니다.')
+        lay.addWidget(self._section_y_check)
+        self._section_y_slider = QSlider(Qt.Horizontal)
+        self._section_y_slider.setRange(-10000, 10000)
+        # [2026-06-01] 반대 방향 시작 — 최솟값에서 전체 보임
+        self._section_y_slider.setValue(-10000)
+        self._section_y_slider.setSingleStep(100)
+        lay.addWidget(self._section_y_slider, stretch=1)
+        self._section_y_label = QLabel('y = -10000 mm')
+        self._section_y_label.setFixedWidth(120)
+        lay.addWidget(self._section_y_label)
+        self._section_y_check.toggled.connect(self._on_section_y_toggled)
+        self._section_y_slider.valueChanged.connect(self._on_section_y_changed)
+        box.setMaximumHeight(34)
+        return box
+
+    def _update_section_y_range(self):
+        """Y 슬라이더 범위를 건물 y 범위로 갱신."""
+        from modular_3d.render.mesh_builder import build_component_mesh
+        y_min = 0.0
+        y_max = 0.0
+        first = True
+        for comp in self._scene.components.values():
+            try:
+                v, _f, _c = build_component_mesh(comp)
+            except Exception:
+                continue
+            if v is not None and len(v):
+                cy_min = float(v[:, 1].min())
+                cy_max = float(v[:, 1].max())
+                if first:
+                    y_min, y_max = cy_min, cy_max
+                    first = False
+                else:
+                    y_min = min(y_min, cy_min)
+                    y_max = max(y_max, cy_max)
+        # 여유 100 mm
+        y_min = int(round(y_min)) - 100
+        y_max = int(round(y_max)) + 100
+        if y_max <= y_min:
+            y_max = y_min + 1000
+        self._section_y_slider.blockSignals(True)
+        self._section_y_slider.setRange(y_min, y_max)
+        # [2026-06-01] 반대 방향 — 슬라이더 최솟값에서 전체 보임, 올리면 작은 y 쪽부터 잘림
+        self._section_y_slider.setValue(y_min)
+        self._section_y_slider.blockSignals(False)
+
+    def _on_section_y_toggled(self, checked: bool):
+        if checked:
+            self._update_section_y_range()
+        self._on_section_y_changed()
+
+    def _on_section_y_changed(self, *_):
+        y = float(self._section_y_slider.value())
+        enabled = self._section_y_check.isChecked()
+        self._section_y_label.setText(f'y = {int(y)} mm')
+        three = getattr(self._viewer, 'three', None)
+        if three is not None and hasattr(three, 'set_section_y'):
+            three.set_section_y(y, enabled)
 
     def _build_joint_edit_tab(self) -> QWidget:
         """접합부 조정 탭: 중앙(3D 와이어프레임) + 우 접합부 UI placeholder.
@@ -722,7 +860,16 @@ class MainWindow(QMainWindow):
         return page
 
     def _build_quantity_tab(self) -> QWidget:
-        """물량 탭: 중앙(3D + 변형슬라이더) + 우 AnalysisPanel(물량산출)."""
+        """물량 탭: 중앙(운송식 3D 뷰어) + 우 QuantityPanel(타입별 비용).
+
+        [2026-05-31 물량탭 개편 Phase 4] 좌측 와이어프레임(_canvas_widget) 폐지.
+        중앙 = QWebEngineView 물량 3D(트럭 없이 타입 평면 배치), 우 = QuantityPanel.
+        """
+        from PyQt5.QtWebEngineWidgets import QWebEngineView
+        from PyQt5.QtWebChannel import QWebChannel
+        from PyQt5.QtWidgets import QSizePolicy as _QSP
+        from modular_3d.ui.quantity_panel import QuantityPanel
+
         page = QWidget()
         h = QHBoxLayout(page)
         h.setContentsMargins(0, 0, 0, 0)
@@ -738,55 +885,66 @@ class MainWindow(QMainWindow):
         cv.addWidget(self._quantity_center_pane, stretch=1)
         h.addWidget(center, stretch=1)
 
-        # (2026-05-19) 물량 탭도 동일 정책 — 트리/표 내용에 따라 자동 확장.
-        from PyQt5.QtWidgets import QSizePolicy as _QSP
+        # ── 물량 3D WebEngineView (운송과 동일 패턴, hide_truck) ──
+        self._quantity_3d_web = QWebEngineView()
+        self._quantity_3d_web.setMinimumHeight(400)
+        # WebChannel + Bridge — 3D 타입(=trip) 클릭 시 bridge.on_truck_clicked(idx).
+        # 운송 _TransportBridge 재사용(같은 시그니처).
+        self._quantity_bridge = _TransportBridge()
+        self._quantity_channel = QWebChannel()
+        self._quantity_channel.registerObject("bridge", self._quantity_bridge)
+        self._quantity_3d_web.page().setWebChannel(self._quantity_channel)
+        self._quantity_bridge.truck_clicked_in_3d.connect(
+            self._on_quantity_type_clicked_3d)
+        self._quantity_3d_web.setHtml(self._quantity_empty_html(
+            "물량 산출 3D", "단면 설계를 먼저 실행해 주세요"))
+        self._quantity_center_lay.addWidget(self._quantity_3d_web)
+
+        # 우측 QuantityPanel — 타입별 비용 트리 + 전체 본수표·자재비표.
         self._quantity_right_pane = QWidget()
         self._quantity_right_pane.setMinimumWidth(380)
         self._quantity_right_pane.setSizePolicy(_QSP.Minimum, _QSP.Expanding)
         self._quantity_right_lay = QVBoxLayout(self._quantity_right_pane)
         self._quantity_right_lay.setContentsMargins(0, 0, 0, 0)
+        self._quantity_panel = QuantityPanel()
+        self._quantity_panel.type_selected.connect(
+            self._on_quantity_type_selected_tree)
+        self._quantity_right_lay.addWidget(self._quantity_panel)
         h.addWidget(self._quantity_right_pane)
         return page
 
-    def _build_transport_tab_layout(self) -> QWidget:
-        """운송 탭 — *3 단 분할* (좌 입력 / 중 3D 도식 / 우 결과).
+    @staticmethod
+    def _quantity_empty_html(title: str, msg: str) -> str:
+        """물량 3D 빈/안내 화면 HTML (어두운 테마, 운송 빈 화면과 동일 톤)."""
+        return (
+            "<html><body style='margin:0;padding:0;background:#0d1117;'>"
+            "<div style='display:flex;align-items:center;justify-content:center;"
+            "height:100vh;font-family:Segoe UI,sans-serif;color:#8b949e;'>"
+            "<div style='text-align:center;'>"
+            "<div style='font-size:52px;margin-bottom:18px;'>📦</div>"
+            f"<div style='color:#e6edf3;font-size:18px;font-weight:600;'>{title}</div>"
+            f"<div style='margin-top:12px;color:#6e7681;font-size:14px;'>{msg}</div>"
+            "</div></div></body></html>"
+        )
 
-        [2026-05-27 사용자 결정]
-        - 좌측: TransportTab 의 입력 패널 (카탈로그 / 옵션 / 실행 버튼)
-        - 중앙: 운송 3D 적재 도식 (WebEngineView)
-        - 우측: TransportTab 의 결과 패널 (회차표 / 적재율 / 경제성 / 진단)
-        - 좌측은 *접기 토글 버튼* 으로 collapse 가능
+    def _build_transport_tab_layout(self) -> QWidget:
+        """운송 탭 — *2 단 분할* (중 3D 도식 / 우 결과).
+
+        [개편 Phase 4]
+        - 좌측 입력 패널 제거 — 옵션·참고자료는 TransportTab 우측 결과 패널로 통합됨.
+        - 중앙: 운송 3D 적재 도식(WebEngineView) + 우상단 [▷ 운송 계산 실행] 오버레이.
+          실행 버튼은 TransportTab 소유(_run_btn) 이며 탭 진입 시 center pane 으로 reparent.
+        - 우측: TransportTab 의 결과 패널(옵션 / 회차표 / 적재율 / 경제성).
         """
         from PyQt5.QtWebEngineWidgets import QWebEngineView
-        from PyQt5.QtWidgets import QSizePolicy as _QSP
-        from PyQt5.QtWidgets import QSplitter, QPushButton
+        from PyQt5.QtWidgets import QSplitter
         page = QWidget()
         root = QVBoxLayout(page)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # 상단 툴바 — 좌측 패널 접기 토글
-        toolbar = QWidget()
-        tb_lay = QHBoxLayout(toolbar)
-        tb_lay.setContentsMargins(4, 2, 4, 2)
-        tb_lay.setSpacing(4)
-        self._transport_left_toggle_btn = QPushButton("◀ 입력 패널 접기")
-        self._transport_left_toggle_btn.setCheckable(True)
-        self._transport_left_toggle_btn.setMaximumWidth(150)
-        self._transport_left_toggle_btn.clicked.connect(
-            self._on_transport_left_toggle
-        )
-        tb_lay.addWidget(self._transport_left_toggle_btn)
-        tb_lay.addStretch(1)
-        root.addWidget(toolbar)
-
-        # 메인 3 단 splitter
+        # 메인 2 단 splitter (중앙 3D + 우 결과)
         self._transport_splitter = QSplitter(Qt.Horizontal)
-        # 좌 영역
-        self._transport_left_pane = QWidget()
-        self._transport_left_pane.setMinimumWidth(280)
-        self._transport_left_lay = QVBoxLayout(self._transport_left_pane)
-        self._transport_left_lay.setContentsMargins(0, 0, 0, 0)
         # 중 영역
         center = QWidget()
         cv = QVBoxLayout(center)
@@ -796,6 +954,8 @@ class MainWindow(QMainWindow):
         self._transport_center_lay = QVBoxLayout(self._transport_center_pane)
         self._transport_center_lay.setContentsMargins(0, 0, 0, 0)
         cv.addWidget(self._transport_center_pane, stretch=1)
+        # center pane resize → 실행 버튼 오버레이 우상단 추종(eventFilter 분기).
+        self._transport_center_pane.installEventFilter(self)
 
         # 우 영역
         self._transport_right_pane = QWidget()
@@ -803,15 +963,11 @@ class MainWindow(QMainWindow):
         self._transport_right_lay = QVBoxLayout(self._transport_right_pane)
         self._transport_right_lay.setContentsMargins(0, 0, 0, 0)
 
-        self._transport_splitter.addWidget(self._transport_left_pane)
         self._transport_splitter.addWidget(center)
         self._transport_splitter.addWidget(self._transport_right_pane)
-        self._transport_splitter.setStretchFactor(0, 0)
-        self._transport_splitter.setStretchFactor(1, 2)
-        self._transport_splitter.setStretchFactor(2, 1)
-        self._transport_splitter.setSizes([320, 900, 500])
-        # 사용자 사이즈 저장용 (접기 후 펼침 시 복원)
-        self._transport_left_saved_size = 320
+        self._transport_splitter.setStretchFactor(0, 2)
+        self._transport_splitter.setStretchFactor(1, 1)
+        self._transport_splitter.setSizes([900, 500])
         root.addWidget(self._transport_splitter, stretch=1)
 
         # ── 운송 3D 도식 WebEngineView (center pane 안에 들어갈 위젯) ──
@@ -845,29 +1001,22 @@ class MainWindow(QMainWindow):
 
         return page
 
-    def _on_transport_left_toggle(self, checked: bool) -> None:
-        """[2026-05-27] 운송 탭 좌측 입력 패널 접기 / 펼치기 토글."""
-        if not hasattr(self, '_transport_splitter'):
+    def _position_transport_run_btn(self) -> None:
+        """[Phase 4] 운송 실행 버튼(_run_btn)을 중앙 3D pane 우상단에 오버레이 배치.
+
+        center pane resize 시 eventFilter 가 이 메서드를 호출해 우상단을 추종한다.
+        버튼은 TransportTab 소유이며 탭 진입 시 center pane 으로 reparent 된 상태.
+        """
+        cp = getattr(self, '_transport_center_pane', None)
+        tt = getattr(self._analysis_panel, '_transport_tab', None)
+        btn = getattr(tt, '_run_btn', None) if tt is not None else None
+        if cp is None or btn is None:
             return
-        sizes = self._transport_splitter.sizes()
-        if checked:
-            # 접기 — 좌측 0, 그 폭을 중·우에 분배
-            if sizes[0] > 0:
-                self._transport_left_saved_size = sizes[0]
-            extra = sizes[0]
-            self._transport_splitter.setSizes(
-                [0, sizes[1] + int(extra * 0.6), sizes[2] + int(extra * 0.4)]
-            )
-            self._transport_left_toggle_btn.setText("▶ 입력 패널 펼치기")
-        else:
-            # 펼치기 — 저장된 사이즈 복원
-            saved = getattr(self, '_transport_left_saved_size', 320)
-            mid_take = saved * 6 // 10
-            right_take = saved - mid_take
-            self._transport_splitter.setSizes(
-                [saved, max(200, sizes[1] - mid_take), max(200, sizes[2] - right_take)]
-            )
-            self._transport_left_toggle_btn.setText("◀ 입력 패널 접기")
+        btn.adjustSize()
+        margin = 12
+        x = max(0, cp.width() - btn.width() - margin)
+        btn.move(x, margin)
+        btn.raise_()
 
     def _on_transport_pack_updated(self, pack, sp) -> None:
         """[Phase C] 운송 패널 계산 완료 → center pane 3D 도식 갱신.
@@ -896,7 +1045,7 @@ class MainWindow(QMainWindow):
                 f"window.focusTrip({int(trip_no)});"
             )
         except Exception as e:
-            print(f"[운송 3D 강조 실패] {type(e).__name__}: {e}", flush=True)
+            log_error(f"운송 3D 강조 실패: {type(e).__name__}: {e}", cat='main_3d', exc=True)
 
     def _on_3d_truck_clicked(self, trip_no: int) -> None:
         """[양방향 동기화 — 2026-05-27] 3D 트럭 클릭 → 회차표·경제성표 행 선택.
@@ -909,7 +1058,7 @@ class MainWindow(QMainWindow):
             if tt is not None and hasattr(tt, 'select_trip'):
                 tt.select_trip(int(trip_no))
         except Exception as e:
-            print(f"[3D→회차표 동기화 실패] {type(e).__name__}: {e}", flush=True)
+            log_error(f"3D→회차표 동기화 실패: {type(e).__name__}: {e}", cat='main_3d', exc=True)
 
     def _render_transport_3d(self, pack, sp, highlight_trip_no=None) -> None:
         """[Three.js 마이그레이션 — 2026-05-26] 운송 3D 도식 렌더.
@@ -967,7 +1116,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             import traceback
             tb = traceback.format_exc()
-            print(f"[운송 3D 렌더 실패] {tb}", flush=True)
+            log_error(f"운송 3D 렌더 실패: {tb}", cat='main_3d')
             err_html = (
                 "<div style='padding:20px;font-family:sans-serif;background:#0d1117;"
                 "color:#f85149;'>"
@@ -980,10 +1129,164 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-    def _write_transport_3d_temp_html(self, html: str) -> str:
+    # ── 물량탭 3D + 우측 패널 렌더 (Phase 4) ─────────────────
+    def _render_quantity_view(self) -> None:
+        """단면설계 단일출처 → 타입별 물량 분해 → 물량 3D + QuantityPanel 갱신.
+
+        [데이터 흐름 — 컨트롤러 캐시/단일출처 재사용, 독립 재변환 최소화]
+          self._section_result(ConvergeResult)
+            → derive_section_types(types) + converge_result_to_design_result(dr) + result.am
+            → build_quantity_by_component(qbc) / build_quantity_report(report)+MaterialCost(mc)
+            → build_transport_input(treat_v3_module_as_lying=False) → item(부재 형상)
+            → 타입별 items 묶기 → build_quantity_3d_html → WebEngine 로드
+            → QuantityPanel.populate(qbc, report, mc)
+        [단면설계 None/빈 방어] → 안내 화면 + 우측 비움(사용자 확정 B).
+        """
+        from PyQt5.QtCore import QUrl
+        result = getattr(self, '_section_result', None)
+        if result is None or getattr(result, 'am', None) is None:
+            self._quantity_3d_web.setHtml(self._quantity_empty_html(
+                "물량 산출 3D", "단면 설계를 먼저 실행해 주세요"))
+            if hasattr(self, '_quantity_panel'):
+                self._quantity_panel.clear()
+            return
+        try:
+            from modular_3d.analysis.section_converge import (
+                derive_section_types, converge_result_to_design_result)
+            from modular_3d.analysis.quantity_by_component import (
+                build_quantity_by_component, UnitPrices)
+            from modular_3d.analysis.quantity_takeoff import (
+                build_quantity_report, compute_material_cost)
+            from modular_3d.transport.adapter import (
+                build_transport_input, TransportOptions)
+            from modular_3d.transport.loaded_3d_three import build_quantity_3d_html
+
+            # [단일출처 재사용] 컨트롤러의 _quantity_from_section_design 이 이미
+            # converge_result_to_design_result 로 (정책키 dr, am) 을 만든다. 그것을
+            # 우선 재사용(독립 재변환 금지, §2-6). 없으면 직접 변환 폴백.
+            dr = None
+            am = None
+            ctrl = getattr(self, '_controller', None)
+            if ctrl is not None and hasattr(ctrl, '_quantity_from_section_design'):
+                sd = ctrl._quantity_from_section_design()
+                if sd is not None:
+                    design_results, am = sd
+                    # 세 정책 동일 dr — 아무 정책이나 단일 출처.
+                    dr = next(iter(design_results.values()))
+            if dr is None:
+                dr = converge_result_to_design_result(result)
+                am = result.am
+            if not dr.groups:
+                self._quantity_3d_web.setHtml(self._quantity_empty_html(
+                    "물량 산출 3D", "단면 설계 결과가 비어 있습니다"))
+                if hasattr(self, '_quantity_panel'):
+                    self._quantity_panel.clear()
+                return
+            types, _comp_label = derive_section_types(result, self._scene)
+            up = UnitPrices.load()
+            qbc = build_quantity_by_component(self._scene, am, dr, types, up)
+            # [2026-06-01] 하단 전체 본수표·자재비표는 *코어 강재 제외* dr 로 산출 →
+            # 타입별 분해(코어 제외)와 합계 일치. 코어는 RC 라 강재 물량서 제외(사용자 확정).
+            from modular_3d.analysis.quantity_by_component import (
+                design_result_without_core)
+            dr_no_core = design_result_without_core(self._scene, am, dr)
+            report = build_quantity_report(self._scene, am, dr_no_core)
+            mc = compute_material_cost(report, up.steel_shs, up.deck, up.concrete,
+                                       steel_h_unit_per_ton=up.steel_h)
+
+            # 우측 패널 갱신.
+            if hasattr(self, '_quantity_panel'):
+                self._quantity_panel.populate(qbc, report, mc)
+                # 패널 내용폭으로 우측 pane 을 *고정* — minimumWidth 만으로는 이미
+                # 넓어진 폭이 안 줄어든다(단면 탭과 동일 정책, L6).
+                if hasattr(self, '_quantity_right_pane'):
+                    _qw = self._quantity_panel.minimumWidth()
+                    self._quantity_right_pane.setMinimumWidth(0)
+                    self._quantity_right_pane.setFixedWidth(_qw)
+
+            # 3D — 어댑터로 부재 형상 item 생성(v3 세움). cid→item 은 source_index.
+            ti = build_transport_input(
+                self._scene, am, dr, '단면설계',
+                TransportOptions(treat_v3_module_as_lying=False))
+            name_to_item = {}
+            for it in list(ti.modules) + list(ti.panels):
+                name_to_item[it.name] = it
+            cid_to_item = {}
+            for name, cids in ti.source_index.items():
+                it = name_to_item.get(name)
+                if it is None:
+                    continue
+                for c in cids:
+                    cid_to_item[c] = it
+
+            items_by_type = []
+            missing = 0
+            for tq in qbc.types:
+                items = []
+                for cid in tq.member_cids:
+                    it = cid_to_item.get(cid)
+                    if it is None:
+                        missing += 1
+                        continue
+                    items.append(it)
+                items_by_type.append({
+                    'label': tq.type_label,
+                    'items': items,
+                    'section_lines': tq.section_lines,
+                })
+            if missing:
+                # 타입↔item 불일치 진단(§4-보강): 단면 룩업 실패 등으로 item 누락.
+                print(f"[물량 3D] item 없는 cid {missing}개 스킵 "
+                      f"(단면 미배정/어댑터 제외 가능)", flush=True)
+
+            html = build_quantity_3d_html(items_by_type)
+            path = self._write_quantity_3d_temp_html(html)
+            if path:
+                self._quantity_3d_web.load(QUrl.fromLocalFile(path))
+        except Exception as e:
+            log_error(f"물량 3D 렌더 실패: {type(e).__name__}: {e}", cat='main_3d', exc=True)
+            self._quantity_3d_web.setHtml(self._quantity_empty_html(
+                "물량 산출 3D", f"렌더 오류: {type(e).__name__}"))
+
+    def _on_quantity_type_selected_tree(self, type_idx: int) -> None:
+        """우측 트리에서 타입 선택 → 3D 강조 + 화면 밖이면 카메라 이동(focusTrip).
+
+        운송탭과 동일 패턴 — highlightTrip(강조) + focusTrip(시야 밖일 때만 평행이동).
+        """
+        try:
+            page = self._quantity_3d_web.page()
+            # trip_no = 타입 idx + 1 (serialize_quantity_for_three 규약).
+            tno = int(type_idx) + 1
+            page.runJavaScript(
+                f"window.highlightTrip({tno}); window.focusTrip({tno});")
+        except Exception as e:
+            log_error(f"물량 트리→3D 강조 실패: {type(e).__name__}: {e}", cat='main_3d', exc=True)
+
+    def _on_quantity_type_clicked_3d(self, trip_no: int) -> None:
+        """3D 에서 타입(=trip) 클릭 → 우측 트리 해당 타입 행 선택."""
+        try:
+            idx = int(trip_no) - 1  # trip_no = 타입 idx + 1
+            panel = getattr(self, '_quantity_panel', None)
+            tree = getattr(panel, '_tree', None) if panel else None
+            if tree is not None and 0 <= idx < tree.topLevelItemCount():
+                tree.setCurrentItem(tree.topLevelItem(idx))
+            # 3D 자체 강조도 갱신.
+            self._quantity_3d_web.page().runJavaScript(
+                f"window.highlightTrip({int(trip_no)});")
+        except Exception as e:
+            log_error(f"물량 3D→트리 동기화 실패: {type(e).__name__}: {e}", cat='main_3d', exc=True)
+
+    def _write_quantity_3d_temp_html(self, html: str) -> str:
+        """물량 3D HTML 임시 저장 — 운송과 같은 폴백, 별도 파일명."""
+        return self._write_transport_3d_temp_html(
+            html, filename="quantity_3d_loaded.html")
+
+    def _write_transport_3d_temp_html(self, html: str,
+                                       filename: str = "transport_3d_loaded.html") -> str:
         """ASCII 경로 임시 파일에 HTML 저장 — file:// URL 로 로드 가능.
 
         한글 경로 회피 위해 시스템 temp / 가상드라이브 / ProgramData 폴백.
+        filename 으로 운송/물량 3D 를 다른 파일에 쓴다(상호 덮어쓰기 방지).
         """
         import tempfile
         candidates = []
@@ -998,7 +1301,7 @@ class MainWindow(QMainWindow):
         for d in candidates:
             try:
                 os.makedirs(d, exist_ok=True)
-                path = os.path.join(d, "transport_3d_loaded.html")
+                path = os.path.join(d, filename)
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(html)
                 if path.isascii():
@@ -1138,41 +1441,38 @@ class MainWindow(QMainWindow):
             self._dim_panel.setVisible(False)
             self._run_section_design_if_needed()
         elif idx == TAB_QUANTITY:
-            self._quantity_center_lay.addWidget(self._canvas_widget)
-            self._quantity_center_lay.addWidget(self._deformed_widget)
-            self._deformed_widget.show()
-            self._quantity_right_lay.addWidget(self._analysis_panel)
-            # [2026-05-28] 물량 탭은 와이어프레임만 — 실 색면 숨김.
-            if hasattr(self._viewer, 'set_rooms_visible'):
-                self._viewer.set_rooms_visible(False)
+            # [2026-05-31 물량탭 개편 Phase 4] 와이어프레임·AnalysisPanel 부착 폐지.
+            # 중앙 = 물량 3D(QWebEngineView, 이미 _build_quantity_tab 에서 부착됨),
+            # 우 = QuantityPanel(이미 부착됨). 공유 위젯(치수)만 정리.
             if hasattr(self._dim_panel, 'deactivate'):
                 self._dim_panel.deactivate()
             self._dim_panel.setVisible(False)
-            # 서브탭: [물량산출] 만 보이게
-            if hasattr(self._analysis_panel, 'set_visible_subtabs'):
-                self._analysis_panel.set_visible_subtabs(
-                    show_summary=False, show_member=False, show_quantity=True,
-                )
-            # 물량 탭도 해석 결과가 필요 → 동일하게 자동 실행
+            if hasattr(self, "_deformed_widget"):
+                self._deformed_widget.hide()
+            # 평가탭이 쓰는 _quantity_reports 채움 경로는 유지해야 하므로, 구조해석/
+            # 케이스 선택은 그대로 호출(AnalysisPanel 은 화면 부착 안 돼도 내부 상태 갱신).
             self._run_analysis_if_needed()
-            # (2026-05-19 작업 5) 물량 탭은 진입 시 자동으로 '지배조합' 선택.
-            # 5 케이스 envelope 단면력 기준 응력비가 기본 화면이 된다.
             if hasattr(self._analysis_panel, 'select_envelope_case'):
                 self._analysis_panel.select_envelope_case()
+            # 물량 3D + 우측 패널 렌더 (단면설계 결과 단일출처 재사용).
+            self._render_quantity_view()
         elif idx == TAB_TRANSPORT:
-            # [2026-05-27] 운송 탭 — *좌 입력 / 중 3D / 우 결과* 3 단 분할.
-            # AnalysisPanel 통째 부착 안 함. TransportTab 의 좌·우 영역만 직접
-            # reparent 해서 좌·우 layout 에 부착. AnalysisPanel 의 메서드는
-            # _transport_tab 접근자로 호출.
+            # [개편 Phase 4] 운송 탭 — *중 3D / 우 결과* 2 단 분할(좌측 입력 패널 폐지).
+            # AnalysisPanel 통째 부착 안 함. TransportTab 의 우측 결과 영역만 reparent.
+            # 실행 버튼(_run_btn)은 중앙 3D 뷰 우상단 오버레이로 부착한다.
             self._transport_center_lay.addWidget(self._transport_3d_web)
             if hasattr(self, "_deformed_widget"):
                 self._deformed_widget.hide()
             tt = getattr(self._analysis_panel, '_transport_tab', None)
             if tt is not None:
-                if hasattr(tt, '_left_pane_scroll'):
-                    self._transport_left_lay.addWidget(tt._left_pane_scroll)
                 if hasattr(tt, '_right_pane_scroll'):
                     self._transport_right_lay.addWidget(tt._right_pane_scroll)
+                # 실행 버튼을 중앙 3D pane 자식으로 reparent 후 우상단 오버레이 배치.
+                if hasattr(tt, '_run_btn'):
+                    tt._run_btn.setParent(self._transport_center_pane)
+                    tt._run_btn.show()
+                    tt._run_btn.raise_()
+                    self._position_transport_run_btn()
             if hasattr(self._dim_panel, 'deactivate'):
                 self._dim_panel.deactivate()
             self._dim_panel.setVisible(False)
@@ -1257,6 +1557,8 @@ class MainWindow(QMainWindow):
             transport_pack = getattr(self, '_last_transport_pack', None)
             transport_tab = getattr(self._analysis_panel, '_transport_tab', None)
             transport_eco = getattr(transport_tab, '_last_eco', None) if transport_tab is not None else None
+            section_types = self._extract_section_types()
+            scene_components_by_id = dict(self._scene.components) if hasattr(self._scene, 'components') else {}
             data = build_evaluation_data(
                 components=comps,
                 project_settings=self._project_settings,
@@ -1265,6 +1567,8 @@ class MainWindow(QMainWindow):
                 transport_pack=transport_pack,
                 transport_eco=transport_eco,
                 schedule_payload=getattr(self, '_schedule_payload', None) or None,
+                section_types=section_types,
+                scene_components_by_id=scene_components_by_id,
             )
             self._tab_evaluation.apply_data(data)
             # [2026-05-31 v2] 종합탭 — 전체 배치 캡처. 단순 grab() 은 사용자의
@@ -1285,37 +1589,223 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+    # ── 랜딩 페이지 핸들러 ───────────────────────────────
+    def _on_home_start_new(self) -> None:
+        """랜딩 '새 프로젝트 시작' → 메인 탭 UI 로 전환.
+
+        [2026-06-01] HomePanel 이 폼 값을 이미 self._project_settings 에
+        적용한 *뒤* 이 시그널을 발화한다. 따라서 별도 다이얼로그를 띄울
+        필요 없이 곧바로 모듈 정의 탭으로 진입.
+        설정 변경 즉시 반영 — 운송탭·공정표 등 소비처 갱신.
+        """
+        try:
+            tt = getattr(self._analysis_panel, '_transport_tab', None)
+            if tt is not None and hasattr(tt, 'apply_project_settings'):
+                tt.apply_project_settings(self._project_settings)
+            if hasattr(self._tab_schedule, 'apply_project_settings'):
+                self._tab_schedule.apply_project_settings(self._project_settings)
+        except Exception as e:
+            dprint('HOME', f'[HOME] 설정 푸시 실패: {e}')
+        try:
+            self._tabs.setCurrentIndex(TAB_DEFINE)
+            self._stack.setCurrentIndex(1)
+            self.menuBar().setVisible(True)
+        except Exception:
+            pass
+
+    # ── 단면 설계 탭의 타입 목록 추출 ─────────────────────
+    def _extract_section_types(self):
+        """단면 설계 탭의 SectionDesignPanel 이 보관한 _types 리스트 반환.
+
+        [2026-06-01] 종합탭 부재 구성을 단면 설계 탭의 타입 목록과 일치시키기
+        위해 사용. 단면 설계를 아직 안 돌렸으면 None 반환 → 어댑터가 기존
+        자동 분류로 폴백.
+        """
+        panel = getattr(self, '_section_panel', None)
+        if panel is None:
+            return None
+        types = getattr(panel, '_types', None)
+        if not types:
+            return None
+        try:
+            return list(types)
+        except Exception:
+            return None
+
+    # ── three.js 2D 뷰에서 캡처 (M8-b 친구 UI) ─────────────
+    def _capture_three_layout_pixmap(self):
+        """three.js 2D 뷰의 canvas.toDataURL() → PNG 픽스맵.
+
+        [2026-06-01] 친구가 배치설계 화면을 three.js 2D 뷰로 마이그레이션했음.
+        사용자가 실제로 보는 것은 이 뷰. QEventLoop 로 비동기 JS 호출을
+        동기처럼 처리.
+        """
+        from PyQt5.QtGui import QPixmap as _QPixmap
+        from PyQt5.QtCore import QEventLoop, QTimer
+        panel_three = getattr(self, '_f5_panel_three', None)
+        if panel_three is None:
+            return None
+        canvas3 = getattr(panel_three, 'canvas', None)
+        view = getattr(canvas3, '_view', None) if canvas3 is not None else None
+        if view is None:
+            return None
+        # three.js 동기화 한 번 더 강제 — pending state 있으면 즉시 flush.
+        try:
+            if hasattr(panel_three, '_flush'):
+                panel_three._flush()
+        except Exception:
+            pass
+        # JS — three.js renderer 의 canvas 를 PNG dataURL 로.
+        # [2026-06-01]
+        # 1) WebGLRenderer 가 preserveDrawingBuffer:false 라 직전 frame GL buffer
+        #    가 비워짐 → toDataURL 직전에 renderer.render() 한 번 더.
+        # 2) 사용자의 현재 zoom/pan 그대로 캡처되면 콘텐츠가 잘림.
+        #    OrthographicCamera 를 일시적으로 scene bounding box 에 맞춰
+        #    fit-all 로 조정 → 캡처 → 카메라 원복.
+        # [2026-06-01] 추가로 renderer 의 픽셀 사이즈를 일시 1600x1200 으로
+        # 키워 디테일 확보 — 캡처 직후 setSize 로 원복.
+        js = (
+            "(function(){ try {"
+            "  if (typeof renderer === 'undefined' || !renderer.domElement) return '';"
+            "  if (typeof scene === 'undefined' || typeof camera === 'undefined') return '';"
+            "  var dpr = renderer.getPixelRatio();"
+            "  var pw  = renderer.domElement.width;"
+            "  var ph  = renderer.domElement.height;"
+            "  var cw  = renderer.domElement.clientWidth  || pw;"
+            "  var ch  = renderer.domElement.clientHeight || ph;"
+            "  var prev = {"
+            "    px: camera.position.x, py: camera.position.y, pz: camera.position.z,"
+            "    left: camera.left, right: camera.right,"
+            "    top: camera.top, bottom: camera.bottom, zoom: camera.zoom"
+            "  };"
+            "  try {"
+            "    var TW = 1600, TH = 1200;"
+            "    try { renderer.setSize(TW, TH, false); } catch(_e){}"
+            "    var box = new THREE.Box3().setFromObject(scene);"
+            "    if (isFinite(box.min.x) && isFinite(box.max.x)) {"
+            "      var size = new THREE.Vector3(); box.getSize(size);"
+            "      var ctr  = new THREE.Vector3(); box.getCenter(ctr);"
+            "      var ar = TW / Math.max(1, TH);"
+            "      var pad = 1.08;"
+            "      var halfW = Math.max(size.x, size.y * ar) * 0.5 * pad;"
+            "      var halfH = halfW / ar;"
+            "      camera.position.x = ctr.x;"
+            "      camera.position.y = ctr.y;"
+            "      camera.left = -halfW; camera.right = halfW;"
+            "      camera.top  =  halfH; camera.bottom = -halfH;"
+            "      camera.zoom = 1.0;"
+            "      camera.updateProjectionMatrix();"
+            "    }"
+            "    renderer.render(scene, camera);"
+            "    var url = renderer.domElement.toDataURL('image/png');"
+            "    return url;"
+            "  } finally {"
+            "    camera.position.x = prev.px;"
+            "    camera.position.y = prev.py;"
+            "    camera.position.z = prev.pz;"
+            "    camera.left = prev.left; camera.right = prev.right;"
+            "    camera.top  = prev.top;  camera.bottom = prev.bottom;"
+            "    camera.zoom = prev.zoom;"
+            "    camera.updateProjectionMatrix();"
+            "    try { renderer.setSize(cw, ch, false); } catch(_e){}"
+            "    try { renderer.setPixelRatio(dpr); } catch(_e){}"
+            "    try { renderer.render(scene, camera); } catch(_e){}"
+            "  }"
+            "} catch(e) { return ''; } })()"
+        )
+        result = {"data": "", "done": False}
+        loop = QEventLoop()
+        def _cb(data_url):
+            result["data"] = data_url or ""
+            result["done"] = True
+            loop.quit()
+        view.page().runJavaScript(js, _cb)
+        # 안전 타임아웃 — 1.5초 안에 콜백 안 오면 포기.
+        QTimer.singleShot(1500, loop.quit)
+        loop.exec_()
+        data_url = result["data"]
+        if not data_url or not data_url.startswith("data:image/png;base64,"):
+            return None
+        try:
+            import base64
+            raw = base64.b64decode(data_url.split(",", 1)[1])
+            pm = _QPixmap()
+            pm.loadFromData(raw, "PNG")
+            if pm.isNull():
+                return None
+            return pm
+        except Exception:
+            return None
+
     # ── 배치 캔버스 전체 캡처 ────────────────────────────
     def _capture_layout_full_pixmap(self):
         """배치설계 2D 캔버스의 전체 배치를 항상 fit-all 뷰로 캡처.
 
         [2026-05-31] 사용자의 현재 zoom/pan 과 무관하게 모든 부재가 한눈에
         들어오는 평면도를 만든다. 캔버스 상태(zoom/pan/size)는 캡처 후 원복.
+
+        [2026-06-01 친구 UI 마이그레이션 대응]
+        AlignmentDockPanel.hide_canvas() 가 호출되어 vispy QPainter 캔버스가
+        숨겨졌어도(three.js 2D 뷰로 대체) AlignmentCanvas 인스턴스의 모델/입력
+        로직은 살아있다. 캡처 직전 일시적으로 가시화 + resize + 이벤트 펌프 +
+        _auto_fit 호출 → render → 다시 숨김. 사용자 화면엔 깜빡임 없음
+        (paint 한 번이 frame 안에 들어가도록 즉시 원복).
         """
         from PyQt5.QtGui import QPixmap as _QPixmap
+        from PyQt5.QtCore import Qt as _Qt, QCoreApplication as _QCA
+        # [2026-06-01] 1순위 — three.js 2D 뷰 (사용자가 실제로 보는 화면).
+        # three.js scene.background 가 이미 흰색이라 검정→흰색 치환 후처리
+        # 불필요. (오히려 텍스트 라벨 색(#222222) 까지 흰색으로 바뀌어 글자가
+        # 사라지는 부작용이 있었음.)
+        try:
+            pm3 = self._capture_three_layout_pixmap()
+            if pm3 is not None and not pm3.isNull():
+                return pm3
+        except Exception:
+            pass
+        # 2순위 — vispy 캔버스 (마이그레이션 전 / 폴백).
         canvas = getattr(self._f5_panel, 'canvas', None)
         if canvas is None:
             return None
         # 백업
-        old_zoom  = getattr(canvas, '_zoom',  None)
-        old_pan_x = getattr(canvas, '_pan_x', None)
-        old_pan_y = getattr(canvas, '_pan_y', None)
-        old_size  = canvas.size()
+        old_visible = bool(canvas.isVisible())
+        old_zoom    = getattr(canvas, '_zoom',  None)
+        old_pan_x   = getattr(canvas, '_pan_x', None)
+        old_pan_y   = getattr(canvas, '_pan_y', None)
+        old_size    = canvas.size()
+        old_min     = canvas.minimumSize()
+        old_max     = canvas.maximumSize()
+        old_af_done = getattr(canvas, '_auto_fit_done', None)
         try:
-            # 캡처용 큰 캔버스 크기 — 디테일 확보 및 종합탭 카드 비율.
+            # 1) layout 이 작은 크기로 되돌리지 못하게 setFixedSize 로 강제.
+            #    hidden 위젯이라도 layout 사이즈는 정상 적용된다.
+            if not old_visible:
+                canvas.setVisible(True)
             target_w, target_h = 900, 700
-            canvas.resize(target_w, target_h)
+            canvas.setFixedSize(target_w, target_h)
+            try:
+                _QCA.processEvents()
+            except Exception:
+                pass
+            # 2) _auto_fit_done 플래그가 True 면 resizeEvent 에서 _auto_fit 가
+            #    호출 안 됨. 우리가 명시 호출하므로 플래그 상태와 무관.
             if hasattr(canvas, '_auto_fit'):
                 try:
                     canvas._auto_fit()
                 except Exception:
                     pass
+            # 3) 즉시 paintEvent — repaint() 는 동기, render 전에 paint state
+            #    가 갱신되도록 한 번 그리고 처리.
+            try:
+                canvas.repaint()
+                _QCA.processEvents()
+            except Exception:
+                pass
+            # 4) 캡처
             pm = _QPixmap(canvas.size())
-            from PyQt5.QtCore import Qt as _Qt
             pm.fill(_Qt.white)
             canvas.render(pm)
-            # [2026-05-31] 캡처 직후 검은 배경 픽셀을 흰색으로 치환 →
-            # 캔버스 paintEvent 가 깐 검은 배경 흔적을 PNG 에서 제거.
+            # 5) 검정 배경 흔적 제거.
             try:
                 from .compare_panel import _CaseSlot
                 pm = _CaseSlot._whiten_dark_pixels(pm, threshold=45)
@@ -1323,11 +1813,20 @@ class MainWindow(QMainWindow):
                 pass
             return pm
         finally:
-            # 원복 — 사용자가 배치설계 탭으로 돌아갔을 때 보던 뷰 그대로.
+            # 원복 — setFixedSize 풀고 원래 min/max 복원.
+            canvas.setMinimumSize(old_min)
+            canvas.setMaximumSize(old_max)
             canvas.resize(old_size)
             if old_zoom  is not None: canvas._zoom  = old_zoom
             if old_pan_x is not None: canvas._pan_x = old_pan_x
             if old_pan_y is not None: canvas._pan_y = old_pan_y
+            if old_af_done is not None:
+                try:
+                    canvas._auto_fit_done = old_af_done
+                except Exception:
+                    pass
+            if not old_visible:
+                canvas.setVisible(False)
             try:
                 canvas.update()
             except Exception:
@@ -1470,6 +1969,44 @@ class MainWindow(QMainWindow):
         self._run_analysis_if_needed()
         self._converge_and_color(self._section_panel.current_options())
 
+    def _drift_summary_text(self, ops_results) -> str:
+        """[L4-1] 수렴 해석 결과 → '변위비 지진 1/N(OK) · 풍 1/N(NG)' 한 줄.
+
+        각 케이스의 가진 방향(Ex/Wx→X, Ey/Wy→Y) 최악 변위비를 본다.
+        횡력 변위 데이터가 없으면 빈 문자열(상태 라벨에 안 붙임).
+        """
+        if not ops_results:
+            return ''
+        try:
+            from modular_3d.analysis.drift_check import compute_all_drifts
+            drifts = compute_all_drifts(ops_results)
+        except Exception:
+            return ''
+        if not drifts:
+            return ''
+
+        def _worst(cases):
+            wr = 0.0
+            ok = True
+            for key, is_x in cases:
+                for sd in drifts.get(key, []):
+                    rr = sd.drift_x if is_x else sd.drift_y
+                    okk = sd.ok_x if is_x else sd.ok_y
+                    if rr > wr:
+                        wr = rr
+                    if not okk:
+                        ok = False
+            return wr, ok
+
+        parts = []
+        sr, sok = _worst([('Ex', True), ('Ey', False)])
+        if sr > 1e-9:
+            parts.append(f"지진 1/{1.0 / sr:.0f}({'OK' if sok else 'NG'})")
+        wr, wok = _worst([('Wx', True), ('Wy', False)])
+        if wr > 1e-9:
+            parts.append(f"풍 1/{1.0 / wr:.0f}({'OK' if wok else 'NG'})")
+        return ('변위비 ' + ' · '.join(parts)) if parts else ''
+
     def _converge_and_color(self, options):
         """주어진 옵션으로 converge_sections 실행 → 좌측 5단계 응력비 색 적용.
 
@@ -1481,7 +2018,12 @@ class MainWindow(QMainWindow):
                 converge_sections, expand_locks_to_members)
             from modular_3d.analysis.topology import build_analysis_model
             # 수동 잠금(comp_id별 클래스→단면)을 부재 단위로 전개해 고정.
-            am = build_analysis_model(self._scene)
+            # 토폴로지 공유 제공자 경유 — 실패 시 기존 빌드 폴백(동작 보존).
+            try:
+                from modular_3d.analysis.model_provider import get_analysis_model
+                am = get_analysis_model(self._scene)
+            except Exception:
+                am = build_analysis_model(self._scene)
             locks = getattr(self, '_section_locks', None) or {}
             locked_sections = expand_locks_to_members(am, locks)
             self._section_result = converge_sections(
@@ -1490,6 +2032,15 @@ class MainWindow(QMainWindow):
             # [P5b] 물량 탭이 단일 출처로 쓰도록 컨트롤러에 전달.
             if hasattr(self._controller, 'set_section_design_result'):
                 self._controller.set_section_design_result(self._section_result)
+            # [L1-1 WYSIWYG] 수렴 단면을 배치 컴포넌트 렌더 형상에 반영 — 3D 솔리드가
+            # 설계 굵기를 따라가게(렌더 전용, 해석·물량 불변). 실패해도 설계 결과는 유효.
+            try:
+                from modular_3d.render.section_apply import (
+                    apply_design_sections_to_scene)
+                apply_design_sections_to_scene(self._scene, am)
+            except Exception as e:
+                dprint('ANALYSIS',
+                       f'[SECTION] 렌더 단면 반영 실패: {type(e).__name__}: {e}')
         except Exception as e:
             dprint('ANALYSIS', f'[SECTION] 수렴 실패: {type(e).__name__}: {e}')
             QMessageBox.warning(
@@ -1503,7 +2054,12 @@ class MainWindow(QMainWindow):
             n_ng = len(getattr(r, 'ng_member_ids', []) or [])
             # 반복 횟수는 사용자에게 혼란만 줘서 표시에서 제외. 수렴 여부 + NG 수만.
             conv = '수렴 완료' if getattr(r, 'converged', False) else '안전측 종료'
-            self._section_panel.set_status(f'{conv} · NG {n_ng}개')
+            status = f'{conv} · NG {n_ng}개'
+            # [L4-1] 수렴 단면 기준 층간변위비 한 줄 요약(지진/풍 최악 비·판정).
+            drift_txt = self._drift_summary_text(getattr(r, 'ops_results', None))
+            if drift_txt:
+                status += ' · ' + drift_txt
+            self._section_panel.set_status(status)
         except Exception:
             pass
         # 타입 목록(-1-1 로컬 파생) 채우기.
@@ -1952,6 +2508,11 @@ class MainWindow(QMainWindow):
     # ── Qt 이벤트 필터 (캔버스 — vispy 위젯) ──────────────
 
     def eventFilter(self, obj, event):
+        # [Phase 4] 운송 중앙 3D pane resize → 실행 버튼 오버레이 우상단 추종.
+        if (getattr(self, '_transport_center_pane', None) is obj
+                and event.type() == QEvent.Resize):
+            self._position_transport_run_btn()
+            return False
         if obj is not self._canvas_widget:
             return super().eventFilter(obj, event)
 
@@ -2052,6 +2613,13 @@ def _apply_app_font(app: QApplication) -> None:
 
 
 def main():
+    # 모든 콘솔 출력을 로그 파일(logs/console.log)에도 복제 — 더블클릭 실행 시
+    # 콘솔을 못 봐도 오류가 파일에 남는다. 실패해도 앱 구동엔 영향 없음.
+    try:
+        from modular_3d._utils.debug import install_stdout_tee
+        install_stdout_tee()
+    except Exception:
+        pass
     app = QApplication.instance() or QApplication(sys.argv)
     _apply_app_font(app)
     win = MainWindow()

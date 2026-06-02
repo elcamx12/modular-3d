@@ -22,7 +22,9 @@ import math
 import random
 from typing import List, Optional, Sequence, Tuple
 
-from .models import Module, Panel, SiteLimit, SpacingParams, Truck
+from .models import (
+    MODULE_PAIR_MAX_LEN_MM, Module, Panel, SiteLimit, SpacingParams, Truck,
+)
 from .packer import PackResult, Trip, _effective_cargo_limit
 from .packer_core import (
     EcoOptions,
@@ -94,14 +96,14 @@ def lower_bound_cost(
     cost_mode: str,
     eco_options: Optional[EcoOptions] = None,
 ) -> float:
-    """비용 하한 — 모듈 합산(4.5m) 반영한 회차수 하한 × 모드별 최저 단가.
+    """비용 하한 — 모듈 합산(6m) 반영한 회차수 하한 × 모드별 최저 단가.
 
     [회차수 하한]
     panel_weight_lb = ⌈Σ 패널 무게 / max(실효 화물 한도)⌉
     panel_length_lb = ⌈Σ 패널 길이 / max(트럭 유효 길이)⌉
     panel_trip_lb   = max(panel_weight_lb, panel_length_lb)
 
-    N_module_small  = 길이 ≤ 4.5 m 모듈 수
+    N_module_small  = 길이 ≤ 6 m 모듈 수
     module_trip_lb  = (N_module − N_module_small) + ⌈N_module_small / 2⌉
 
     회차수 하한 = panel_trip_lb + module_trip_lb
@@ -137,7 +139,7 @@ def lower_bound_cost(
         panel_trip_lb = 0
 
     N_module = len(modules)
-    N_small = sum(1 for m in modules if m.length <= 4500.0 + 1e-6)
+    N_small = sum(1 for m in modules if m.length <= MODULE_PAIR_MAX_LEN_MM + 1e-6)
     module_trip_lb = (N_module - N_small) + math.ceil(N_small / 2)
 
     total_trip_lb = panel_trip_lb + module_trip_lb

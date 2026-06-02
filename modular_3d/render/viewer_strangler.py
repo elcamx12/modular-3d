@@ -111,7 +111,8 @@ class ViewerStrangler:
                     try:
                         three_attr(*args, **kwargs)
                     except Exception as e:
-                        print(f'[ViewerStrangler] three.{name} 실패: {e}')
+                        from modular_3d._utils.debug import log_error
+                        log_error(f'three.{name} 실패: {e}', cat='viewer_strangler', exc=True)
                 return vispy_attr(*args, **kwargs)
             return _broadcast
 

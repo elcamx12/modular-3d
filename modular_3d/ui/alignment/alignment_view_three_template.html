@@ -82,7 +82,7 @@ function init() {
   camera.lookAt(0, 0, 0);
 
   renderer = new THREE.WebGLRenderer({ antialias: true });
-  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));  // 고DPI 성능 제한(3뷰 공통)
   renderer.setSize(w, h);
   renderer.domElement.id = 'canvas';
   container.appendChild(renderer.domElement);
@@ -454,7 +454,8 @@ function _drawComponents(components) {
 
     // 라벨 — 좌상단 (vispy 의 rx+4, ry+13 위치와 등가)
     if (comp.label) {
-      const sprite = _makeTextSprite(comp.label, '#222222');
+      // [2026-06-01] 종합탭 캡처에서 라벨이 더 또렷하도록 완전 검정.
+      const sprite = _makeTextSprite(comp.label, '#000000');
       // [C4] 컴포넌트 중심에 배치(좌상단 → 중심).
       sprite.position.set((bx0 + bx1) / 2, (by0 + by1) / 2, Z_BBOX + 0.1);
       sprite.renderOrder = 100;

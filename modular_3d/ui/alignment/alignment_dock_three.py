@@ -164,7 +164,8 @@ class AlignmentDockPanelThree(QWidget):
             self._last_content_key = ckey
             self._canvas_three.apply_paint_state(st)
         except Exception as e:
-            print(f'[AlignmentDockPanelThree._flush] 실패: {e}')
+            from modular_3d._utils.debug import log_error
+            log_error(f'AlignmentDockPanelThree._flush 실패: {e}', cat='alignment', exc=True)
 
 
 __all__ = ['AlignmentDockPanelThree']

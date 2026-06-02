@@ -98,8 +98,8 @@ class SectionDesignPanel(QWidget):
         opt_row.addWidget(seg_box)
 
         # 3열 + 자연어 요약 + 적용 버튼을 하나의 바깥 박스로 묶음.
-        option_box = QGroupBox('단면 설계 옵션')
-        ob = QVBoxLayout(option_box)
+        self._option_box = QGroupBox('단면 설계 옵션')
+        ob = QVBoxLayout(self._option_box)
         ob.addLayout(opt_row)
         # [자연어 요약] 선택한 옵션을 사람이 읽기 쉬운 문장으로. 적용 버튼을 그 오른쪽에.
         sum_row = QHBoxLayout()
@@ -111,7 +111,7 @@ class SectionDesignPanel(QWidget):
         self._apply_btn.clicked.connect(lambda: self.apply_requested.emit())
         sum_row.addWidget(self._apply_btn, alignment=Qt.AlignBottom)
         ob.addLayout(sum_row)
-        lay.addWidget(option_box)
+        lay.addWidget(self._option_box)
         # 라디오 변경 시 요약 갱신.
         self._scope_group.buttonClicked.connect(self._update_option_summary)
         self._gran_group.buttonClicked.connect(self._update_option_summary)
@@ -123,8 +123,8 @@ class SectionDesignPanel(QWidget):
         lay.addWidget(self._status_label)
 
         # ── 단면 변경 (9-7) — 콤보 바꾸면 즉시 적용·전파 ──
-        change_box = QGroupBox('단면 변경')
-        lv = QVBoxLayout(change_box)
+        self._change_box = QGroupBox('단면 변경')
+        lv = QVBoxLayout(self._change_box)
         # 현재 편집 대상(좌측 3D 클릭=컴포넌트 / 타입 목록 클릭=타입) 표시.
         self._lock_target_label = QLabel('대상: (선택 없음)')
         self._lock_target_label.setWordWrap(True)
@@ -143,7 +143,7 @@ class SectionDesignPanel(QWidget):
             row.addWidget(cb, stretch=1)
             lv.addLayout(row)
             self._lock_combos[cc] = cb
-        lay.addWidget(change_box)
+        lay.addWidget(self._change_box)
 
         # ── 타입 목록 (P4a, -1-1 로컬 파생) ───────────────
         type_box = QGroupBox('타입 목록')
@@ -226,6 +226,33 @@ class SectionDesignPanel(QWidget):
             self._type_list.setCurrentRow(0)
         else:
             self._type_detail.setText('')
+        self._fit_to_content()
+
+    def _fit_to_content(self) -> None:
+        """[L6] 우측 패널 폭을 컨트롤 내용폭에 맞춰 최소화(잘림·가로스크롤 없이).
+
+        표·트리가 없으므로 옵션/단면변경 박스의 권장폭과 타입 목록 항목 최대폭
+        중 큰 값을 쓴다(3D 뷰어는 가변이라 제외). 부모 우측 pane 을 그 폭으로
+        고정 — minimumWidth 만으로는 이미 넓어진 폭이 안 줄어들기 때문.
+        """
+        cands = [self._option_box.sizeHint().width(),
+                 self._change_box.sizeHint().width()]
+        if self._type_list.count() > 0:
+            cands.append(self._type_list.sizeHintForColumn(0)
+                         + 2 * self._type_list.frameWidth() + 24)
+        w = max(cands) + 16   # 좌우 마진(6+6) + 안전 여유
+        self.setMaximumWidth(16777215)
+        self.setMinimumWidth(w)
+        self._force_pane_width(w)
+        self.updateGeometry()
+
+    def _force_pane_width(self, w: int) -> None:
+        """부모 우측 pane(_section_right_pane, 최소폭 380 박힘)을 내용폭으로 고정."""
+        par = self.parentWidget()
+        if par is None:
+            return
+        par.setMinimumWidth(0)
+        par.setFixedWidth(int(w))
 
     def _on_type_row_changed(self, row: int) -> None:
         if row < 0 or row >= len(self._types):

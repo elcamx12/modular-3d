@@ -122,6 +122,9 @@ class AlignmentCanvasThree:
         else:
             html = ('<html><body>AlignmentCanvasThree template missing</body>'
                     '</html>')
+        # three.js 라이브러리 CDN → 로컬 인라인(오프라인 지원). vendor 없으면 CDN 폴백.
+        from modular_3d.render.three_assets import inline_three_libs
+        html = inline_three_libs(html)
         self._view.setHtml(html, QUrl('about:blank'))
 
     # ── Qt 위젯 접근 ────────────────────────────────────────
@@ -142,7 +145,8 @@ class AlignmentCanvasThree:
     def _on_load_finished(self, ok: bool) -> None:
         self._loaded = bool(ok)
         if not ok:
-            print('[AlignmentCanvasThree] HTML 로드 실패')
+            from modular_3d._utils.debug import log_error
+            log_error('AlignmentCanvasThree HTML 로드 실패', cat='alignment')
             return
         for js in self._pending_calls:
             self._view.page().runJavaScript(js)

@@ -59,6 +59,13 @@ _SECTION_TYPES: frozenset[str] = frozenset({"SHS", "RHS", "H", "C", "L", "CFT"})
 # 변 인덱스: 0=하변, 1=우변, 2=상변, 3=좌변 (윗면에서 본 부재 외주 시계방향)
 _SIDE_INDEXES: frozenset[int] = frozenset({0, 1, 2, 3})
 
+# 모듈 2개를 한 트럭에 옆자리로 합산(페어링)할 수 있는 1개당 최대 길이(mm).
+# [함정] 패커 여러 경로(packer_core 배치/후처리, packer_meta 비용하한,
+#   packer_local_search 국소탐색)가 이 값을 공유한다 — 한 곳만 바꾸면 비용
+#   추정과 실제 배치가 어긋나므로 반드시 이 상수만 수정할 것.
+# 트럭/도로 높이 4.5m(trucks.json max_height 등)와는 무관한 별개 값이다.
+MODULE_PAIR_MAX_LEN_MM: float = 6000.0
+
 
 @dataclass(frozen=True)
 class Section:

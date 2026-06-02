@@ -108,6 +108,19 @@ def extract(path: Path) -> dict:
                 for t in node.targets:
                     if isinstance(t, ast.Name):
                         constants.append((t.id, node.lineno, cv))
+        elif isinstance(node, ast.AnnAssign):
+            # 타입 어노테이션 상수 (예: NAME: type = value) — Assign 과 별개 노드라
+            # 별도 처리하지 않으면 인벤토리에서 누락된다.
+            t = node.target
+            if (node.value is not None and isinstance(t, ast.Name)
+                    and (t.id.isupper() or (t.id[0].isupper() and '_' in t.id))):
+                try:
+                    s = ast.unparse(node.value)
+                except Exception:
+                    s = '?'
+                if len(s) > 80:
+                    s = s[:77] + '...'
+                constants.append((t.id, node.lineno, s))
 
     return {
         'path': str(path.relative_to(ROOT.parent)).replace('\\', '/'),

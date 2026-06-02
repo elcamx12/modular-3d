@@ -396,11 +396,12 @@ def build_module_mesh(module, outer_anchor=False) -> MeshData:
     if module.slab is not None:
         meshes.append(_build_slab_mesh(
             module.slab, _openings_for_face(module, 'slab', 'slab')))
-    # 비내력 벽 4면 (각 면별 개구부) — 반투명(partition).
-    for i, wf in enumerate(getattr(module, 'wall_fills', None) or []):
-        meshes.append(_build_wall_fill_mesh(
-            wf, partition=True,
-            openings=_openings_for_face(module, f'wall_{i}', f'wall_{i}')))
+    # 비내력 벽 4면 (각 면별 개구부) — 반투명(partition). 토글 OFF 면 생략.
+    if _SHOW_WALL_FILL:
+        for i, wf in enumerate(getattr(module, 'wall_fills', None) or []):
+            meshes.append(_build_wall_fill_mesh(
+                wf, partition=True,
+                openings=_openings_for_face(module, f'wall_{i}', f'wall_{i}')))
     return _merge_meshes(meshes)
 
 
@@ -501,6 +502,20 @@ def build_floor_panel_mesh(panel, outer_anchor=False) -> MeshData:
     return _merge_meshes(meshes)
 
 
+# ── [2026-06-02] 배치설계 '벽 채움면' 표시 토글 ──────────────
+# 구조벽 채움·내벽·모듈 외피 벽 채움은 모두 _build_wall_fill_mesh 로 그려진다.
+# 아래 전역 스위치를 끄면 메인 부재 빌드(모듈/구조벽/내벽)에서 채움면을 빼서
+# 프레임·슬래브·코어만 남긴다. (hover 용 build_component_class_meshes 는 제외 —
+# 배치설계 전용 토글이라 다른 탭의 형상 표시에는 영향을 주지 않는다.)
+_SHOW_WALL_FILL = True
+
+
+def set_wall_fill_visible(show: bool) -> None:
+    """배치설계 벽 채움면 표시 토글. 변경 후 부재 재빌드는 호출측 책임."""
+    global _SHOW_WALL_FILL
+    _SHOW_WALL_FILL = bool(show)
+
+
 def build_struct_wall_mesh(wall, outer_anchor=False) -> MeshData:
     """벽패널 메쉬. outer_anchor=True 면 기둥·러너를 외곽 고정·안쪽 성장."""
     meshes = []
@@ -518,7 +533,8 @@ def build_struct_wall_mesh(wall, outer_anchor=False) -> MeshData:
         _add_beams(meshes, [wall.top_runner],
                    color=COLOR_CEIL_BEAM, color_in=COLOR_CEIL_BEAM_IN,
                    outer_anchor=outer_anchor, center_xy=center_xy, vert_anchor=1)
-    if wall.wall_fill:
+    # 채움면은 토글 OFF 면 생략 → 기둥·런너(프레임)만 남는다.
+    if wall.wall_fill and _SHOW_WALL_FILL:
         meshes.append(_build_wall_fill_mesh(
             wall.wall_fill, partition=True,
             openings=_openings_for_face(wall, 'wall', 'wall')))
@@ -526,9 +542,9 @@ def build_struct_wall_mesh(wall, outer_anchor=False) -> MeshData:
 
 
 def build_interior_wall_mesh(wall) -> MeshData:
-    """내벽 — 채움 판 1장만 (반투명, 개구부 face='wall')."""
+    """내벽 — 채움 판 1장만 (반투명, 개구부 face='wall'). 토글 OFF 면 빈 메시."""
     meshes = []
-    if getattr(wall, 'wall_fill', None) is not None:
+    if getattr(wall, 'wall_fill', None) is not None and _SHOW_WALL_FILL:
         meshes.append(_build_wall_fill_mesh(
             wall.wall_fill, partition=True,
             openings=_openings_for_face(wall, 'wall', 'wall')))

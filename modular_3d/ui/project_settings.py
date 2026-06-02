@@ -20,11 +20,11 @@
 """
 from dataclasses import dataclass
 
-from PyQt5.QtCore import QDate
+from PyQt5.QtCore import QDate, Qt
 from PyQt5.QtWidgets import (
     QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
     QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QPushButton,
-    QSpinBox, QVBoxLayout, QWidget,
+    QSizePolicy, QSpinBox, QVBoxLayout, QWidget,
 )
 
 
@@ -88,16 +88,346 @@ class ProjectSettings:
     start_date: str = "2026-01-01"      # 착공 예정일 (ISO yyyy-mm-dd)
 
 
-class ProjectSettingsDialog(QDialog):
-    """프로젝트 설정 모달 — ProjectSettings 값을 읽어 폼을 채우고, 확인 시 되씀.
+# ─────────────────────────────────────────────────────────
+# ProjectSettingsForm — 모든 위젯·로드/적용 로직의 단일 진실 출처.
+# [2026-06-01] 다이얼로그와 랜딩 페이지 카드가 같은 폼 위젯 클래스를
+# 인스턴스화 → 양쪽 입력/표시 값이 어긋날 가능성 차단.
+# ─────────────────────────────────────────────────────────
+class ProjectSettingsForm(QWidget):
+    """프로젝트 설정 폼.
 
-    on_open_catalog: 트럭 카탈로그 관리 버튼 콜백(없으면 버튼 숨김). 카탈로그
-        다이얼로그 자체는 기존 운송 패널 로직을 재사용하므로 본 창은 콜백만
-        호출한다.
+    Args:
+        settings: 읽고 쓸 ProjectSettings 인스턴스.
+        layout_mode: "vertical" (다이얼로그용 세로 스택) 또는
+                     "two-column" (랜딩용 가로 2 컬럼).
+        on_open_catalog: 트럭 카탈로그 관리 버튼 콜백. None 이면 버튼 숨김.
+    """
+
+    def __init__(self, settings: 'ProjectSettings',
+                 layout_mode: str = "vertical",
+                 on_open_catalog=None,
+                 parent=None):
+        super().__init__(parent)
+        self._settings = settings
+        self._on_open_catalog = on_open_catalog
+        self._layout_mode = layout_mode
+
+        # 위젯 인스턴스 생성 — 한 번만, 두 레이아웃 모드에서 공유.
+        self._build_widgets()
+        # 레이아웃 배치 (모드별).
+        if layout_mode == "two-column":
+            self._lay_two_column()
+        else:
+            self._lay_vertical()
+        # 초기값 채움.
+        self.load_from_settings()
+
+    # ── 위젯 생성 (1 회) ─────────────────────────────────
+    def _build_widgets(self) -> None:
+        # 운송
+        self._distance_spin = QSpinBox()
+        self._distance_spin.setRange(1, 9999)
+        self._distance_spin.setSuffix(" km")
+        self._cost_mode_combo = QComboBox()
+        self._cost_mode_combo.addItem("요금표 (전국특송24시콜)", "freight_table")
+        self._cost_mode_combo.addItem("트레일러별 km단가", "per_km")
+        self._cost_mode_combo.addItem("트레일러별 1회 고정비", "fixed_per_trip")
+        self._cost_mode_combo.currentIndexChanged.connect(self._on_cost_mode_changed)
+        # km 단가 (km mode)
+        self._lowbed_per_km_spin = self._krw_spin(" 원/km", 1_000_000)
+        self._extend_per_km_spin = self._krw_spin(" 원/km", 1_000_000)
+        self._aframe_per_km_spin = self._krw_spin(" 원/km", 1_000_000)
+        # 1회 고정비 (fixed_per_trip mode)
+        self._lowbed_fixed_spin = self._krw_spin(" 원", 100_000_000, step=10_000)
+        self._extend_fixed_spin = self._krw_spin(" 원", 100_000_000, step=10_000)
+        self._aframe_fixed_spin = self._krw_spin(" 원", 100_000_000, step=10_000)
+
+        # 현장 운송 제한 — 위젯 생성만 (행 빌드는 레이아웃 시).
+        self._site_gvw_spin    = self._limit_spin(" kg", 1_000_000)
+        self._site_gvw_none    = QCheckBox("해당없음")
+        self._site_gvw_none.toggled.connect(
+            lambda chk: self._site_gvw_spin.setEnabled(not chk))
+        self._site_width_spin  = self._limit_spin(" mm", 100_000)
+        self._site_width_none  = QCheckBox("해당없음")
+        self._site_width_none.toggled.connect(
+            lambda chk: self._site_width_spin.setEnabled(not chk))
+        self._site_height_spin = self._limit_spin(" mm", 100_000)
+        self._site_height_none = QCheckBox("해당없음")
+        self._site_height_none.toggled.connect(
+            lambda chk: self._site_height_spin.setEnabled(not chk))
+
+        # 비내력벽 단위중량
+        self._interior_spin = QDoubleSpinBox()
+        self._interior_spin.setRange(0.0, 999.0)
+        self._interior_spin.setSuffix(" kg/m²")
+        self._exterior_spin = QDoubleSpinBox()
+        self._exterior_spin.setRange(0.0, 999.0)
+        self._exterior_spin.setSuffix(" kg/m²")
+
+        # 공기 — 지역·착공일
+        self._region_combo = QComboBox()
+        self._build_region_combo()
+        self._region_combo.currentIndexChanged.connect(self._on_region_changed)
+        self._start_date_edit = QDateEdit()
+        self._start_date_edit.setCalendarPopup(True)
+        self._start_date_edit.setDisplayFormat("yyyy-MM-dd")
+        self._start_date_edit.setMinimumDate(QDate(2025, 1, 1))
+        self._start_date_edit.setMaximumDate(QDate(2030, 12, 31))
+
+    @staticmethod
+    def _krw_spin(suffix: str, maximum: int, step: int = 1) -> QSpinBox:
+        s = QSpinBox()
+        s.setRange(0, maximum)
+        s.setSuffix(suffix)
+        s.setSingleStep(step)
+        s.setGroupSeparatorShown(True)
+        return s
+
+    @staticmethod
+    def _limit_spin(suffix: str, maximum: int) -> QSpinBox:
+        s = QSpinBox()
+        s.setRange(1, maximum)
+        s.setSuffix(suffix)
+        return s
+
+    # ── 그룹박스 빌더 ─────────────────────────────────────
+    def _build_air_box(self) -> QGroupBox:
+        box = QGroupBox("공기 — 현장 지역·착공일")
+        f = QFormLayout(box)
+        f.addRow("현장 지역:", self._region_combo)
+        f.addRow("착공 예정일:", self._start_date_edit)
+        return box
+
+    def _build_transport_box(self, include_bulk_btn: bool = True) -> QGroupBox:
+        box = QGroupBox("운송 (공통)")
+        f = QFormLayout(box)
+        f.addRow("운송 거리 (편도):", self._distance_spin)
+        f.addRow("운임 방식:", self._cost_mode_combo)
+        f.addRow("저상 km단가:", self._lowbed_per_km_spin)
+        f.addRow("광폭 km단가:", self._extend_per_km_spin)
+        f.addRow("A-frame km단가:", self._aframe_per_km_spin)
+        f.addRow("저상 1회 고정비:", self._lowbed_fixed_spin)
+        f.addRow("광폭 1회 고정비:", self._extend_fixed_spin)
+        f.addRow("A-frame 1회 고정비:", self._aframe_fixed_spin)
+        if include_bulk_btn:
+            bulk_btn = QPushButton("1회 고정비 일괄 적용 (저상값 → 전체)")
+            bulk_btn.clicked.connect(self._apply_fixed_bulk)
+            f.addRow("", bulk_btn)
+        return box
+
+    def _build_site_box(self) -> QGroupBox:
+        """현장 운송 제한 그룹.
+
+        [2026-06-01 v4] QFormLayout 이 stylesheet 의 QSpinBox min-height 와
+        충돌해 라벨이 spin 위에 겹쳐 그려지는 문제 발생 → 직접 QGridLayout
+        으로 짜서 행 높이를 명시 통제. 각 행은 라벨/spin/체크박스가 한 줄에.
+        """
+        from PyQt5.QtWidgets import QLabel as _QLabel, QGridLayout as _QGrid
+        box = QGroupBox("현장 운송 제한 (공통)")
+        g = _QGrid(box)
+        g.setHorizontalSpacing(8)
+        g.setVerticalSpacing(8)
+        g.setContentsMargins(8, 12, 8, 8)
+        if self._layout_mode == "two-column":
+            labels = ("총중량(GVW)", "폭", "높이")
+            lbl_min = 70
+        else:
+            labels = ("총중량 한도(차체+화물)", "폭 한도", "높이 한도(차량 포함)")
+            lbl_min = 150
+
+        items = (
+            (self._site_gvw_spin,    self._site_gvw_none),
+            (self._site_width_spin,  self._site_width_none),
+            (self._site_height_spin, self._site_height_none),
+        )
+        for r, ((spin, none_cb), label_text) in enumerate(zip(items, labels)):
+            lbl = _QLabel(label_text)
+            lbl.setMinimumWidth(lbl_min)
+            lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            spin.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            spin.setMinimumWidth(70)
+            g.addWidget(lbl,    r, 0)
+            g.addWidget(spin,   r, 1)
+            g.addWidget(none_cb, r, 2)
+        g.setColumnStretch(1, 1)
+        return box
+
+    def _build_wall_box(self) -> QGroupBox:
+        box = QGroupBox("비내력벽 단위중량 (공통)")
+        f = QFormLayout(box)
+        f.addRow("내부 단위중량:", self._interior_spin)
+        f.addRow("외부 단위중량:", self._exterior_spin)
+        return box
+
+    def _build_catalog_box(self) -> QGroupBox:
+        box = QGroupBox("트럭 카탈로그 (공통)")
+        v = QVBoxLayout(box)
+        cat_btn = QPushButton("트럭 카탈로그 관리...")
+        cat_btn.clicked.connect(self._on_open_catalog)
+        v.addWidget(cat_btn)
+        return box
+
+    # ── 레이아웃 모드 ─────────────────────────────────────
+    def _lay_vertical(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.addWidget(self._build_transport_box(include_bulk_btn=True))
+        root.addWidget(self._build_site_box())
+        root.addWidget(self._build_wall_box())
+        root.addWidget(self._build_air_box())
+        if self._on_open_catalog is not None:
+            root.addWidget(self._build_catalog_box())
+
+    def _lay_two_column(self) -> None:
+        """좌(운송) / 우(공기·현장제한·벽 세로 스택).
+
+        [2026-06-01] 우측 컬럼 stretch 4 → 5 — 현장 제한 박스의 spin + 체크박스
+        가 잘리지 않게 가로 폭 확보.
+        """
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(16)
+        outer.addWidget(self._build_transport_box(include_bulk_btn=False), stretch=5)
+        right = QVBoxLayout()
+        right.setSpacing(12)
+        right.addWidget(self._build_air_box())
+        right.addWidget(self._build_site_box())
+        right.addWidget(self._build_wall_box())
+        if self._on_open_catalog is not None:
+            right.addWidget(self._build_catalog_box())
+        right.addStretch(1)
+        right_host = QWidget()
+        right_host.setLayout(right)
+        outer.addWidget(right_host, stretch=5)
+
+    # ── 지역 콤보 ────────────────────────────────────────
+    def _build_region_combo(self) -> None:
+        from PyQt5.QtCore import Qt as _Qt
+        from PyQt5.QtGui import QStandardItem
+        model = self._region_combo.model()
+        last_group = None
+        for group, city, bp1, bp2 in CITY_HOLIDAYS:
+            if group != last_group:
+                self._region_combo.addItem(f"── {group} ──", None)
+                item = model.item(self._region_combo.count() - 1)
+                if isinstance(item, QStandardItem):
+                    item.setFlags(item.flags() & ~_Qt.ItemIsSelectable
+                                  & ~_Qt.ItemIsEnabled)
+                last_group = group
+            self._region_combo.addItem(f"  {city}", (city, bp1, bp2))
+
+    def _on_region_changed(self, _idx: int) -> None:
+        return  # [2026-05-30] 별표1/별표2 자동입력 제거
+
+    def _select_city(self, city: str) -> None:
+        for i in range(self._region_combo.count()):
+            data = self._region_combo.itemData(i)
+            if data and data[0] == city:
+                self._region_combo.setCurrentIndex(i)
+                return
+
+    def _on_cost_mode_changed(self) -> None:
+        mode = str(self._cost_mode_combo.currentData() or "")
+        self._distance_spin.setEnabled(mode != "fixed_per_trip")
+
+    def _apply_fixed_bulk(self) -> None:
+        v = self._lowbed_fixed_spin.value()
+        self._extend_fixed_spin.setValue(v)
+        self._aframe_fixed_spin.setValue(v)
+
+    # ── 설정값 ↔ 위젯 ────────────────────────────────────
+    def load_from_settings(self) -> None:
+        s = self._settings
+        self._distance_spin.setValue(int(s.distance_km))
+        idx = self._cost_mode_combo.findData(s.cost_mode)
+        if idx >= 0:
+            self._cost_mode_combo.setCurrentIndex(idx)
+        self._on_cost_mode_changed()
+        self._lowbed_per_km_spin.setValue(int(s.lowbed_per_km_krw))
+        self._extend_per_km_spin.setValue(int(s.extendable_per_km_krw))
+        self._aframe_per_km_spin.setValue(int(s.aframe_per_km_krw))
+        self._lowbed_fixed_spin.setValue(int(s.lowbed_fixed_krw))
+        self._extend_fixed_spin.setValue(int(s.extendable_fixed_krw))
+        self._aframe_fixed_spin.setValue(int(s.aframe_fixed_krw))
+        self._site_gvw_spin.setValue(int(s.site_limit_gvw_kg))
+        self._site_gvw_none.setChecked(not s.site_limit_gvw_enabled)
+        self._site_gvw_spin.setEnabled(s.site_limit_gvw_enabled)
+        self._site_width_spin.setValue(int(s.site_limit_width_mm))
+        self._site_width_none.setChecked(not s.site_limit_width_enabled)
+        self._site_width_spin.setEnabled(s.site_limit_width_enabled)
+        self._site_height_spin.setValue(int(s.site_limit_height_mm))
+        self._site_height_none.setChecked(not s.site_limit_height_enabled)
+        self._site_height_spin.setEnabled(s.site_limit_height_enabled)
+        self._interior_spin.setValue(float(s.wall_interior_kg_m2))
+        self._exterior_spin.setValue(float(s.wall_exterior_kg_m2))
+        self._select_city(s.region_city)
+        d = QDate.fromString(s.start_date, "yyyy-MM-dd")
+        if d.isValid():
+            self._start_date_edit.setDate(d)
+        else:
+            self._start_date_edit.setDate(QDate(2026, 1, 1))
+
+    def apply_to_settings(self) -> None:
+        s = self._settings
+        s.distance_km = float(self._distance_spin.value())
+        s.cost_mode = str(self._cost_mode_combo.currentData())
+        s.lowbed_per_km_krw = float(self._lowbed_per_km_spin.value())
+        s.extendable_per_km_krw = float(self._extend_per_km_spin.value())
+        s.aframe_per_km_krw = float(self._aframe_per_km_spin.value())
+        s.lowbed_fixed_krw = float(self._lowbed_fixed_spin.value())
+        s.extendable_fixed_krw = float(self._extend_fixed_spin.value())
+        s.aframe_fixed_krw = float(self._aframe_fixed_spin.value())
+        s.site_limit_gvw_kg = float(self._site_gvw_spin.value())
+        s.site_limit_gvw_enabled = not self._site_gvw_none.isChecked()
+        s.site_limit_width_mm = float(self._site_width_spin.value())
+        s.site_limit_width_enabled = not self._site_width_none.isChecked()
+        s.site_limit_height_mm = float(self._site_height_spin.value())
+        s.site_limit_height_enabled = not self._site_height_none.isChecked()
+        s.wall_interior_kg_m2 = float(self._interior_spin.value())
+        s.wall_exterior_kg_m2 = float(self._exterior_spin.value())
+        data = self._region_combo.currentData()
+        if data:
+            s.region_city = data[0]
+        s.start_date = self._start_date_edit.date().toString("yyyy-MM-dd")
+
+
+class ProjectSettingsDialog(QDialog):
+    """프로젝트 설정 모달 — ProjectSettingsForm 을 임베드 + OK/Cancel 만 추가.
+
+    [2026-06-01] 폼 위젯 정의가 ProjectSettingsForm 하나로 일원화됨.
+    랜딩 카드와 본 다이얼로그가 같은 위젯 클래스 인스턴스를 만들기 때문에
+    어떤 식으로 입력하든 ProjectSettings 에 적용되는 값이 항상 일치한다.
     """
 
     def __init__(self, settings: ProjectSettings, on_open_catalog=None, parent=None):
         super().__init__(parent)
+        self.setWindowTitle("프로젝트 설정")
+        self.setMinimumWidth(420)
+        self._settings = settings
+        self._form = ProjectSettingsForm(
+            settings, layout_mode="vertical",
+            on_open_catalog=on_open_catalog,
+        )
+        root = QVBoxLayout(self)
+        root.addWidget(self._form)
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns.accepted.connect(self._on_accept)
+        btns.rejected.connect(self.reject)
+        root.addWidget(btns)
+
+    def _on_accept(self) -> None:
+        self._form.apply_to_settings()
+        self.accept()
+
+
+# ─────────────────────────────────────────────────────────
+# 옛 코드 — 위 ProjectSettingsForm 으로 대체됨. 아래 본문은 더이상 사용하지
+# 않지만, 외부 참조 안정성을 위해 클래스 정의는 위에서 이미 교체됐다.
+# ─────────────────────────────────────────────────────────
+class _LegacyProjectSettingsDialog:
+    def __init__(self, settings: ProjectSettings, on_open_catalog=None, parent=None):
+        # 이 클래스는 더이상 사용되지 않음 — ProjectSettingsDialog 위 본문 참고.
+        raise NotImplementedError("Use ProjectSettingsDialog above")
         self.setWindowTitle("프로젝트 설정")
         self.setMinimumWidth(420)
         self._settings = settings

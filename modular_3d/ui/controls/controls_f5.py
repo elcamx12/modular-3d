@@ -181,7 +181,11 @@ class F5Mixin:
             print(f'[SAVE] {n}개 부재 저장 → {path}')
             self._dim_panel.set_mode_text(f'[저장됨: {n}개]')
         except Exception as e:
-            print(f'[SAVE] 실패: {e}')
+            from modular_3d._utils.debug import log_error
+            from PyQt5.QtWidgets import QMessageBox
+            log_error(f'배치 저장 실패: {e}', cat='controls_f5', exc=True)
+            QMessageBox.warning(self._f5_panel, '저장 실패',
+                                f'배치 저장에 실패했습니다.\n\n{e}')
 
     def _f5_load_scene(self):
         """F5 패널 '불러오기' 버튼 → JSON 파일 로드 후 Scene 재구성."""
@@ -195,7 +199,11 @@ class F5Mixin:
         try:
             new_scene, n_floors = load_scene(path)
         except Exception as e:
-            print(f'[LOAD] 실패: {e}')
+            from modular_3d._utils.debug import log_error
+            from PyQt5.QtWidgets import QMessageBox
+            log_error(f'배치 불러오기 실패: {e}', cat='controls_f5', exc=True)
+            QMessageBox.warning(self._f5_panel, '불러오기 실패',
+                                f'배치 불러오기에 실패했습니다.\n\n{e}')
             return
 
         # 기존 Scene/viewer/snap 모두 비우기 (실 3D 색면 포함)
@@ -930,7 +938,8 @@ class F5Mixin:
             n_rec = record_joints(self._scene)
             print(f'[F5 JOINT REC] {n_rec} 코너 기록 갱신')
         except Exception as e:
-            print(f'[F5 JOINT REC] 실패: {e}')
+            from modular_3d._utils.debug import log_error
+            log_error(f'F5 JOINT REC 실패: {e}', cat='controls_f5', exc=True)
 
         # (2026-05-12 그룹 undo) 본 클릭으로 push 된 모든 액션을 'group_place'
         # 1 개로 묶음 — 사용자 Z 한 번에 그룹 통째 사라짐.
@@ -1036,6 +1045,9 @@ class F5Mixin:
 
         [2026-05-28 다층] floor_index 에 따라 z 를 올려 해당 층 슬래브 위에 표시.
         """
+        # [2026-06-02] 실 표기 토글 OFF 면 새 실 배치·갱신 시에도 그리지 않는다.
+        if not getattr(self, '_rooms_visible', True):
+            return
         from modular_3d.render.room_mesh import build_room_mesh, ROOM_PLANE_Z_MM
         from modular_3d.카탈로그.room_types import ROOM_TYPE_BY_KEY
         from modular_3d.analysis.constants import FLOOR_HEIGHT
@@ -1059,6 +1071,27 @@ class F5Mixin:
         if hasattr(self._viewer, 'remove_room_visual'):
             for rid in list(getattr(self._scene, 'rooms', {}).keys()):
                 self._viewer.remove_room_visual(rid)
+
+    # ── [2026-06-02] 배치설계 벽 채움면 / 실 표기 토글 ──────────
+    def set_wall_fill_visible(self, show: bool) -> None:
+        """벽 채움면(구조벽 채움·내벽·모듈 외피 벽) 표시 토글.
+
+        프레임·슬래브·코어벽은 항상 유지된다. 채움면 제외는 메시 빌드 단계의
+        전역 스위치로 처리하므로, 스위치를 바꾼 뒤 현재 모든 부재를 재빌드한다
+        (이후 새로 배치되는 부재도 같은 스위치를 따른다).
+        """
+        from modular_3d.render.mesh_builder import set_wall_fill_visible
+        set_wall_fill_visible(show)
+        for cid in list(self._scene.components.keys()):
+            self._rebuild_component_visual(cid)
+
+    def set_rooms_visible(self, show: bool) -> None:
+        """실 표기(반투명 색면) 표시 토글."""
+        self._rooms_visible = bool(show)
+        if show:
+            self._render_all_rooms_3d()
+        else:
+            self._clear_rooms_3d()
 
     def _delete_room(self, room_id: int):
         """실 삭제 — 같은 group(모든 층)을 함께 제거 + 되돌리기 기록 + 2D 갱신."""

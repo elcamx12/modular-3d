@@ -213,7 +213,8 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
             try:
                 sync_cb(self._collect_paint_state())
             except Exception as e:
-                print(f'[AlignmentCanvas.update] three.js sync 실패: {e}')
+                from modular_3d._utils.debug import log_error
+                log_error(f'AlignmentCanvas.update three.js sync 실패: {e}', cat='alignment', exc=True)
 
     # ── UI 마이그레이션 M3-b — three.js 측 paint 상태 dump ─────
     def _collect_paint_state(self) -> dict:
@@ -281,7 +282,8 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
         try:
             type_labels = classify_component_types(ctrl._scene)
         except Exception as _e:
-            print(f'[F1 분류 실패] {_e}')
+            from modular_3d._utils.debug import log_error
+            log_error(f'F1 분류 실패: {_e}', cat='alignment', exc=True)
             type_labels = {}
         vis_ids = self._current_visible_ids()
         components = []
