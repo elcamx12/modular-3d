@@ -2,7 +2,7 @@
 
 [규칙 — 2026-05-30 사용자 확정]
 - 대상: *독립* 부재(모듈 / 바닥패널 / 벽패널 / 수직 3층 모듈)의 본체(sub_index==0).
-  (합체 구조벽·종속 부재는 자체 타입을 안 받고 부모 구성에 포함된다.)
+  (합체 벽패널·종속 부재는 자체 타입을 안 받고 부모 구성에 포함된다.)
 - 1차 글자: 외형 치수(width·depth·height, 5mm 허용오차)가 다르면 A, B, …
 - 2차 번호: 같은 글자(크기) 안에서 '구성 시그니처'(실 배치 + 종속 부재)별 -1, -2, …
   · 같은 xy·층만 다른 복제, 또는 위치는 달라도 실배치까지 같은 부재 → 같은 번호로 통합.
@@ -302,11 +302,11 @@ def classify_component_types(scene) -> Dict[int, str]:
             posmap[(lx, ly)] = len(posmap) + 1
         labels[cid] = f"{parent_label} {dep_tname}{posmap[(lx, ly)]}"
 
-    # ── 흡수(합체) 구조벽 라벨 — 부모 바닥패널 라벨 + '구조벽' + 순번 ──
+    # ── 흡수(합체) 벽패널 라벨 — 부모 바닥패널 라벨 + '벽패널' + 순번 ──
     # [2026-06-01] merged_fp_id 로 바닥패널에 흡수된 StructWall 은 sub_index==0·
     # group_id 가 패널과 달라 위 종속 로직(group_id 매칭)에 안 잡힌다. 그래서
     # 라벨이 비어 배치설계에 부모 없이 나왔다. 부모 패널 기준으로 직접 부여.
-    wall_tname = TYPE_NAMES.get(ComponentType.STRUCT_WALL, '구조벽')
+    wall_tname = TYPE_NAMES.get(ComponentType.STRUCT_WALL, '벽패널')
     merged_pos_num: Dict[str, Dict[tuple, int]] = {}
     for cid in sorted(scene.components.keys()):
         c = scene.components[cid]
@@ -354,7 +354,6 @@ def dump_type_signatures(scene) -> None:
         log_error(f'classify 실패: {e}', cat='type_naming', exc=True)
         return
     comps = getattr(scene, 'components', {}) or {}
-    print('[TYPE] ===== 타입 진단 (cid / label / size / signature) =====')
     for cid in sorted(comps):
         if cid not in labels:
             continue   # 종속·코어 등 라벨 미부여
@@ -364,10 +363,6 @@ def dump_type_signatures(scene) -> None:
             sz = _size_key(c)
         except Exception as e:
             sig, sz = f'ERR {e}', None
-        print(f'[TYPE] cid={cid} label={labels.get(cid)} '
-              f'fi={int(getattr(c, "floor_index", 0) or 0)} '
-              f'rot={int(getattr(c, "rotation", 0) or 0)} size={sz} sig={sig}')
-    print('[TYPE] =====================================================')
 
 
 __all__ = ['classify_component_types', 'dump_type_signatures']

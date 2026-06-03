@@ -33,6 +33,19 @@ from PyQt5.QtWidgets import (
 )
 
 from modular_3d.model import ComponentType
+from modular_3d.ui.fonts import F_BODY, F_HEAD, ensure_fonts_loaded
+
+
+# ── 종합탭 톤 디자인 토큰 ─────────────────────────────────
+_PAGE_BG     = "#EDF2F7"
+_CARD_BG     = "#FFFFFF"
+_CARD_BORDER = "#DDE4ED"
+_HEAD_FG     = "#1F4E79"
+_BODY_FG     = "#1F2A37"
+_SUB_FG      = "#5B6573"
+_ACCENT      = "#1F4E79"
+_ACCENT_HOV  = "#163A5E"
+_ACCENT_SOFT = "#F5F8FF"
 
 
 # 팔레트 항목 — (key, comp_type, 라벨, 설명, 활성여부)
@@ -73,29 +86,56 @@ class PalettePanel(QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
+        ensure_fonts_loaded()  # Paperlogy/Freesentation 등록 보장
+        # 패널 전체를 종합탭 톤 카드 배경으로.
+        self.setStyleSheet(
+            f"PalettePanel {{ background: {_PAGE_BG}; }}"
+        )
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(6, 6, 6, 6)
-        lay.setSpacing(4)
+        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(7)
 
+        # 헤더 라벨 — Paperlogy, 종합탭 헤드라인 톤.
         title = QLabel('부재 팔레트')
-        title.setStyleSheet('font-weight: bold; font-size: 12px;')
+        title.setStyleSheet(
+            f"font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+            f" color: {_HEAD_FG}; font-size: 17px; font-weight: 800;"
+            " background: transparent; padding: 2px 0 4px 2px;"
+        )
         lay.addWidget(title)
 
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
-        sep.setFrameShadow(QFrame.Sunken)
+        sep.setStyleSheet(f"color: {_CARD_BORDER}; background: {_CARD_BORDER};")
+        sep.setFixedHeight(1)
         lay.addWidget(sep)
 
+        # 부재 버튼 공통 스타일 — 둥근 카드형, hover 시 강조.
+        _btn_css = (
+            "QPushButton {"
+            f" font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+            f" text-align: left; padding: 9px 11px; font-size: 16px;"
+            f" font-weight: 700; color: {_BODY_FG}; background: {_CARD_BG};"
+            f" border: 1px solid {_CARD_BORDER}; border-radius: 8px; }}"
+            f"QPushButton:hover {{ background: {_ACCENT_SOFT};"
+            f" border-color: {_ACCENT}; color: {_HEAD_FG}; }}"
+            f"QPushButton:disabled {{ color: #AEB6C2; background: #F3F5F8;"
+            f" border-color: #E6EAF0; }}"
+        )
         for key, ctype, label, desc, enabled in PALETTE_ITEMS:
             btn = QPushButton(f'[{key}] {label}')
-            btn.setStyleSheet('text-align: left; padding: 4px 6px;')
+            btn.setStyleSheet(_btn_css)
             btn.setEnabled(enabled)
             btn.clicked.connect(lambda _checked=False, t=ctype: self._on_select(t))
             self._buttons.append(btn)
             lay.addWidget(btn)
 
+            # 부재 치수 설명 — 값 정보이므로 Freesentation.
             d = QLabel(f'  {desc}')
-            d.setStyleSheet('color: #666; font-size: 10px;')
+            d.setStyleSheet(
+                f"font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+                f" color: {_SUB_FG}; font-size: 13px; background: transparent;"
+            )
             d.setWordWrap(True)
             lay.addWidget(d)
 
@@ -105,24 +145,44 @@ class PalettePanel(QWidget):
         # ON 이면 부재 팔레트(+코어)는 비활성, 실 지정/벽/개구부 버튼이 활성된다.
         sep_detail = QFrame()
         sep_detail.setFrameShape(QFrame.HLine)
-        sep_detail.setFrameShadow(QFrame.Sunken)
+        sep_detail.setStyleSheet(f"color: {_CARD_BORDER}; background: {_CARD_BORDER};")
+        sep_detail.setFixedHeight(1)
         lay.addWidget(sep_detail)
 
+        # 상세 설계 토글 — 종합탭 액센트(진파랑) 채움, checked 시 강조.
         self._detail_mode_btn = QPushButton('상세 설계')
         self._detail_mode_btn.setCheckable(True)
         self._detail_mode_btn.setStyleSheet(
-            'QPushButton{padding:4px 6px;}'
-            'QPushButton:checked{background-color:#9be79b; font-weight:bold;}')
+            "QPushButton {"
+            f" font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+            f" padding: 9px 11px; font-size: 15px; font-weight: 700;"
+            f" color: {_HEAD_FG}; background: {_CARD_BG};"
+            f" border: 1px solid {_ACCENT}; border-radius: 8px; }}"
+            f"QPushButton:hover {{ background: {_ACCENT_SOFT}; }}"
+            f"QPushButton:checked {{ background: {_ACCENT}; color: white;"
+            f" border-color: {_ACCENT}; font-weight: 800; }}")
         if self._on_detail_mode_toggle is not None:
             self._detail_mode_btn.toggled.connect(self._on_detail_mode_toggled)
         else:
             self._detail_mode_btn.setEnabled(False)
         lay.addWidget(self._detail_mode_btn)
 
+        # 실/벽/개구부 버튼 — 기능 구분용 색상은 유지하되 둥근 카드형으로 통일.
+        def _action_btn_css(bg: str, bg_hov: str, fg: str, border: str) -> str:
+            return (
+                "QPushButton {"
+                f" font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+                f" padding: 9px 11px; font-size: 15px; font-weight: 700;"
+                f" color: {fg}; background: {bg};"
+                f" border: 1px solid {border}; border-radius: 8px; }}"
+                f"QPushButton:hover {{ background: {bg_hov}; }}"
+                f"QPushButton:disabled {{ color: #AEB6C2; background: #F3F5F8;"
+                f" border-color: #E6EAF0; }}")
+
         # 실 지정 — 상세 설계 ON 일 때만 활성.
         self._room_btn = QPushButton('실 지정')
         self._room_btn.setStyleSheet(
-            'background-color: #e6ffe6; padding: 4px 6px;')
+            _action_btn_css('#E6F4EA', '#D4ECDC', '#1E6B3A', '#BFE0CB'))
         if self._on_room_draw is not None:
             self._room_btn.clicked.connect(lambda: self._on_room_draw())
         self._room_btn.setEnabled(False)
@@ -131,7 +191,7 @@ class PalettePanel(QWidget):
         # 벽 (내벽 배치) — 상세 설계 ON 일 때만 활성.
         self._wall_btn = QPushButton('벽')
         self._wall_btn.setStyleSheet(
-            'background-color: #ffe6cc; padding: 4px 6px;')
+            _action_btn_css('#FCEBD8', '#F7DCC0', '#9A5A1E', '#EECCAC'))
         if self._on_wall_place is not None:
             self._wall_btn.clicked.connect(lambda: self._on_wall_place())
         self._wall_btn.setEnabled(False)
@@ -140,18 +200,22 @@ class PalettePanel(QWidget):
         # 개구부 — 벽 바로 아래. 상세 설계 ON 일 때만 활성.
         self._opening_add_btn = QPushButton('개구부')
         self._opening_add_btn.setStyleSheet(
-            'background-color: #fff0e0; padding: 4px 6px;')
+            _action_btn_css('#FCF0E0', '#F7E6CC', '#9A6A1E', '#EED9BC'))
         if self._on_opening_add is not None:
             self._opening_add_btn.clicked.connect(lambda: self._on_opening_add())
         self._opening_add_btn.setEnabled(False)
         lay.addWidget(self._opening_add_btn)
 
+        # 조작 안내 — 안내문이므로 Paperlogy.
         detail_hint = QLabel(
             '  상세 설계 ON → 실 지정/벽/개구부 사용\n'
             '  실 지정: 좌클릭=점, Enter=완료, 우클릭/Back=취소점 · 실 클릭=선택, Del=삭제\n'
             '  벽: 부모 클릭 → 길이 입력 → R 방향/V 앵커/클릭 확정\n'
             '  개구부: "개구부" 후 벽/슬래브 클릭 · 개구부 클릭=선택, Del=삭제')
-        detail_hint.setStyleSheet('color: #666; font-size: 10px;')
+        detail_hint.setStyleSheet(
+            f"font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+            f" color: {_SUB_FG}; font-size: 11px; background: transparent;"
+            " padding-top: 4px;")
         detail_hint.setWordWrap(True)
         lay.addWidget(detail_hint)
 

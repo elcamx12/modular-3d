@@ -681,7 +681,7 @@ class EvaluationPanel(QWidget):
             if any(panels.values()):
                 text = QLabel(
                     f"바닥패널 {panels.get('floor_panel', 0)} · "
-                    f"구조벽 {panels.get('struct_wall', 0)} · "
+                    f"벽패널 {panels.get('struct_wall', 0)} · "
                     f"내벽 {panels.get('interior_wall', 0)} · "
                     f"코어슬래브 {panels.get('core_slab', 0)}"
                 )

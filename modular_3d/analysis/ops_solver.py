@@ -302,14 +302,6 @@ def _diagnose_zero_members(am: AnalysisModel, res: 'OpsResults') -> None:
         f_max = max(np.max(np.abs(mf.f_i)), np.max(np.abs(mf.f_j)))
         if f_max < 1e-3:
             zero.append((mid, m.role))
-    if missing:
-        roles = sorted({r for _, r in missing})
-        print(f'[F6 DIAG] OpenSees 미등록 마스터 부재 {len(missing)} 개 — '
-              f'roles: {roles}')
-    if zero:
-        roles = sorted({r for _, r in zero})
-        print(f'[F6 DIAG] 단면력 ≈ 0 마스터 부재 {len(zero)} 개 — '
-              f'roles: {roles}')
 
 
 def _extract_member_stations(om: 'OpsModel', am: AnalysisModel,

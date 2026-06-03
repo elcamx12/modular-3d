@@ -22,6 +22,16 @@ from PyQt5.QtWidgets import (
 )
 
 from modular_3d.model import ComponentType, Scene, effective_beam_section_type
+from modular_3d.ui.fonts import F_BODY, F_HEAD, ensure_fonts_loaded
+
+
+# ── 종합탭 톤 디자인 토큰 ─────────────────────────────────
+_PAGE_BG     = "#EDF2F7"
+_CARD_BG     = "#FFFFFF"
+_CARD_BORDER = "#DDE4ED"
+_HEAD_FG     = "#1F4E79"
+_BODY_FG     = "#1F2A37"
+_SUB_FG      = "#5B6573"
 
 
 # 부재 타입별 한글 이름 (single source of truth)
@@ -57,21 +67,37 @@ class DesignPropertiesPanel(QWidget):
         self.refresh_selected(-1)
 
     def _setup_ui(self):
+        ensure_fonts_loaded()  # Paperlogy/Freesentation 등록 보장
+        self.setStyleSheet(
+            f"DesignPropertiesPanel {{ background: {_PAGE_BG}; }}"
+        )
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(6, 6, 6, 6)
-        lay.setSpacing(6)
+        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(8)
 
-        title = QLabel('속성 패널')
-        title.setStyleSheet('font-weight: bold; font-size: 12px;')
+        # 헤더 라벨 — Paperlogy, 종합탭 헤드라인 톤.
+        title = QLabel('속성')
+        title.setStyleSheet(
+            f"font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+            f" color: {_HEAD_FG}; font-size: 17px; font-weight: 800;"
+            " background: transparent; padding: 2px 0 4px 2px;"
+        )
         lay.addWidget(title)
 
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet(f"color: {_CARD_BORDER}; background: {_CARD_BORDER};")
+        sep.setFixedHeight(1)
         lay.addWidget(sep)
 
-        # ── 선택 부재 정보 ([E2] 활성 부재 표시 제거 — 선택 부재만) ─────
+        # ── 선택 부재 정보 — 값/정보이므로 Freesentation, 흰 카드 안에. ─────
         self._selected_label = QLabel('선택 부재: (없음)')
-        self._selected_label.setStyleSheet('font-size: 11px;')
+        self._selected_label.setStyleSheet(
+            f"font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+            f" color: {_BODY_FG}; font-size: 15px; background: {_CARD_BG};"
+            f" border: 1px solid {_CARD_BORDER}; border-radius: 8px;"
+            " padding: 12px 14px; line-height: 150%;"
+        )
         self._selected_label.setWordWrap(True)
         self._selected_label.setMinimumWidth(0)
         lay.addWidget(self._selected_label)
@@ -80,12 +106,24 @@ class DesignPropertiesPanel(QWidget):
         self._sec_row = QWidget()
         sec_lay = QHBoxLayout(self._sec_row)
         sec_lay.setContentsMargins(0, 0, 0, 0)
+        # 캡션은 묻는 글 → Paperlogy.
         self._sec_caption = QLabel('보 단면:')
-        self._sec_caption.setStyleSheet('font-size: 11px;')
+        self._sec_caption.setStyleSheet(
+            f"font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+            f" color: {_HEAD_FG}; font-size: 15px; font-weight: 700;"
+            " background: transparent;"
+        )
         sec_lay.addWidget(self._sec_caption)
         self._sec_combo = QComboBox()
         self._sec_combo.addItem('각형강관', 'shs')
         self._sec_combo.addItem('H형강', 'h')
+        # 콤보 안 값은 Freesentation.
+        self._sec_combo.setStyleSheet(
+            f"font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+            f" font-size: 15px; padding: 5px 9px; color: {_BODY_FG};"
+            f" border: 1px solid {_CARD_BORDER}; border-radius: 6px;"
+            f" background: {_CARD_BG}; min-height: 24px;"
+        )
         self._sec_combo.currentIndexChanged.connect(self._on_sec_changed)
         sec_lay.addWidget(self._sec_combo, stretch=1)
         lay.addWidget(self._sec_row)
@@ -93,15 +131,20 @@ class DesignPropertiesPanel(QWidget):
 
         sep2 = QFrame()
         sep2.setFrameShape(QFrame.HLine)
+        sep2.setStyleSheet(f"color: {_CARD_BORDER}; background: {_CARD_BORDER};")
+        sep2.setFixedHeight(1)
         lay.addWidget(sep2)
 
-        # ── 해석 좌표 안내 ─────────────────────────────
+        # ── 해석 좌표 안내 — 안내문이므로 Paperlogy ─────────────
         # 모듈 외관 z = 0 ~ 3400 mm 이지만 해석 모델의 보 중심선은
         # z = 0 ~ 3200 (=h - SECTION_W=200) 위치. 사용자가 코어 슬래브 z 와
         # 보 격자 끝 z 차이를 헷갈리지 않도록 한 줄로 안내.
         _z_note = QLabel('해석 좌표: 보 중심선 z = h − 200 mm '
                          '(예: 모듈 천장보 = z 3200, 외관 = z 3400)')
-        _z_note.setStyleSheet('color: #666; font-size: 10px;')
+        _z_note.setStyleSheet(
+            f"font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+            f" color: {_SUB_FG}; font-size: 11px; background: transparent;"
+        )
         _z_note.setWordWrap(True)
         lay.addWidget(_z_note)
 
@@ -160,7 +203,7 @@ class DesignPropertiesPanel(QWidget):
         if ct in _NO_BEAM_TYPES:
             self._sec_row.setVisible(False)
             return
-        # 합체 구조벽(merged_fp_id) 또는 종속 부재면 부모를 따라감 → 비활성 표시.
+        # 합체 벽패널(merged_fp_id) 또는 종속 부재면 부모를 따라감 → 비활성 표시.
         is_merged_wall = (ct == ComponentType.STRUCT_WALL
                           and getattr(comp, 'merged_fp_id', None))
         is_direct = (ct in _DIRECT_BEAM_TYPES

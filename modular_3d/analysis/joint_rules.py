@@ -442,7 +442,7 @@ def _apply_corner_edge_rule(
                     edge_split_map.setdefault(mid, []).append((nP, proj, rule_id))
 
     if registered:
-        dprint('joint_rules', f'[joint_rules][{rule_id}] 코너-코너 결합 {registered}쌍 등록 (코너-모서리 사영점은 외부 누적)')
+        pass
     return registered
 
 
@@ -562,7 +562,6 @@ def _split_edges_and_link_corners(
         ele_tag = om.member_to_ele_tag.get(mid)
         if ele_tag is None:
             # 이미 분할된 보 — 본 룰 단독 실행 흐름에선 발생하지 않음.
-            dprint('joint_rules', f'[joint_rules] mid={mid} 보가 이미 분할됨 — 스킵')
             continue
         c1 = am.nodes[m.n1].coord
         c2 = am.nodes[m.n2].coord
@@ -788,7 +787,7 @@ def _apply_vstack_rule(
                         ))
                     registered += 1
     if registered:
-        dprint('joint_rules', f'[joint_rules][{rule_id}] 수직 적층 결합 {registered}쌍 등록')
+        pass
     return registered
 
 
@@ -874,7 +873,6 @@ def _collect_cantilever_beam_data(
         for nid in cants_corners[cid]:
             c = om.node_tags[nid]
             _dbg.append(f'cid{cid}/free#{nid}=({c[0]:.0f},{c[1]:.0f},{c[2]:.0f})')
-    dprint('joint_rules', f'[joint_rules] 캔틸 보 {len(cants_corners)}개 자유단: ' + (', '.join(_dbg) if _dbg else '(없음)'))
     return cants_corners, cants_edges
 
 
@@ -925,7 +923,6 @@ def _collect_panel_like_corners(om) -> Dict[int, List[int]]:
     # [진단 2026-05-14] 패널류 수집 결과 확인용.
     _dbg = [f'cid{cid}({cid_kind[cid]}/코너{len(out.get(cid, []))})'
             for cid in sorted(cid_kind)]
-    dprint('joint_rules', f'[joint_rules] 패널류 컴포넌트 {len(cid_kind)}개: ' + ', '.join(_dbg))
     return out
 
 
@@ -1005,7 +1002,6 @@ def apply_panel_module(
                       for ns in panel_corners.values() for n in ns))
     _mzs = sorted(set(round(om.node_tags[n][2], 1)
                       for c in mod_corners.values() for n in c))
-    dprint('joint_rules', f'[joint_rules][R03] 패널 꼭지점 z={_pzs} / 모듈 코너 z={_mzs}')
 
     from modular_3d.analysis.model_spec import EqualDofRec, NodeRec
     from modular_3d.analysis.topology import AnalysisNode
@@ -1195,7 +1191,7 @@ def apply_panel_module(
     # 한 번만 호출. 사영점에 RULE_ID_PANEL_MOD 가 저장돼 있어 N1↔Q 결합 색이
     # R03(연두) 로 정상 매핑됨.
     if registered:
-        dprint('joint_rules', f'[joint_rules][{RULE_ID_PANEL_MOD}] 바닥패널-모듈 직접 결합 {registered}쌍 등록 (N1↔Q 사영점은 외부 누적)')
+        pass
     return registered
 
 
@@ -1294,7 +1290,6 @@ def _collect_wall_data(om) -> Dict[int, Dict]:
     _dbg = [f"cid{cid}({'M' if d['is_merged'] else 'I'}/"
             f"top{len(d['top'])}@{d['z_top']:.0f}/bot{len(d['bot'])}@{d['z_bot']:.0f})"
             for cid, d in sorted(out.items())]
-    dprint('joint_rules', f'[joint_rules] 벽패널 {len(out)}개: ' + ', '.join(_dbg))
     return out
 
 
@@ -1394,7 +1389,7 @@ def apply_wall_floor_vertical(
                         ))
                     registered += 1
     if registered:
-        dprint('joint_rules', f'[joint_rules][{RULE_ID_WALL_FLOOR_V}] 벽-바닥 수직 결합 {registered}쌍 등록')
+        pass
     return registered
 
 
@@ -1575,7 +1570,7 @@ def apply_wall_module(
                     break   # 한 모듈당 1쌍
 
     if registered:
-        dprint('joint_rules', f'[joint_rules][{RULE_ID_WALL_MOD}] 벽-모듈 직접 결합 {registered}쌍 등록 (코너-모서리 사영점은 외부 누적)')
+        pass
     return registered
 
 
@@ -1703,7 +1698,7 @@ def apply_wall_cantilever_beam(
                     matched_cants.add(ccid)
 
     if registered:
-        dprint('joint_rules', f'[joint_rules][{RULE_ID_WALL_CANT}] 벽-캔틸 보 결합 {registered}쌍 등록 (사영점은 외부 누적)')
+        pass
     return registered
 
 
@@ -1780,8 +1775,9 @@ _CORE_ALIGN_TOL = (
 # 코어 가로/세로 선의 role 집합 (X 대각 제외).
 _CORE_LINE_ROLES_AXIS = (
     'core_column', 'core_top_runner', 'core_bottom_runner',
-    'core_truss_v', 'core_truss_h',
+    'core_ceiling_runner',   # [2026-06-03] 천장보 레벨 코어 수평선(천장 접합 사영용)
     'core_slab_beam',
+    # (트러스 격자 폐기로 core_truss_v/h 제거됨)
 )
 
 
@@ -1829,6 +1825,7 @@ def apply_core_joint(
     om,
     dofs_6: Tuple[int, ...] = (1, 2, 3, 4, 5, 6),
     edge_split_map: Optional[Dict[int, List[Tuple[int, np.ndarray, str]]]] = None,
+    core_split_map: Optional[Dict[int, List[Tuple[int, np.ndarray]]]] = None,
 ) -> int:
     """R09 — 외부 부재 노드 ↔ 코어벽·코어슬래브 (노드 + 축평행 선) 6 DOF 강결합.
 
@@ -1866,6 +1863,8 @@ def apply_core_joint(
         return 0
     if edge_split_map is None:
         edge_split_map = {}
+    if core_split_map is None:
+        core_split_map = {}
 
     from modular_3d.analysis.model_spec import EqualDofRec
     registered = 0
@@ -1891,54 +1890,63 @@ def apply_core_joint(
                 kind=kind, rule_id=RULE_ID_CORE))
         registered += 1
 
-    # (a) 외부 노드 ↔ 코어 노드 직접 매칭.
+    # [정책 2026-06-03 사용자] 한 외부 노드는 같은 축(x/y) 방향으로 R09 결합을
+    # 최대 1개만 가진다 — x 1개 + y 1개는 허용, x 2개·y 2개는 금지. 같은 축에
+    # 후보가 여럿이면 결합선이 가장 짧은(가장 가까운 코어 부위) 1개만 채택한다.
+    # 결합선 축 = 결합선 벡터(외부노드→코어/사영점)의 큰 성분(x/y).
+    # (a) 코어 노드 직접 매칭과 (b) 코어 선 사영 후보를 모두 모아 거리로 경쟁시킴.
+    #   best[(nP, axis)] = (dist, kind, payload)
+    #     kind='node' → payload=nQ (직접 결합) / kind='edge' → payload=(mid, proj)
+    best: Dict[Tuple[int, str], Tuple[float, str, object]] = {}
+
+    def _consider(nP_: int, axis_c: str, dist: float, kind: str, payload) -> None:
+        key = (nP_, axis_c)
+        cur = best.get(key)
+        if cur is None or dist < cur[0]:
+            best[key] = (dist, kind, payload)
+
+    # (a) 외부 노드 ↔ 코어 노드 직접 매칭 후보.
     for nP in external_nids:
         cP = om.node_tags[nP]
         for nQ in core_nids:
             cQ = om.node_tags[nQ]
-            dz = abs(cP[2] - cQ[2])
-            if dz > _Z_TOL:
+            if abs(cP[2] - cQ[2]) > _Z_TOL:
                 continue
             dx = abs(cP[0] - cQ[0])
             dy = abs(cP[1] - cQ[1])
-            # 정렬 임계 _CORE_ALIGN_TOL(=55mm), 결합 거리 _CORE_LATERAL_MAX(=255mm).
+            # 정렬 임계 _CORE_ALIGN_TOL(=55mm), 결합 거리 _CORE_LATERAL_MAX(=275mm).
             cond_x = dx <= _CORE_ALIGN_TOL and (_Z_TOL < dy <= _CORE_LATERAL_MAX)
             cond_y = dy <= _CORE_ALIGN_TOL and (_Z_TOL < dx <= _CORE_LATERAL_MAX)
             if not (cond_x or cond_y):
                 continue
-            _link(nP, nQ, 'core_node')
+            # 결합선 축 = 큰 성분 (cond_x→dy 큼→'y' / cond_y→dx 큼→'x')
+            axis_c = 'x' if dx > dy else 'y'
+            _consider(nP, axis_c, float(np.hypot(dx, dy)), 'node', nQ)
 
-    # (b) 외부 노드 ↔ 코어 축평행 선 사영점.
-    # 사영점에서 새 노드 + 선 분할 + equalDOF — 사영점은 edge_split_map 누적.
+    # (b) 외부 노드 ↔ 코어 축평행 선 사영점 후보.
     for nP in external_nids:
         cP = om.node_tags[nP]
         for mid, n1, n2, axis in core_lines:
             c1 = om.node_tags[n1]
             c2 = om.node_tags[n2]
-            # 선 방향별 사영점 좌표 + 검사.
             if axis == 'z':
-                # [2026-05-28 사용자 정책] 코어 column (z 평행) 분기 비활성.
-                # 기존엔 사영점 Q' = (선.xy, P.z) 를 생성하고 column 끝점 n1 과
-                # 6 DOF 강결합으로 묶었으나, n1.z ≠ Q'.z 라 분석 모델에 "수직
-                # R09 결합" 이 박혔다. 시공 현장엔 그 결합이 존재하지 않는
-                # 모델링 인공물이므로 분기 자체를 건너뛴다.
-                # → 외부 노드 ↔ 코어 결합은 (a) 직접 노드 매칭 + (b) x/y 평행
-                #   수평보 사영만 인정. 모두 같은 z 평면(수평).
+                # [2026-05-28 사용자 정책] 코어 column (z 평행) 사영 비활성 —
+                # n1.z ≠ 사영점.z 라 시공에 없는 수직 결합(모델링 인공물)이 됨.
                 continue
             elif axis == 'x':
-                # 수평보 (x 평행). Q'.x=P.x, Q'.y=c1.y, Q'.z=c1.z.
+                # 수평보 (x 평행). 사영점 = (P.x, 선.y, 선.z), 결합선은 y 방향.
                 if abs(cP[2] - c1[2]) > _Z_TOL:
                     continue
                 x_lo = min(c1[0], c2[0])
                 x_hi = max(c1[0], c2[0])
                 if not (x_lo + _Z_TOL < cP[0] < x_hi - _Z_TOL):
                     continue
-                # 결합선이 y 평행 (P.x ≈ Q'.x 이므로 자동) — dy 가 결합 방향 거리.
                 dy = abs(cP[1] - c1[1])
                 if not (_Z_TOL < dy <= _CORE_LATERAL_MAX):
                     continue
                 proj = np.array([cP[0], c1[1], c1[2]], dtype=float)
-            else:   # axis == 'y'
+                axis_c, dist = 'y', dy
+            else:   # axis == 'y' — 결합선은 x 방향.
                 if abs(cP[2] - c1[2]) > _Z_TOL:
                     continue
                 y_lo = min(c1[1], c2[1])
@@ -1949,56 +1957,208 @@ def apply_core_joint(
                 if not (_Z_TOL < dx <= _CORE_LATERAL_MAX):
                     continue
                 proj = np.array([c1[0], cP[1], c1[2]], dtype=float)
-            # 사영점 누적 — _split_edges_and_link_corners 가 분할 + 결합.
-            # 단 본 룰은 6 DOF 강결합이라 _split 의 기본 (1,2,3) 핀과 다름.
-            # _split 가 사영점별 rule_id 만 보고 색 매핑하므로 결합 자체는 별도
-            # 등록이 필요. 따라서 본 함수에서 직접 사영점 노드 신설 + 결합 등록.
-            from modular_3d.analysis.topology import AnalysisNode
-            from modular_3d.analysis.model_spec import NodeRec
-            # 새 노드 태그 — R03(20000+)·R06(30000+) 와 분리해
-            # RULE_NODE_OFFSET_R09(40000)+ 영역.
-            global _r09_next_node
-            try:
-                _r09_next_node
-            except NameError:
-                _r09_next_node = None
-            if _r09_next_node is None:
-                _r09_next_node = max(om.node_tags.keys(), default=0) + RULE_NODE_OFFSET_R09
-            Q_nid = _r09_next_node
-            _r09_next_node += 1
-            # 사영점 소속 = 코어 부재(n1) 가 속한 본체 ID.
-            core_cid = am.nodes[n1].source_comp_id if n1 in am.nodes else 0
-            ops.node(Q_nid, float(proj[0]), float(proj[1]), float(proj[2]))
-            om.node_tags[Q_nid] = proj.copy()
-            am.nodes[Q_nid] = AnalysisNode(
-                id=Q_nid, coord=proj.copy(), source_comp_id=core_cid)
-            if om.spec is not None:
-                om.spec.nodes.append(NodeRec(
-                    tag=Q_nid, coord=proj.copy(), role='core_proj',
-                    source_comp_id=core_cid))
-            # 사영점은 선의 일부라 그 선을 분할해야 하지만, 코어 부재가 truss
-            # 일 수 있어 분할 시 element 재등록 처리가 복잡. 일단 분할 생략 —
-            # 사영점이 코어 노드 자유도와 핀 결합되지 않으면 부유 노드가 됨.
-            # 대안: 사영점을 선의 두 끝점에 equalDOF 로 묶어 선 위 강체 가정.
-            # 단순화 정책으로 사영점을 가장 가까운 코어 노드(c1) 의 슬레이브로
-            # 묶고, 외부 nP 도 그 사영점의 슬레이브로 묶음 — 결합 양 끝 연결.
-            try:
-                ops.equalDOF(n1, Q_nid, *dofs_6)
-                om.constrained_node_ids.add(Q_nid)
-                if om.spec is not None:
-                    om.spec.equal_dofs.append(EqualDofRec(
-                        master=n1, slave=Q_nid, dofs=tuple(dofs_6),
-                        kind='core_proj_to_line', rule_id=RULE_ID_CORE))
-            except Exception as e:
-                # [B-3 옵션 1] silent pass → 누적 채널로 가시화.
-                om.registration_failures.append(
-                    (Q_nid, f'R09 core_proj equalDOF master={n1}: {e}'))
-            _link(nP, Q_nid, 'core_edge')
+                axis_c, dist = 'x', dx
+            _consider(nP, axis_c, float(dist), 'edge', (mid, proj))
+
+    # 채택 — 외부노드별·축별 최소거리 후보만 등록.
+    # [함정 — 옛 단순화의 버그] (b) 사영 결합은 과거엔 사영점에 새 노드를 만들어
+    # 코어 선의 첫 끝점에 6DOF 강결합했다(결합선이 선 길이만큼 길어지는 버그).
+    # 지금은 core_split_map 에 누적만 하고 _split_core_lines 가 선을 사영점에서
+    # 실제 분할 + 외부노드와 짧게(≤275mm) 결합한다(R01~R08 분할 방식과 동일).
+    for (nP, axis_c), (dist, kind, payload) in best.items():
+        if kind == 'node':
+            # [2026-06-03] 코어=master(retained), 외부=slave(constrained)로 반전.
+            # 코어 노드를 전부 6DOF 고정하므로 코어가 slave 면 과구속 충돌 → 코어를
+            # master 로 둬야 fix 와 호환(외부가 고정 코어를 따라 구속).
+            _link(payload, nP, 'core_node')
+        else:
+            mid, proj = payload
+            core_split_map.setdefault(mid, []).append((nP, proj))
 
     if registered:
-        dprint('joint_rules', f'[joint_rules][{RULE_ID_CORE}] 코어 결합 {registered}쌍 등록 (외부 노드={len(external_nids)}, 코어 노드={len(core_nids)}, 코어 축선={len(core_lines)})')
-    # next_node 글로벌 상태 리셋 — 다음 빌드를 위해.
-    globals()['_r09_next_node'] = None
+        pass
+    return registered
+
+
+def _split_core_lines(
+    om,
+    core_split_map: Dict[int, List[Tuple[int, np.ndarray]]],
+    dofs_6: Tuple[int, ...],
+) -> int:
+    """R09 보조 — 코어 수평선을 외부 부재 사영점에서 분할 + 외부노드 6DOF 결합.
+
+    `_split_edges_and_link_corners`(R01~R08 강재 보 전용) 와 골격은 같으나 코어는
+    truss(core_truss_h) 와 콘크리트 보(runner/slab_beam) 가 섞여 있어 sub-element
+    등록을 부재 종류별로 분기하고, 결합을 핀이 아닌 6 DOF 로 등록한다.
+
+    [CoT] mid 별 처리:
+      1. 사영점들을 선 방향 t 로 정렬 + ±5mm 중복 묶기 (선 끝 근처는 (a) 직접
+         매칭 영역이라 제외).
+      2. ops.remove 로 기존 코어 선 element 제거 + om/spec 정리.
+      3. 각 사영점에 새 노드 Q 등록.
+      4. prev→Q sub-element 등록 (truss→Truss+9001 / 콘크리트→elasticBeamColumn+RC).
+      5. 외부노드 nP ↔ Q 6 DOF equalDOF (kind='core_edge').
+      6. 마지막 prev→n2 sub-element.
+      7. member_to_split 기록 (자중·물량 후처리용 — ops_solver 가 truss sub 는
+         노드하중으로 자동 분기).
+
+    Returns: 등록된 nP↔Q 결합 수.
+    """
+    if not core_split_map:
+        return 0
+    am = om.analysis_model
+    if am is None:
+        return 0
+
+    from modular_3d.analysis.ops_builder import (
+        _section_props, _vecxz_for_member, _geom_transf_tag,
+        RC_WALL_E_MPA, RC_WALL_G_MPA,
+    )
+    from modular_3d.analysis.constants import STEEL_E_MPA, STEEL_G_MPA
+    from modular_3d.analysis.topology import AnalysisNode, AnalysisMember
+    from modular_3d.analysis.model_spec import NodeRec, BeamRec, EqualDofRec
+
+    # truss material tag 는 ops_builder._step_register_members 가 9001 로 등록 —
+    # R09 는 그 단계 뒤에 호출되므로 ops 에 살아있다. (함정: 값 바뀌면 동기화 필요)
+    TRUSS_MAT_TAG = 9001
+    RC_BEAM_ROLES = ('core_column', 'core_slab_beam',
+                     'core_top_runner', 'core_bottom_runner')
+
+    next_node = (max(om.node_tags.keys()) + SPLIT_NODE_BASE_OFFSET
+                 if om.node_tags else SPLIT_NODE_BASE_OFFSET)
+    next_ele = max(om.beam_elements.keys()) + 1 if om.beam_elements else 1
+    next_sub_mid = max(am.members.keys()) + 1 if am.members else 1
+    registered = 0
+
+    for mid, plist in core_split_map.items():
+        m = am.members.get(mid)
+        if m is None:
+            continue
+        ele_tag = om.member_to_ele_tag.get(mid)
+        if ele_tag is None:
+            continue   # 이미 분할/제거된 선 — 스킵
+        c1 = am.nodes[m.n1].coord
+        c2 = am.nodes[m.n2].coord
+        bvec = c2 - c1
+        blen = float(np.linalg.norm(bvec))
+        if blen < 1.0:
+            continue
+        bdir = bvec / blen
+
+        # 1. 사영점 t 정렬 + ±5mm 중복 묶기
+        raw: List[Tuple[float, int, np.ndarray]] = []
+        for nP, proj in plist:
+            t_abs = float(np.dot(proj - c1, bdir))
+            if t_abs < 1.0 or t_abs > blen - 1.0:
+                continue   # 선 끝 = (a) 직접 매칭 영역
+            raw.append((t_abs, nP, proj))
+        raw.sort(key=lambda x: x[0])
+        deduped: List[Tuple[float, int, np.ndarray]] = []
+        extra_at: Dict[int, List[int]] = {}   # 같은 사영점에 묶인 추가 외부노드
+        for entry in raw:
+            if deduped and abs(entry[0] - deduped[-1][0]) < 5.0:
+                extra_at.setdefault(len(deduped) - 1, []).append(entry[1])
+                continue
+            deduped.append(entry)
+        if not deduped:
+            continue
+
+        # 2. 기존 element 제거
+        ops.remove('element', ele_tag)
+        om.beam_elements.pop(ele_tag, None)
+        if om.spec is not None:
+            om.spec.beams = [b for b in om.spec.beams if b.tag != ele_tag]
+        om.member_to_ele_tag.pop(mid, None)
+        sub_tags: List[int] = []
+
+        # 단면·재료 — 부재 종류 보존
+        A, Iy, Iz, J = _section_props(m)
+        is_truss = (m.kind == 'truss')
+        tt = None
+        if not is_truss:
+            vec_xz = _vecxz_for_member(c1, c2)
+            tt = _geom_transf_tag(m.kind, vec_xz)
+            if m.role in RC_BEAM_ROLES:
+                E_use, G_use = RC_WALL_E_MPA, RC_WALL_G_MPA
+            else:
+                E_use, G_use = STEEL_E_MPA, STEEL_G_MPA
+        src_cid = m.source_comp_ids[0] if m.source_comp_ids else 0
+
+        def _add_sub(a: int, b: int) -> None:
+            nonlocal next_ele, next_sub_mid
+            if is_truss:
+                ops.element('Truss', next_ele, a, b, A, TRUSS_MAT_TAG)
+            else:
+                ops.element('elasticBeamColumn', next_ele, a, b,
+                            A, E_use, G_use, J, Iy, Iz, tt)
+            om.beam_elements[next_ele] = (a, b, m.kind, m.role)
+            if om.spec is not None:
+                om.spec.beams.append(BeamRec(
+                    tag=next_ele, n1=a, n2=b, kind=m.kind, role=m.role,
+                    section_w=float(m.section_w), section_h=float(m.section_h),
+                    section_t=float(m.section_t),
+                    source_comp_ids=list(m.source_comp_ids)))
+            sub_mid = next_sub_mid
+            next_sub_mid += 1
+            am.members[sub_mid] = AnalysisMember(
+                id=sub_mid, n1=a, n2=b, kind=m.kind, role=m.role,
+                section_w=float(m.section_w), section_h=float(m.section_h),
+                section_t=float(m.section_t),
+                source_comp_ids=list(m.source_comp_ids),
+                merge_group=m.merge_group,
+                is_split_sub=True, parent_member_id=mid)
+            sub_tags.append(next_ele)
+            next_ele += 1
+
+        prev_node = m.n1
+        for idx, (t_abs, nP, proj) in enumerate(deduped):
+            # 3. 새 노드 Q (선 직선 위 사영점)
+            Q = next_node
+            next_node += 1
+            ops.node(Q, float(proj[0]), float(proj[1]), float(proj[2]))
+            om.node_tags[Q] = proj.copy()
+            am.nodes[Q] = AnalysisNode(
+                id=Q, coord=proj.copy(), source_comp_id=src_cid)
+            if om.spec is not None:
+                om.spec.nodes.append(NodeRec(
+                    tag=Q, coord=proj.copy(), role='core_proj',
+                    source_comp_id=src_cid))
+            # 4. sub-element prev → Q
+            _add_sub(prev_node, Q)
+            # 5. 외부노드 ↔ Q 6 DOF 결합 (+같은 사영점에 묶인 추가 외부노드)
+            for mP in [nP] + extra_at.get(idx, []):
+                if mP == Q:
+                    continue
+                # [2026-06-03] 코어 사영점 Q=master(retained), 외부 mP=slave
+                # (constrained)로 반전. 코어 노드 전부 6DOF 고정과 호환(코어=master).
+                _d = _resolve_override_dofs(om, Q, mP, dofs_6, RULE_ID_CORE)
+                if _d is None:
+                    continue   # remove 오버라이드
+                try:
+                    ops.equalDOF(Q, mP, *_d)
+                except Exception as e:
+                    om.registration_failures.append(
+                        (mP, f'R09 split equalDOF master={Q}: {e}'))
+                    continue
+                om.constrained_node_ids.add(mP)
+                if om.spec is not None:
+                    om.spec.equal_dofs.append(EqualDofRec(
+                        master=Q, slave=mP, dofs=tuple(_d),
+                        kind='core_edge', rule_id=RULE_ID_CORE))
+                registered += 1
+            prev_node = Q
+
+        # 6. 마지막 segment prev → n2
+        _add_sub(prev_node, m.n2)
+
+        # 7. 분할 매핑 기록 (자중 적용용)
+        if sub_tags:
+            om.member_to_split_ele_tags[mid] = sub_tags
+            if om.spec is not None:
+                om.spec.member_to_split_tags[mid] = sub_tags[:]
+
+    if registered and hasattr(am, 'invalidate_indices'):
+        am.invalidate_indices()
     return registered
 
 
@@ -2039,8 +2199,11 @@ def apply_all_joint_rules(om, dofs: Tuple[int, ...] = (1, 2, 3)) -> int:
                                      edge_split_map=edge_split_map)        # R08
     # 일괄 분할 — 룰들이 누적한 사영점을 보별로 한 번에 처리.
     n += _split_edges_and_link_corners(om, edge_split_map, dofs)
-    # R09 는 6 DOF 강결합 + 자체 사영점 분할이라 _split 이후 호출.
-    n += apply_core_joint(om)                                                # R09
+    # R09 — (a) 직접 노드 매칭 + (b) 사영점을 core_split_map 에 누적.
+    core_split_map: Dict[int, List[Tuple[int, np.ndarray]]] = {}
+    n += apply_core_joint(om, core_split_map=core_split_map)                 # R09
+    # 코어 선을 사영점에서 분할 + 외부노드 6 DOF 결합 (truss/콘크리트 종류 보존).
+    n += _split_core_lines(om, core_split_map, (1, 2, 3, 4, 5, 6))
     return n
 
 
@@ -2501,7 +2664,7 @@ def apply_added_joints(om, tol: float = None) -> int:
                 _emit(nA, nB, dofs, rid)
     n = counter[0]
     if n:
-        dprint('joint_rules', f'[joint_rules][USER_ADD] 사용자 신규 접합 {n}쌍 등록')
+        pass
     return n
 
 
@@ -2548,6 +2711,5 @@ def remove_dangling_bridge_nodes(om) -> int:
             om.analysis_model.nodes.pop(tag, None)
         removed += 1
     if removed:
-        dprint('joint_rules',
-               f'[joint_rules] 허공 가교노드 {removed}개 제거(직각접합 제거 정리)')
+        pass
     return removed

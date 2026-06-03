@@ -34,7 +34,7 @@ _bootstrap_done: bool = False
 def _log(msg: str) -> None:
     """진단 메시지 즉시 flush."""
     try:
-        print(msg, flush=True)
+        pass
     except Exception:
         pass
 

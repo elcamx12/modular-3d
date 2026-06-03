@@ -63,6 +63,75 @@ from modular_3d.transport.packer import PackResult, Trip, recheck_trip_with_truc
 from modular_3d.transport.visualizer import draw_rear_view, draw_top_view
 from modular_3d.ui.transport_catalog_dialog import TransportCatalogDialog
 from modular_3d.ui.transport_references_dialog import TransportReferencesDialog
+from modular_3d.ui.fonts import F_BODY, F_HEAD, ensure_fonts_loaded
+
+
+# ── 종합탭 톤 디자인 토큰 ─────────────────────────────────
+_PAGE_BG     = "#EDF2F7"
+_CARD_BG     = "#FFFFFF"
+_CARD_BORDER = "#DDE4ED"
+_HEAD_FG     = "#1F4E79"
+_BODY_FG     = "#1F2A37"
+_SUB_FG      = "#5B6573"
+_ACCENT      = "#1F4E79"
+_ACCENT_HOV  = "#163A5E"
+_ACCENT_SOFT = "#F5F8FF"
+
+# 패널 전체 스타일시트 — 종합/구조해석 탭과 동일 톤.
+# - GroupBox 타이틀 / QLabel / QCheckBox(묻는 글·라벨) → Paperlogy
+# - QComboBox·QSpinBox·QLineEdit·표(값·입력) → Freesentation, 흰 카드 톤
+# - QHeaderView::section(표 머리) → Paperlogy (다른 탭과 동일)
+# - QPushButton → Freesentation 둥근 카드형(실행 버튼은 accent #runBtn)
+_TRANSPORT_QSS = (
+    f"QWidget#transportWrap {{ background: {_PAGE_BG}; }}"
+    "QScrollArea { background: transparent; border: none; }"
+    "QGroupBox {"
+    f" font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 17px; font-weight: 800; color: {_HEAD_FG};"
+    f" background: {_CARD_BG}; border: 1px solid {_CARD_BORDER};"
+    " border-radius: 10px; margin-top: 14px;"
+    " padding: 14px 12px 12px 12px; }"
+    "QGroupBox::title { subcontrol-origin: margin; left: 12px;"
+    f" padding: 0 6px; background: {_CARD_BG};"
+    " }"
+    "QLabel {"
+    f" font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 15px; color: {_BODY_FG}; background: transparent;"
+    " }"
+    "QCheckBox {"
+    f" font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 15px; font-weight: 700; color: {_HEAD_FG};"
+    " background: transparent; }"
+    "QComboBox, QSpinBox, QLineEdit {"
+    f" font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 15px; color: {_BODY_FG};"
+    f" border: 1px solid {_CARD_BORDER}; border-radius: 6px;"
+    " background: white; padding: 4px 8px; min-height: 24px; }"
+    "QTableWidget {"
+    f" font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 14px; color: {_BODY_FG};"
+    f" background: {_CARD_BG}; border: 1px solid {_CARD_BORDER};"
+    " border-radius: 8px; }"
+    "QHeaderView::section {"
+    f" font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 13px; font-weight: 700; color: {_HEAD_FG};"
+    f" background: {_PAGE_BG}; border: none;"
+    f" border-bottom: 1px solid {_CARD_BORDER}; padding: 5px 8px;"
+    " }"
+    "QPushButton {"
+    f" font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 15px; font-weight: 700; color: {_BODY_FG};"
+    f" background: {_CARD_BG}; border: 1px solid {_CARD_BORDER};"
+    " border-radius: 8px; padding: 8px 14px; }"
+    f"QPushButton:hover {{ background: {_ACCENT_SOFT}; border-color: {_ACCENT};"
+    f" color: {_HEAD_FG}; }}"
+    f"QPushButton#runBtn {{ background: {_ACCENT}; color: white;"
+    f" border-color: {_ACCENT}; font-weight: 800; padding: 9px 18px; }}"
+    f"QPushButton#runBtn:hover {{ background: {_ACCENT_HOV};"
+    f" border-color: {_ACCENT_HOV}; }}"
+    "QPushButton#runBtn:disabled { background: #AEB6C2; color: #EEF1F5;"
+    " border-color: #AEB6C2; }"
+)
 
 
 # 8 단계 라벨
@@ -191,18 +260,33 @@ class TransportTab(QWidget):
         #   카탈로그 버튼·① 상태는 폐지. main_3d 는 우측 pane(_right_pane_scroll)만
         #   reparent 한다(_left_pane_scroll 은 더는 만들지 않음 → main_3d 의
         #   좌측 부착 분기는 hasattr 가드로 자동 skip, Phase 4 에서 2단으로 정리).
+        # [2026-06-02 디자인 통일] 종합/구조해석 탭 톤 적용.
+        ensure_fonts_loaded()
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
         # ── 우측(단일) 패널 — 옵션 + 결과 ─────────────────
         self._right_pane_wrap = QWidget()
+        self._right_pane_wrap.setObjectName("transportWrap")
+        # [중요] 패널 QSS 는 *이 wrap* 에 건다 — main_3d 가 우측 패널(scroll+wrap)을
+        #   TransportTab 밖으로 reparent 하므로, TransportTab(self)에 걸면 reparent 후
+        #   QSS 가 내용물을 따라가지 못해 폰트가 빠진다(헤더·실행버튼처럼 직접 스타일한
+        #   것만 남았던 원인). wrap 에 걸면 어디로 reparent 되든 자식에 계속 적용된다.
+        self._right_pane_wrap.setStyleSheet(_TRANSPORT_QSS)
         right_scroll = QScrollArea()
         right_scroll.setWidgetResizable(True)
         right_scroll.setWidget(self._right_pane_wrap)
         right_lay = QVBoxLayout(self._right_pane_wrap)
-        right_lay.setContentsMargins(4, 4, 4, 4)
-        right_lay.setSpacing(8)
+        right_lay.setContentsMargins(12, 12, 12, 12)
+        right_lay.setSpacing(10)
+        # 패널 헤더 라벨(Paperlogy) — 다른 탭과 동일한 제목 톤.
+        _hdr = QLabel('운송 계획')
+        _hdr.setStyleSheet(
+            f"font-family:'{F_HEAD}','Malgun Gothic',sans-serif;"
+            f" font-size:20px; font-weight:800; color:{_HEAD_FG};"
+            " background:transparent; padding:2px;")
+        right_lay.addWidget(_hdr)
         right_lay.addWidget(self._build_area_options())      # ② 옵션 + [▷ 실행]
         right_lay.addWidget(self._build_area_metrics())      # ③ 결과 요약
         right_lay.addWidget(self._build_area_subtabs(), stretch=1)  # ④ 회차표/적재율/경제성
@@ -228,7 +312,9 @@ class TransportTab(QWidget):
         info = QLabel(
             "각 회차의 트럭을 강제 변경합니다. 회차표 행을 우클릭해도 동일 기능 사용 가능."
         )
-        info.setStyleSheet("color: #666; font-size: 11px;")
+        info.setStyleSheet(
+            f"font-family:'{F_HEAD}','Malgun Gothic',sans-serif;"
+            f" font-size:12px; color:{_SUB_FG}; background:transparent;")
         lay.addWidget(info)
         self._override_table = QTableWidget()
         self._override_table.setColumnCount(4)
@@ -273,7 +359,9 @@ class TransportTab(QWidget):
 
         # 현장 운송 제한 — 프로젝트 설정 값(읽기전용 표시). 도로 등급 콤보 폐지.
         self._site_limit_label = QLabel("(프로젝트 설정에서 관리)")
-        self._site_limit_label.setStyleSheet("color: #444;")
+        self._site_limit_label.setStyleSheet(
+            f"font-family:'{F_BODY}','Malgun Gothic',sans-serif;"
+            f" font-size:14px; color:{_SUB_FG}; background:transparent;")
         self._site_limit_label.setToolTip(
             "현장 운송 제한(총중량·폭·높이)은 프로젝트 설정에서 관리합니다.")
         lay.addRow("현장 운송 제한:", self._site_limit_label)
@@ -327,11 +415,16 @@ class TransportTab(QWidget):
         #   우상단 오버레이로 reparent 한다. 여기서는 생성·스타일·연결만(부모 미지정 —
         #   self._run_btn 참조로 수명 유지, set_state 가 enable/text 제어).
         self._run_btn = QPushButton("▷ 운송 계산 실행")
+        # 실행 버튼은 중앙 3D 위로 reparent 되는 오버레이라 패널 QSS 가 안 닿는다.
+        #   → 버튼에 직접 accent 스타일을 준다(종합/비교탭 강조 버튼 톤).
         self._run_btn.setStyleSheet(
-            "QPushButton { background-color: #2a7ade; color: white; "
-            "padding: 6px 16px; font-weight: bold; border-radius: 3px; }"
-            "QPushButton:hover { background-color: #1f5fb0; }"
-            "QPushButton:disabled { background-color: #bbb; }"
+            "QPushButton {"
+            f" font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+            f" background-color: {_ACCENT}; color: white;"
+            " padding: 9px 18px; font-size: 15px; font-weight: 800;"
+            " border: none; border-radius: 8px; }"
+            f"QPushButton:hover {{ background-color: {_ACCENT_HOV}; }}"
+            "QPushButton:disabled { background-color: #AEB6C2; color: #EEF1F5; }"
         )
         self._run_btn.clicked.connect(self._run_transport)
 
@@ -392,13 +485,23 @@ class TransportTab(QWidget):
         ]:
             card = QFrame()
             card.setFrameShape(QFrame.StyledPanel)
-            card.setStyleSheet("background: #f7f7f7; border-radius: 4px;")
+            card.setStyleSheet(
+                f"background: {_ACCENT_SOFT}; border: 1px solid {_CARD_BORDER};"
+                " border-radius: 8px;")
             cl = QVBoxLayout(card)
-            cl.setContentsMargins(6, 4, 6, 4)
+            cl.setContentsMargins(8, 6, 8, 6)
             t = QLabel(title)
-            t.setStyleSheet("color: #555; font-size: 11px;")
+            # 카드 제목(묻는 글) → Paperlogy.
+            t.setStyleSheet(
+                f"font-family:'{F_HEAD}','Malgun Gothic',sans-serif;"
+                f" font-size:12px; font-weight:700; color:{_SUB_FG};"
+                " background:transparent; border:none;")
             v = QLabel("—")
-            v.setStyleSheet("font-size: 18px; font-weight: bold;")
+            # 값/숫자 → Freesentation.
+            v.setStyleSheet(
+                f"font-family:'{F_BODY}','Malgun Gothic',sans-serif;"
+                f" font-size:18px; font-weight:800; color:{_HEAD_FG};"
+                " background:transparent; border:none;")
             cl.addWidget(t)
             cl.addWidget(v)
             lay.addWidget(card)
@@ -560,6 +663,29 @@ class TransportTab(QWidget):
 
         self._last_pack = pack
         self._last_ti = self._cache.transport_input
+
+        # [2026-06-03 진단] 모듈 0회차 버그 추적 — 모듈은 추출됐는데 회차가 0인
+        #   경우, 어디서 막혔는지(블록/적재실패/캐시) 콘솔에 한 줄 남긴다.
+        #   정상(모듈 회차>0)이면 아무 출력 없음.
+        try:
+            from modular_3d._utils.debug import log_warn
+            ti = self._cache.transport_input
+            n_mod = len(ti.modules) if ti is not None else -1
+            if n_mod > 0 and pack.module_trips == 0:
+                blk = getattr(pack, 'blocked', []) or []
+                reasons = "; ".join(str(b) for b in blk[:3])
+                log_warn(
+                    f"[운송] 모듈 추출 {n_mod}개인데 모듈 회차 0 — "
+                    f"blocked {len(blk)}건 / total_trips {pack.total_trips}. "
+                    f"트럭 {len(self._trucks)}대(모듈호환 "
+                    f"{sum(1 for t in self._trucks if t.truck_type in ('lowbed','extendable'))}대), "
+                    f"현장제한 GVW{self._site_limit.max_gvw_kg:.0f}/"
+                    f"W{self._site_limit.max_width_mm:.0f}/"
+                    f"H{self._site_limit.max_height_mm:.0f}. "
+                    f"블록사유: {reasons or '없음(=캐시/적재로직 의심)'}",
+                    cat='transport')
+        except Exception:
+            pass
         # [2026-05-26] override 적용 전 "원래 트럭 이름" 스냅샷.
         #   _render_override_table 에서 "원래 차량" 컬럼 표시에 사용.
         #   이전엔 trip.truck.name 을 그대로 썼는데, override 적용 후엔 그

@@ -455,7 +455,11 @@ function _drawComponents(components) {
     // 라벨 — 좌상단 (vispy 의 rx+4, ry+13 위치와 등가)
     if (comp.label) {
       // [2026-06-01] 종합탭 캡처에서 라벨이 더 또렷하도록 완전 검정.
-      const sprite = _makeTextSprite(comp.label, '#000000');
+      // 종속 부재 라벨('\n' 으로 두 줄)과 코어벽(core)은 폰트를 절반(0.5)으로
+      // 줄인다(텍스트는 그대로, 폰트 크기만).
+      const _labelScale = (comp.label.indexOf('\n') >= 0
+                           || comp.comp_type === 'core') ? 0.5 : 1.0;
+      const sprite = _makeTextSprite(comp.label, '#000000', _labelScale);
       // [C4] 컴포넌트 중심에 배치(좌상단 → 중심).
       sprite.position.set((bx0 + bx1) / 2, (by0 + by1) / 2, Z_BBOX + 0.1);
       sprite.renderOrder = 100;
@@ -479,25 +483,38 @@ function _drawComponents(components) {
 // ─────────────────────────────────────────────────────────
 const _textTexCache = {};  // "text|color" → { texture, w, h }
 
-function _getTextTexture(text, color) {
-  const key = text + '|' + (color || '#f0f0f0');
+function _getTextTexture(text, color, scale) {
+  // scale: 폰트 배율(기본 1.0). 종속 부재 라벨은 0.5 로 절반 크기.
+  scale = scale || 1.0;
+  const fontPx = Math.round(32 * scale);
+  const font = 'bold ' + fontPx + 'px "Malgun Gothic", "Pretendard", sans-serif';
+  const key = text + '|' + (color || '#f0f0f0') + '|' + scale;
   let cached = _textTexCache[key];
   if (cached) return cached;
   const canvas = document.createElement('canvas');
   const ctx0 = canvas.getContext('2d');
-  ctx0.font = 'bold 32px "Malgun Gothic", "Pretendard", sans-serif';
-  const metrics = ctx0.measureText(text);
-  const w = Math.ceil(metrics.width) + 12;
-  const h = 44;
+  ctx0.font = font;
+  // 종속 부재 라벨은 '\n' 으로 부모/종속명을 두 줄로 표기 — 줄별로 폭을 재고
+  // 캔버스 높이를 줄 수에 맞춰 키운다(단일 줄은 기존과 동일).
+  const lines = String(text).split('\n');
+  const lineH = Math.round(38 * scale);
+  let maxW = 0;
+  for (const ln of lines) {
+    maxW = Math.max(maxW, ctx0.measureText(ln).width);
+  }
+  const w = Math.ceil(maxW) + 12;
+  const h = Math.round(6 * scale) + lineH * lines.length;
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext('2d');
-  ctx.font = 'bold 32px "Malgun Gothic", "Pretendard", sans-serif';
+  ctx.font = font;
   ctx.fillStyle = color || '#f0f0f0';
   ctx.textBaseline = 'top';
   ctx.shadowColor = 'rgba(0,0,0,0.85)';
   ctx.shadowBlur = 3;
-  ctx.fillText(text, 4, 4);
+  for (let i = 0; i < lines.length; i++) {
+    ctx.fillText(lines[i], 4, Math.round(4 * scale) + i * lineH);
+  }
   const texture = new THREE.CanvasTexture(canvas);
   texture.minFilter = THREE.LinearFilter;
   cached = { texture: texture, w: w, h: h };
@@ -505,8 +522,8 @@ function _getTextTexture(text, color) {
   return cached;
 }
 
-function _makeTextSprite(text, color) {
-  const cached = _getTextTexture(text, color);
+function _makeTextSprite(text, color, scale) {
+  const cached = _getTextTexture(text, color, scale);
   const mat = new THREE.SpriteMaterial({
     map: cached.texture, depthTest: false, transparent: true,
   });

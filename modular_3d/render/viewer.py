@@ -55,24 +55,29 @@ OPS_LINK_SKIP_KINDS = {'wall_fp_merge'}
 # 'legacy_auto' 는 일부러 매핑에 포함하지 않음 — 기존 색 유지(회귀 방지).
 # 후속 작업에서 새 명시 룰 추가 시 본 dict 에 한 줄씩 등록.
 OPS_RULE_ID_COLOR: Dict[str, Tuple[float, float, float, float]] = {
-    # R01 — 모듈-모듈 수평 인접 핀 결합. 밝은 시안.
-    'R01_mod_mod_h': (0.15, 0.85, 0.95, 1.0),
-    # R02 — 모듈-모듈 수직 적층 핀 결합. 밝은 주황.
-    'R02_mod_mod_v': (1.00, 0.55, 0.10, 1.0),
-    # R03 — 바닥패널-모듈 천장 핀 결합. 밝은 연두.
-    'R03_panel_mod': (0.55, 0.90, 0.25, 1.0),
-    # R04 — 패널-패널 수평 핀 결합. 밝은 자홍.
-    'R04_panel_panel': (0.95, 0.35, 0.85, 1.0),
-    # R05 — 벽-바닥 수직 핀 결합. 밝은 노랑.
-    'R05_wall_floor_v': (0.95, 0.90, 0.20, 1.0),
-    # R06 — 벽-모듈 핀 결합 (캔틸 보 자유단 포함). 밝은 파랑.
-    'R06_wall_mod':    (0.25, 0.45, 0.95, 1.0),
-    # R07 — 벽-벽 수평 핀 결합. 밝은 보라.
-    'R07_wall_wall_h': (0.65, 0.30, 0.95, 1.0),
-    # R08 — 벽-캔틸레버 보 자유단 결합. 밝은 청록.
-    'R08_wall_cant':   (0.10, 0.80, 0.70, 1.0),
-    # R09 — 외부 부재 ↔ 코어 (벽·슬래브) 6 DOF 강결합. 짙은 적색.
-    'R09_core':        (0.95, 0.20, 0.20, 1.0),
+    # [2026-06-02] 범례·접합 색을 PPT 색상 파일에서 고른 조화로운 조합으로 재정의.
+    #   9색을 색상환 전역에 퍼뜨려 모든 쌍(인접·원거리 무관)이 구분되게 배치.
+    #   파랑계열 중복 제거(블루 1개만) + 라임·마젠타 추가로 9색 전부 다른 계열.
+    #   검정/어두운 계열 배제 — 모두 밝고 선명한 색.
+    #   값만 교체(키·구조 불변) — 범례와 3D 접합이 같은 dict 참조라 함께 바뀜.
+    # R01 — 레드 #E7403E.
+    'R01_mod_mod_h': (0.906, 0.251, 0.243, 1.0),
+    # R02 — 오렌지 #FC7116.
+    'R02_mod_mod_v': (0.988, 0.443, 0.086, 1.0),
+    # R03 — 골드 #F2BE00.
+    'R03_panel_mod': (0.949, 0.745, 0.0, 1.0),
+    # R04 — 라임 #92D050.
+    'R04_panel_panel': (0.573, 0.816, 0.314, 1.0),
+    # R05 — 그린 #17AD53.
+    'R05_wall_floor_v': (0.090, 0.678, 0.325, 1.0),
+    # R06 — 틸 #04C1BE.
+    'R06_wall_mod':    (0.016, 0.757, 0.745, 1.0),
+    # R07 — 블루 #2269F7.
+    'R07_wall_wall_h': (0.133, 0.412, 0.969, 1.0),
+    # R08 — 퍼플 #8D3EC6.
+    'R08_wall_cant':   (0.553, 0.243, 0.776, 1.0),
+    # R09 — 마젠타 #FF0180.
+    'R09_core':        (1.0, 0.004, 0.502, 1.0),
     # 사용자가 직접 추가한 신규 접합 — 핀(R10)·강접(R11) 구분.
     # (흰색은 밝은 배경에서 안 보여 채도 높은 색으로.)
     'USER_ADD':        (0.10, 0.90, 0.50, 1.0),  # 구버전 호환 — 민트
@@ -468,13 +473,18 @@ class Viewer3D:
         # 지워진다. 단면 타입 변경(_set_beam_section_type / _sync_dependent_beam_
         # sections)이 remove 없이 add 만 호출하던 경로에서 드러난 버그.
         self.remove_component_visual(comp_id)
+        # 빈 메시 방어: 정점이 없으면 vispy Mesh 가 경계 계산(min/max)에서
+        # ValueError(zero-size array) 로 죽는다. 벽 채움면만 있는 부재의 표시를
+        # 끄면 메시가 비므로, 빈 메시는 등록하지 않고 조용히 무시한다.
+        if vertices is None or len(vertices) == 0 or faces is None or len(faces) == 0:
+            return
         mesh = visuals.Mesh(
             vertices=vertices, faces=faces,
             face_colors=face_colors, shading=None,
             parent=self.view.scene,
         )
         self._component_visuals[comp_id] = mesh
-        # 반투명 면 포함 시(내벽·구조벽 채움·모듈 4면벽 alpha<1) translucent gl_state.
+        # 반투명 면 포함 시(내벽·벽패널 채움·모듈 4면벽 alpha<1) translucent gl_state.
         # depth_test=True 라 불투명 강재(alpha=1)는 그대로 가림, 벽만 비친다.
         try:
             _fc = np.asarray(face_colors, dtype=np.float32)
@@ -501,7 +511,6 @@ class Viewer3D:
                                         dtype=np.float32), (n_faces, 1))
                 mesh.set_data(face_colors=gray)
                 mesh.set_gl_state('translucent', depth_test=False, cull_face=False)
-                dprint('VIEWER', '[VIEWER] ops 뷰 활성 중 새 컴포넌트 추가 — F6 다시 눌러 해석 갱신')
         self.canvas.update()
 
     def remove_component_visual(self, comp_id: int):
@@ -1713,7 +1722,6 @@ class Viewer3D:
                 connect='segments', width=3.5,
             )
             self._ops_iface_lines.visible = True
-            dprint('VIS-spec', f'[VIS-spec] 자유도 묶음 분포: {kind_count}')
         else:
             # [2026-05-17] 모든 룰을 끈 경우 등 결합선이 0 개일 때 visible=False
             # 로 이전 프레임의 잔존 데이터를 가림. set_data 호출만 안 하면 이전
@@ -1807,11 +1815,17 @@ class Viewer3D:
         # (base support) 이 아니다. 사용자 보고: 1F 다이어프램 중심에 ▼ 가
         # 간헐적으로 생기는 결함의 시각적 원인.
         full_fix_pts: List[np.ndarray] = []
+        _base_z = float(getattr(spec, 'base_z', 0.0) or 0.0)
         for f in spec.iter_fixes():
             if all(v == 1 for v in f.dofs):
                 n = spec.node(f.tag)
                 if n is not None and getattr(n, 'role', '') != 'diaphragm_master':
-                    full_fix_pts.append(n.coord)
+                    # [2026-06-03] 지반 레벨(z≈base)의 고정점만 ▼ 로 표시. 높이가
+                    # 있는 고정점(코어 천장·슬래브 레벨, 상층 코어 등)은 ▼ 대신
+                    # 일반 노드 점으로 보이게 ▼ 에서 제외한다(노드 markers 가 이미
+                    # 빨강 점으로 그린다).
+                    if float(n.coord[2]) <= _base_z + 200.0:
+                        full_fix_pts.append(n.coord)
         if full_fix_pts:
             arr = np.array(full_fix_pts, dtype=np.float32)
             colors = np.tile(np.array([list(OPS_COLOR_BASE)],
@@ -1946,11 +1960,14 @@ class Viewer3D:
         #     joint_rules 가 등록하는 결합은 spec.equal_dofs / spec.rigid_links
         #     에 저장되며, 별도 시각화 정책 도입 전까지 그리지 않음.
 
-        # 5) 베이스 지점 마커 (검정 큰 점, 향후 ▼ 모양 sym 으로 교체 가능)
+        # 5) 베이스 지점 마커 — 지반 레벨(z≈base)만 ▼. 높이가 있는 고정점(코어
+        #    천장·슬래브·상층 등)은 ▼ 제외 → 일반 노드 점으로 보인다. [2026-06-03]
         if ops_model.fixed_nodes:
+            _bz = float(getattr(ops_model, 'base_z', 0.0) or 0.0)
             base_pos = np.array(
                 [ops_model.node_tags[nid] for nid in ops_model.fixed_nodes
-                 if nid in ops_model.node_tags],
+                 if nid in ops_model.node_tags
+                 and float(ops_model.node_tags[nid][2]) <= _bz + 200.0],
                 dtype=np.float32,
             )
             if len(base_pos) > 0:

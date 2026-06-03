@@ -8,8 +8,8 @@ floor_index 분포는 부재 타입별로 다르다 (설계서 4번 표 참조).
 |--------------|---------|----------------------------|
 | 모듈         | N       | k=0..N-1, z=k·H            |
 | 바닥패널     | N+1     | k=0..N,   z=k·H            |
-| 구조벽(병합) | N       | k=0..N-1, z=k·H            |
-| 구조벽(비병합)| N       | k=0..N-1, z=k·H + 200      |
+| 벽패널(병합) | N       | k=0..N-1, z=k·H            |
+| 벽패널(비병합)| N       | k=0..N-1, z=k·H + 200      |
 | 캔틸레버보   | N       | k=0..N-1, z=k·H + (H-200)  |
 | 캔틸레버슬래브(패널종속) | N+1 | k=0..N, z=k·H        |
 | 캔틸레버슬래브(모듈종속) | N+1 | k=0..N-1, z=k·H + 옥상 z=N·H |
@@ -202,7 +202,7 @@ def create_multi_floor_group(
     # 단계 3a: 본체 부재만 다루므로 sub_index=0.
     sub_idx = 0 if not is_dependent else _next_sub_index(scene, gid)
 
-    # 구조벽 비합체: pos.z 를 +SECTION_W_MM 만큼 올리고(이미 _floor_z_list 에서
+    # 벽패널 비합체: pos.z 를 +SECTION_W_MM 만큼 올리고(이미 _floor_z_list 에서
     # 적용됨) 추가로 height 를 -SECTION_W_MM 줄여 천장 높이를 유지.
     # 의도: 벽 하부 런너가 FP 보 상면에 정확히 안착, 벽 상부 런너가 모듈 천장보
     # 라인에 맞도록 (둘 다 단면 ±100mm 이 같은 면에서 만남, 겹침 X).
@@ -217,12 +217,15 @@ def create_multi_floor_group(
     # 미리 인덱싱해두면, 각 층 종속 부재의 parent_id 를 그 본체 id 로 박을 수 있다.
     # 이로써 UI 가 인식한 부모-자식 관계가 컴포넌트에 명시적으로 저장됨.
     parent_id_by_floor: Dict[int, int] = {}
+    parent_is_vmodule = False
     if is_dependent:
         for cid_existing, comp_existing in scene.components.items():
             if (getattr(comp_existing, 'group_id', 0) == gid
                     and getattr(comp_existing, 'sub_index', 0) == 0):
                 fi = getattr(comp_existing, 'floor_index', 0)
                 parent_id_by_floor[fi] = cid_existing
+                if comp_existing.comp_type == ComponentType.VERTICAL_MODULE:
+                    parent_is_vmodule = True
 
     for floor_idx, z in enumerate(z_list):
         pos = base_pos.copy()
@@ -240,12 +243,20 @@ def create_multi_floor_group(
         else:
             comp.floor_index = floor_idx
             comp.mid_beam_level = mid_beam_level
-        # 구조벽 병합 플래그
+        # 벽패널 병합 플래그
         if comp_type == ComponentType.STRUCT_WALL:
             comp.merge_with_panel = bool(merge_with_panel)
         # 종속 부재면 같은 층 본체의 comp_id 를 parent_id 로 박는다.
+        # [함정] 수직 3층 모듈 부모: 본체는 floor_index 0·1…(인스턴스 단위)뿐인데
+        # 종속 내벽은 실제 층마다 1장이라 floor_index 0..N-1 이다. 내벽 floor_index 를
+        # VERTICAL_MODULE_FLOORS(3)으로 나눠 그 내벽이 속한 수직모듈 인스턴스 번호로
+        # 환산해 부모를 찾는다(0·1·2층→인스턴스0, 3·4·5층→인스턴스1).
         if is_dependent:
-            comp.parent_id = parent_id_by_floor.get(comp.floor_index, 0)
+            if parent_is_vmodule:
+                vm_inst = comp.floor_index // VERTICAL_MODULE_FLOORS
+                comp.parent_id = parent_id_by_floor.get(vm_inst, 0)
+            else:
+                comp.parent_id = parent_id_by_floor.get(comp.floor_index, 0)
 
         comp_id = scene.add_component(comp)
         created_ids.append(comp_id)

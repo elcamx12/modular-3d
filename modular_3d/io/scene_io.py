@@ -115,11 +115,11 @@ def state_dict_to_scene(data: dict) -> Tuple[Scene, int]:
     # 스키마 버전 검사 — 현재 version=1. 호환성 미보장 버전은 경고만 출력.
     file_ver = int(data.get('version', 1))
     if file_ver != 1:
-        dprint('scene_io', f'[scene_io] 경고: 알 수 없는 스키마 버전 {file_ver} (지원 버전: 1). 호환성 미보장.')
+        pass
     raw_n = int(data.get('n_floors', 1))
     n_floors = snap_n_floors_to_three(raw_n)
     if n_floors != raw_n:
-        dprint('scene_io', f'[scene_io] 마이그레이션: 층수 {raw_n} → {n_floors} (3 의 배수 스냅)')
+        pass
     id_map: dict = {}  # 옛 id → 새 id (Scene.add_component 가 새 id 부여)
     for d in data.get('components', []):
         ct_str = d['comp_type']
@@ -130,7 +130,6 @@ def state_dict_to_scene(data: dict) -> Tuple[Scene, int]:
             continue
         cls = TYPE_TO_CLASS.get(ct)
         if cls is None:
-            dprint('scene_io', f'[scene_io] 알 수 없는 부재 타입: {ct_str} — 건너뜀')
             continue
         comp = cls(
             id=0,
@@ -172,7 +171,6 @@ def state_dict_to_scene(data: dict) -> Tuple[Scene, int]:
             new = id_map.get(old)
             if new is None:
                 n_missing += 1
-                dprint('scene_io', f'[scene_io] WARN: comp#{comp.id} 의 merged_fp_id={old} 매칭 실패 → None')
             comp.merged_fp_id = new
         if hasattr(comp, 'merged_wall_ids'):
             kept = []
@@ -181,17 +179,15 @@ def state_dict_to_scene(data: dict) -> Tuple[Scene, int]:
                     kept.append(id_map[w])
                 else:
                     n_missing += 1
-                    dprint('scene_io', f'[scene_io] WARN: comp#{comp.id} 의 merged_wall_ids 항목 {w} 매칭 실패 → 제거')
             comp.merged_wall_ids = kept
         if getattr(comp, 'parent_id', 0) > 0:
             old = comp.parent_id
             new = id_map.get(old, 0)
             if new == 0:
                 n_missing += 1
-                dprint('scene_io', f'[scene_io] WARN: comp#{comp.id} 의 parent_id={old} 매칭 실패 → 0')
             comp.parent_id = new
     if n_missing > 0:
-        dprint('scene_io', f'[scene_io] 총 {n_missing} 개 ID 재배선 실패 (구버전 JSON 또는 손상)')
+        pass
 
     # 실(Room) 복원 — 부재와 별개. id 는 새로 발급(저장 당시 id 무시).
     from modular_3d.model.room import Room
@@ -212,13 +208,14 @@ def state_dict_to_scene(data: dict) -> Tuple[Scene, int]:
     # 구버전 호환성 추정 (멱등 — 새 형식 scene 은 통과만)
     _auto_match_wall_to_fp(scene)
     _auto_estimate_parent_id(scene)
+    # 복사 중 종속이 끊겨 따로 노는 내벽을 형상으로 부모 모듈/패널에 자동 종속.
+    _auto_parent_orphan_interior_walls(scene)
 
     # 옵션 (나) — UI 측 조인트 기록을 항상 재계산 (구버전 씬·재배선 후 일관성 확보).
     # 직렬화된 기록이 있어도 부재 id 가 재배정되었으므로 다시 만든다.
     try:
         from modular_3d.model.joint_recorder import record_joints
         n_rec = record_joints(scene)
-        dprint('scene_io', f'[scene_io] 조인트 기록 재계산: {n_rec} 코너')
     except Exception as e:
         dprint('scene_io', f'[scene_io] 조인트 기록 재계산 실패: {e}')
 
@@ -257,7 +254,6 @@ def _auto_match_wall_to_fp(scene: Scene) -> int:
             scene.merge_wall_to_fp(cid, best_id)
             if scene.undo_stack and scene.undo_stack[-1].action_type == 'merge':
                 scene.undo_stack.pop()
-            dprint('scene_io', f'[scene_io] 자동 합체: wall #{cid} ↔ FP #{best_id} (xy 거리 {best_d:.0f}mm)')
             matched += 1
     return matched
 
@@ -287,5 +283,74 @@ def _auto_estimate_parent_id(scene: Scene) -> int:
             comp_d.parent_id = body
             fixed += 1
     if fixed > 0:
-        dprint('scene_io', f'[scene_io] 자동 부모 추정: {fixed} 종속 부재 parent_id 채움')
+        pass
+    return fixed
+
+
+# 내벽 자동 종속 — 부모 footprint 포함 판정 허용 오차(mm). 코너 좌표·앵커
+# 반올림 오차를 흡수할 정도로만 둔다(너무 크면 옆 모듈을 잘못 잡는다).
+_WALL_AUTO_PARENT_TOL_MM = 50.0
+
+
+def _auto_parent_orphan_interior_walls(scene: Scene) -> int:
+    """따로 노는 내벽(부모 없는 INTERIOR_WALL)을 형상으로 부모 모듈/패널에 종속.
+
+    복사 중 종속이 끊겨 독립으로 저장된 내벽을, 불러오기 시 그 형상을 포함하는
+    모듈/패널의 자식으로 자동 복구한다. 전제(사용자 보장): 내벽은 한 모듈/패널
+    내부에만 있고 경계를 걸치지 않는다.
+
+    [판정] 내벽 XY 바운딩박스가 부모 footprint 안에 들고(오차 허용) z 범위가
+    겹치는 부모 중, footprint 가 가장 작은(가장 꼭 맞는) 것을 부모로 고른다.
+    동률이면 모듈을 패널보다 우선한다(내벽은 모듈 내부 칸막이가 자연스러움).
+    부모의 group_id 를 공유하고 새 sub_index 를 발급해 종속 부재로 만든다.
+    Returns: 새로 종속시킨 내벽 수.
+    """
+    from modular_3d.model.core import ComponentType
+    from modular_3d.model.multi_floor import next_group_id, _next_sub_index
+    tol = _WALL_AUTO_PARENT_TOL_MM
+
+    # 부모 후보 = 본체(sub_index=0) 모듈/수직3층모듈/바닥패널. 모듈을 앞에 두어
+    # footprint 면적 동률 시 모듈이 선택되게 한다(strict '<' 비교라 선두 우선).
+    _prio = {ComponentType.MODULE: 0, ComponentType.VERTICAL_MODULE: 0,
+             ComponentType.FLOOR_PANEL: 1}
+    parents = [(cid, c) for cid, c in scene.components.items()
+               if c.comp_type in _prio and int(getattr(c, 'sub_index', 0)) == 0]
+    if not parents:
+        return 0
+    parents.sort(key=lambda t: _prio.get(t[1].comp_type, 2))
+
+    fixed = 0
+    for wid, wall in list(scene.components.items()):
+        if wall.comp_type != ComponentType.INTERIOR_WALL:
+            continue
+        if int(getattr(wall, 'parent_id', 0)) != 0:
+            continue  # 이미 종속됨
+        wmin, wmax = wall.get_bounding_box()
+        best = None
+        best_area = None
+        for pid, p in parents:
+            pmin, pmax = p.get_bounding_box()
+            # XY 포함 (오차 허용) — 내벽 bbox 가 부모 footprint 안에 들어야 한다.
+            if not (wmin[0] >= pmin[0] - tol and wmax[0] <= pmax[0] + tol
+                    and wmin[1] >= pmin[1] - tol and wmax[1] <= pmax[1] + tol):
+                continue
+            # z 범위 겹침 — 같은 층(또는 관통 모듈 내부) 판정.
+            if not (wmax[2] > pmin[2] and wmin[2] < pmax[2]):
+                continue
+            area = (pmax[0] - pmin[0]) * (pmax[1] - pmin[1])
+            if best_area is None or area < best_area:
+                best_area = area
+                best = (pid, p)
+        if best is None:
+            continue
+        pid, parent = best
+        gid = int(getattr(parent, 'group_id', 0))
+        if gid <= 0:
+            gid = next_group_id(scene)
+            parent.group_id = gid
+        wall.parent_id = pid
+        wall.group_id = gid
+        wall.sub_index = _next_sub_index(scene, gid)
+        wall.floor_index = int(getattr(parent, 'floor_index', 0))
+        fixed += 1
     return fixed

@@ -19,7 +19,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
     QTreeWidget, QTreeWidgetItem, QLabel, QComboBox,
     QTableWidget, QTableWidgetItem, QRadioButton, QButtonGroup,
-    QSplitter, QHeaderView, QAbstractItemView, QSizePolicy,
+    QSplitter, QHeaderView, QAbstractItemView, QSizePolicy, QStyle,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont, QColor, QBrush, QStandardItem, QStandardItemModel
@@ -28,6 +28,102 @@ from PyQt5.QtCore import Qt as _Qt
 # 한글 라벨 매핑 — 모델 단일 진실 원천 재사용
 from modular_3d.model import TYPE_NAMES, ComponentType  # noqa: E402
 from modular_3d.카탈로그.geometry import FLOOR_HEIGHT  # noqa: E402
+from modular_3d.ui.fonts import F_BODY, F_HEAD, ensure_fonts_loaded  # noqa: E402
+
+
+# ── 종합탭 톤 디자인 토큰 ─────────────────────────────────
+_PAGE_BG     = "#EDF2F7"
+_CARD_BG     = "#FFFFFF"
+_CARD_BORDER = "#DDE4ED"
+_HEAD_FG     = "#1F4E79"
+_BODY_FG     = "#1F2A37"
+_SUB_FG      = "#5B6573"
+
+# 패널 전체 스타일시트 — 구조해석·물량·운송 공유.
+# - QLabel(묻는 글, 예: "하중조합:", "그룹 정책:") → Paperlogy
+# - QComboBox/표/트리(값·데이터) → Freesentation, 흰 카드 톤
+# - 트리는 숫자 정렬 위해 별도 Consolas setFont 유지(스타일시트보다 우선).
+_ANALYSIS_QSS = (
+    f"AnalysisPanel {{ background: {_PAGE_BG}; }}"
+    "QLabel {"
+    f" font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 18px; font-weight: 700; color: {_HEAD_FG};"
+    " background: transparent; }"
+    "QComboBox {"
+    f" font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 18px; color: {_BODY_FG}; padding: 6px 10px;"
+    f" border: 1px solid {_CARD_BORDER}; border-radius: 6px;"
+    " background: white; min-height: 28px; }"
+    "QRadioButton {"
+    f" font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 18px; font-weight: 700; color: {_HEAD_FG};"
+    " background: transparent; }"
+    "QTreeWidget, QTableWidget {"
+    f" font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+    f" color: {_BODY_FG};"
+    f" background: {_CARD_BG}; border: 1px solid {_CARD_BORDER};"
+    " border-radius: 8px; }"
+    "QHeaderView::section {"
+    f" font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 17px; font-weight: 700; color: {_HEAD_FG};"
+    f" background: {_PAGE_BG}; border: none;"
+    f" border-bottom: 1px solid {_CARD_BORDER}; padding: 6px 8px;"
+    " }"
+)
+
+
+class _AlignedHeader(QHeaderView):
+    """컬럼별 헤더 텍스트 정렬을 *직접 그려* 보장하는 헤더.
+
+    [2026-06-02] 스타일시트(QHeaderView::section)가 적용되면 Qt 는 헤더의
+    setTextAlignment(role) 을 무시하고 라벨을 왼쪽으로 그린다. QSS `text-align`
+    은 QHeaderView 에 효과가 없다(QPushButton/QProgressBar 전용). 그래서 부재
+    트리의 숫자 열(L·N·V·M) 헤더가 아래 값(오른쪽 정렬)과 어긋났다.
+    → 기본 그리기로 배경/하단선을 그린 뒤, 라벨 영역을 헤더 배경색으로 덮고
+       지정 정렬로 다시 그려서 스타일시트와 무관하게 정렬을 강제한다.
+    """
+
+    def __init__(self, parent=None, *, font_px: int = 17):
+        super().__init__(Qt.Horizontal, parent)
+        self._aligns: Dict[int, int] = {}
+        self._hbg = QColor(_PAGE_BG)        # 헤더 배경(= QSS background)
+        self._hfg = QColor(_HEAD_FG)        # 헤더 글자색(= QSS color)
+        self._hline = QColor(_CARD_BORDER)  # 헤더 하단 경계선(= QSS border-bottom)
+        # QSS 와 동일한 헤더 폰트(Paperlogy Bold) — 직접 그릴 때 일치시킴.
+        #   font_px 로 패널별 헤더 크기를 맞춘다(구조해석 17 / 물량 14 등).
+        self._hfont = QFont(F_HEAD)
+        self._hfont.setPixelSize(font_px)
+        self._hfont.setBold(True)
+
+    def set_column_alignment(self, col: int, align: int) -> None:
+        self._aligns[col] = int(align)
+        self.updateSection(col)
+
+    def paintSection(self, painter, rect, logicalIndex):  # noqa: N802
+        # [2026-06-02] 기본 그리기(super)를 호출하지 않고 배경·하단선·라벨을 *전부
+        #   직접* 그린다. 이전엔 super 가 라벨을 왼쪽으로 그린 뒤 덮어쓰려 했으나
+        #   그 덮기·재출력이 화면에 반영되지 않아(헤더가 계속 왼쪽으로 보임) 방식을
+        #   바꿈. 직접 그리면 경쟁하는 왼쪽 라벨이 없어 지정 정렬로만 그려진다.
+        painter.save()
+        # 배경(= QSS background)
+        painter.fillRect(rect, self._hbg)
+        # 하단 1px 경계선(= QSS border-bottom)
+        painter.setPen(self._hline)
+        painter.drawLine(rect.left(), rect.bottom(), rect.right(), rect.bottom())
+        # 라벨 — 컬럼별 지정 정렬(없으면 왼쪽)
+        model = self.model()
+        text = model.headerData(logicalIndex, Qt.Horizontal, Qt.DisplayRole) \
+            if model is not None else None
+        if text not in (None, ""):
+            align = self._aligns.get(logicalIndex, int(Qt.AlignLeft))
+            # 숫자 셀(QStyledItemDelegate)과 같은 좌우 여백(textMargin)을 써서
+            #   헤더 글자 오른쪽 끝과 숫자 오른쪽 끝(일의 자리)을 같은 선에 맞춘다.
+            tm = self.style().pixelMetric(QStyle.PM_FocusFrameHMargin, None, self) + 1
+            painter.setPen(self._hfg)
+            painter.setFont(self._hfont)
+            painter.drawText(rect.adjusted(tm, 0, -tm, 0),
+                             int(align) | int(Qt.AlignVCenter), str(text))
+        painter.restore()
 
 
 # ─────────────────────────────────────────────────────────
@@ -47,7 +143,7 @@ from modular_3d.analysis.member_roles import (  # noqa: E402
 
 # 컴포넌트 타입(한글) 정렬 — RC 코어 계열을 맨 아래로.
 _COMP_TYPE_ORDER = [
-    '모듈', '수직 3층 모듈', '바닥패널', '구조벽',
+    '모듈', '수직 3층 모듈', '바닥패널', '벽패널',
     '캔틸레버보', '캔틸레버슬래브', '중간보', '중간기둥',
     'RC 코어', '코어 슬래브',
 ]
@@ -173,8 +269,11 @@ class AnalysisPanel(QWidget):
         # [P6b] 단면 설계 -1-1 변형 라벨(comp_id→'모듈A-1-1'). 비면 기본 'A-1' 사용.
         self._section_type_labels: Dict[int, str] = {}
 
+        ensure_fonts_loaded()  # Paperlogy/Freesentation 등록 보장
+        self.setStyleSheet(_ANALYSIS_QSS)
         root = QVBoxLayout(self)
-        root.setContentsMargins(4, 4, 4, 4)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(8)
 
         # ── 하중조합 콤보 (2026-05-13 표기 명확화) ──────────
         # [2026-05-27] 운송 sub-탭에서 hide 가능하도록 행 전체를 QWidget 으로 감쌈.
@@ -219,25 +318,39 @@ class AnalysisPanel(QWidget):
         # 사용자 정책: 가로 스크롤 비활성. 글씨 짤리지 않게 패널 자체
         # minimumWidth 를 내용 폭에 맞춰 동적으로 늘림 (_fit_panel_to_tree).
         self._tree = QTreeWidget()
+        # [2026-06-02] 정렬을 직접 그리는 전용 헤더로 교체 — 스타일시트가 적용된
+        #   기본 헤더는 setTextAlignment 를 무시해 숫자 열 헤더가 왼쪽으로 그려진다.
+        self._tree.setHeader(_AlignedHeader(self._tree))
         self._tree.setColumnCount(5)
         self._tree.setHeaderLabels(["부재", "L (mm)", "N (kN)", "V (kN)", "M (kN·m)"])
         self._tree.setIndentation(16)
+        # [2026-06-02] 부재 트리 글자 키움 9 → 12pt — 가독성 + 패널 폭 자동 확대
+        #   (_fit_panel_to_tree 가 폰트 메트릭으로 폭 계산 → 3D 카드는 그만큼 줄어듦).
         tf = QFont("Consolas")
-        tf.setPointSize(9)
+        tf.setPointSize(11)   # 사용자 요청으로 추가 축소 — M 컬럼 잘림 완화
         self._tree.setFont(tf)
-        # [2026-06-01] 모든 컬럼 ResizeToContents — 부재명(col0)도 *내용폭 고정*.
-        # 이전 col0=Stretch 는 패널이 내용보다 넓을 때 부재명 칸이 그 여분을 흡수해
-        # 실제 텍스트(가장 긴 행 = 들여쓰기+텍스트)보다 과도하게 넓어졌다(사용자 지적).
-        # 내용폭 고정으로 부재명 칸이 가장 긴 행 길이에 딱 맞고 더 안 늘어난다.
+        # [2026-06-02] 부재명(col0)은 폭 제한(Interactive) + 긴 이름 "…" 줄임.
+        #   col0 가 내용폭만큼 넓어지면 L·N·V·M 이 오른쪽으로 밀려 M 이 잘렸다.
+        #   col0 를 capped 폭으로 고정해 숫자 열을 왼쪽으로 당기고, 숫자 열 1~4 는
+        #   내용폭(ResizeToContents)으로 값·헤더가 같은 열에 정렬되게 한다.
         hdr = self._tree.header()
-        for c in range(5):
+        hdr.setSectionResizeMode(0, QHeaderView.Interactive)
+        for c in range(1, 5):
             hdr.setSectionResizeMode(c, QHeaderView.ResizeToContents)
         hdr.setStretchLastSection(False)
+        # [2026-06-02] 헤더 정렬을 숫자 셀과 맞춤 — 값은 오른쪽 정렬인데 헤더는
+        #   왼쪽으로 그려져 어긋났다. 전용 헤더(_AlignedHeader)가 직접 그려서
+        #   숫자 열(1~4) 은 오른쪽, 부재명(0) 은 왼쪽으로 정렬한다.
+        if isinstance(hdr, _AlignedHeader):
+            hdr.set_column_alignment(0, Qt.AlignLeft)
+            for c in range(1, 5):
+                hdr.set_column_alignment(c, Qt.AlignRight)
         self._tree.setUniformRowHeights(True)
         self._tree.setAlternatingRowColors(True)
         # 가로 스크롤 비활성 — 패널 폭이 내용에 맞춰 늘어나는 정책
         self._tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._tree.setTextElideMode(Qt.ElideNone)
+        # 긴 부재명은 "…" 로 줄여 숫자 열을 침범하지 않게.
+        self._tree.setTextElideMode(Qt.ElideRight)
         self._tree.currentItemChanged.connect(self._on_tree_item_changed)
         member_lay.addWidget(self._tree)
 
@@ -1062,14 +1175,46 @@ class AnalysisPanel(QWidget):
                     cw[c] = w
             for k in range(it.childCount()):
                 stk.append((it.child(k), d + 1))
-        col_total = sum(cw)
+        # [2026-06-02] col0(부재명) 폭 상한 — 긴 그룹명이 L·N·V·M 을 오른쪽으로
+        #   밀어 M 이 잘리던 문제 해결. 상한을 넘으면 "…" 로 줄여 표시(ElideRight).
+        #   숫자 열(1~4)은 내용폭 그대로라 값·헤더가 같은 열에 정렬된다.
+        # [2026-06-02] 상한 300 → 200: 부재명 열을 더 좁혀 숫자 열(L·N·V·M)을 왼쪽으로
+        #   당긴다. 패널을 넓히면 창 폭 부족 시 오른쪽(M·스크롤바)이 잘리므로, 내용을
+        #   왼쪽으로 당기는 쪽이 창 폭과 무관하게 M·스크롤바 간격을 확보한다.
+        COL0_MAX = 200
+        cw[0] = min(cw[0], COL0_MAX)
+        # 측정한 폭을 실제 컬럼에 반영 — col0 는 Interactive 라 직접 폭 지정.
+        tree.setColumnWidth(0, int(cw[0]))
+        # [2026-06-02] 컬럼 폭 합을 폰트 추정(cw)이 아니라 *Qt 실제 폭*으로 계산한다.
+        #   진단 결과 ResizeToContents 실제 폭(합 568)이 폰트 추정(합 489)보다 79px
+        #   넓어, 추정 기준 패널이 항상 모자라 M 열이 스크롤바 밑으로 잘렸다.
+        #   실제 폭으로 잡으면 패널이 내용+스크롤바+여백을 정확히 담는다.
+        col_total = sum(tree.columnWidth(c) for c in range(ncol))
         frame_pad = 2 * tree.frameWidth()
+        # [2026-06-02] 세로 스크롤바 폭을 *항상* 미리 확보한다.
+        #   기존엔 isVisible() 일 때만 더했는데, fit 호출 시점엔 트리가 아직
+        #   채워지기 전이라 스크롤바가 숨어 있다가 나중에 부재 목록이 길어지면
+        #   생겨서 그 폭(~17px)만큼 M(마지막) 열이 잘렸다. 항상 예약해 해결.
         vbar = tree.verticalScrollBar()
-        if vbar is not None and vbar.isVisible():
-            frame_pad += vbar.sizeHint().width()
+        sb_w = vbar.sizeHint().width() if vbar is not None else 0
+        if sb_w <= 0:
+            sb_w = 18   # 스타일에 따라 0 이 나오면 표준 폭으로 보정
+        # [2026-06-02] M(마지막) 열과 세로 스크롤바 사이 여백.
+        #   스크롤바 폭만 예약하면 M 열이 스크롤바에 바짝 붙어 잘려 보인다.
+        #   추가 여백(SB_GAP)을 둬 마지막 열이 스크롤바와 떨어지게 한다.
+        SB_GAP = 20
+        frame_pad += sb_w + SB_GAP
         tree_min = max(200, col_total + frame_pad)
         tree.setMinimumWidth(tree_min)
-        panel_min = tree_min + 8   # root 좌우 마진(4+4)
+        # [2026-06-02] 구조해석 우측 패널 최소 폭 바닥값 — 3D 카드를 확실히 좁힘.
+        #   부재 트리 텍스트가 짧아 내용폭만으론 패널이 충분히 안 넓어지던 문제 보정.
+        # tree_min 에 이미 프레임+스크롤바가 포함됨. 여기에 root 좌우 마진(8+8=16)
+        #   + 안전 여유(8) 를 더해 M 열 끝이 확실히 보이게 한다.
+        # [2026-06-02] 바닥값 700 → 520: 패널을 '내용 + 스크롤바 + 여백' 만큼만 잡는다.
+        #   바닥값이 너무 크면 창 폭이 부족할 때 패널이 창 밖으로 밀려 M·스크롤바가
+        #   잘렸다. tree_min(=col_total+프레임+스크롤바+여백)이 floor 보다 크면 그 값을
+        #   쓰므로, 내용이 많으면 자동으로 넓어지고 적으면 창에 들어오게 좁아진다.
+        panel_min = max(tree_min + 24, 520)
         # 부모 우측 pane 을 내용폭으로 고정(minimumWidth 만으론 이미 넓어진 폭이
         # 안 줄어듦). 직접 측정이라 호출마다 같은 값 → 진동 없음.
         # 숨은 서브탭은 set_visible_subtabs 에서 가로 Ignored 처리되어 패널 최소폭을

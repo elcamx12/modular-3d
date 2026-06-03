@@ -898,6 +898,7 @@ def _pack_items_bb(
     # ── 1단계 — 모듈만 V2 호출 (패널 0개) ──
     # V2 의 모듈 빠른 경로 (캐시) 활용. 6m 합산 예외도 V2 가 처리.
     module_trips: List[Trip] = []
+    module_blocked: list = []
     if modules:
         from .packer_meta import pack_all_seeds_v2
         m_pack, _ = pack_all_seeds_v2(
@@ -905,6 +906,18 @@ def _pack_items_bb(
             cost_mode=cost_mode, eco_options=economics, apply_vnd=False,
         )
         module_trips = list(m_pack.trips)
+        # [2026-06-03 버그수정] 모듈 패커가 못 실은 모듈(m_pack.blocked)을 버리지
+        #   않고 결과 blocked 로 전달. 과거엔 blocked=[] 로 덮어써, 트럭 한도(중량/
+        #   길이/현장 GVW) 초과로 못 실린 모듈이 "blocked 0건"인 채 회차에서 조용히
+        #   증발했다(사용자: 모듈 회차 0 인데 blocked 0). 이제 사유와 함께 노출된다.
+        module_blocked = list(getattr(m_pack, 'blocked', []) or [])
+        # 안전망 — 패커가 blocked 에 안 담고 누락한 모듈도 직접 보강.
+        placed = {id(it) for tr in module_trips for it in tr.items}
+        already = {id(b[0]) for b in module_blocked if b}
+        for m in modules:
+            if id(m) not in placed and id(m) not in already:
+                compat = _module_compatible_trucks(trucks)
+                module_blocked.append((m, _diagnose_blocked(m, compat, site)))
 
     # ── 2단계 — 패널만 BB ──
     panel_trips: List[Trip] = []
@@ -941,7 +954,7 @@ def _pack_items_bb(
     for new_no, trip in enumerate(all_trips, start=1):
         trip.trip_no = new_no
 
-    result = PackResult(trips=all_trips, blocked=[])
+    result = PackResult(trips=all_trips, blocked=list(module_blocked))
 
     # 디버그 — balance_trips 전후 좌표 비교 (BB_TRACE 환경/UI 활성 시)
     from . import packer_bb as _bb

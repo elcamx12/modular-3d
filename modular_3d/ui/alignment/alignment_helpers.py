@@ -107,11 +107,13 @@ def allowed_parent_types(dep_type):
                     ComponentType.MID_BEAM,
                     ComponentType.MID_COLUMN):
         return {ComponentType.MODULE}
-    # 내벽: 모듈·바닥패널·캔틸레버슬래브 위에 배치 가능.
+    # 내벽: 모듈·수직3층모듈·바닥패널·캔틸레버슬래브 위에 배치 가능.
+    # 수직모듈도 부모 후보다 — 종속 시 multi_floor 가 실제 층마다 내벽을 복제하고
+    # floor_index//3 으로 해당 수직모듈 인스턴스에 연결한다.
     if dep_type == ComponentType.INTERIOR_WALL:
-        return {ComponentType.MODULE, ComponentType.FLOOR_PANEL,
-                ComponentType.CANTILEVER_SLAB}
-    # 구조벽은 진정한 종속이 아니라 '바닥패널과 합체' 대상 선택용 — DEPENDENCY_PICK
+        return {ComponentType.MODULE, ComponentType.VERTICAL_MODULE,
+                ComponentType.FLOOR_PANEL, ComponentType.CANTILEVER_SLAB}
+    # 벽패널은 진정한 종속이 아니라 '바닥패널과 합체' 대상 선택용 — DEPENDENCY_PICK
     # 상태를 재사용해 사용자가 합체할 FP 를 명시적으로 클릭하게 한다.
     if dep_type == ComponentType.STRUCT_WALL:
         return {ComponentType.FLOOR_PANEL}
@@ -197,7 +199,7 @@ def iter_component_rects(comp, layer):
             yield column_xy(comp.column), 'column'
 
     elif isinstance(comp, Core):
-        # RC 코어벽 — 평면에서는 두께×길이 직사각형 (구조벽과 동일한 'wall' 역할).
+        # RC 코어벽 — 평면에서는 두께×길이 직사각형 (벽패널과 동일한 'wall' 역할).
         # 양 레이어(상/하)에 그림.
         yield xy_bbox(comp), 'wall'
 
@@ -252,7 +254,7 @@ def component_layers(comp, scene, child_parent):
             return {LAYER_TOP}
         return {LAYER_BOTTOM}
     if isinstance(comp, Core):
-        # 코어벽은 구조벽처럼 양 레이어 모두 보임 (단면이 천장·바닥 둘 다 횡단).
+        # 코어벽은 벽패널처럼 양 레이어 모두 보임 (단면이 천장·바닥 둘 다 횡단).
         return {LAYER_BOTTOM, LAYER_TOP}
     if isinstance(comp, CoreSlab):
         # 코어 슬래브는 천장 슬래브 — 하부 레이어에 그림 (다른 슬래브들과 동일).

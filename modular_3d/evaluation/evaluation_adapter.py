@@ -189,7 +189,7 @@ def _compute_floor1_effective_area(comps: List[Component]) -> Dict[str, float]:
         perimeter = 2.0 * (w + d)
         sub_mm2 += perimeter * t - 4.0 * t * t
 
-    # 1F 의 구조벽 / 내벽 / 코어벽 / 중간기둥
+    # 1F 의 벽패널 / 내벽 / 코어벽 / 중간기둥
     for c in comps:
         f = int(getattr(c, "floor_index", 0))
         if f != floor:
@@ -268,7 +268,7 @@ def _build_members_from_section_types(
         elif isinstance(rep, (FloorPanel, StructWall, InteriorWall)):
             secs = _collect_panel_sections(rep)
             cls_label = ("바닥패널" if isinstance(rep, FloorPanel)
-                         else "구조벽" if isinstance(rep, StructWall)
+                         else "벽패널" if isinstance(rep, StructWall)
                          else "내벽")
             panels_by_type.append({
                 "class_label": label or cls_label,
@@ -367,7 +367,7 @@ def _build_members(comps: List[Component]) -> Dict[str, Any]:
     }
     _PANEL_CLASS_KO = {
         FloorPanel: "바닥패널",
-        StructWall: "구조벽",
+        StructWall: "벽패널",
         InteriorWall: "내벽",
     }
     panel_buckets: Dict[Tuple[str, int, int, Tuple[str, ...]], int] = {}
@@ -571,7 +571,7 @@ def _enrich_with_sections(modules_by_type: List[Dict[str, Any]],
     # 패널 — (class, 폭mm, 깊이mm) 버킷별 첫 인스턴스에서 단면 추출.
     pnl_section_cache: Dict[Tuple[str, int, int], List[str]] = {}
     cls_ko_map = {
-        FloorPanel: "바닥패널", StructWall: "구조벽",
+        FloorPanel: "바닥패널", StructWall: "벽패널",
         InteriorWall: "내벽", CoreSlab: "코어슬래브",
     }
     for c in comps:

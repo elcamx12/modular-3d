@@ -489,7 +489,6 @@ def _step_register_members(om: OpsModel, am: AnalysisModel) -> None:
                 dprint('ops_builder', f'[ops_builder] truss-only nid={nid} fix 실패: {e}')
                 # self_check 가 가시화하도록 누적.
                 om.registration_failures.append((nid, f'truss-only OOP fix: {e}'))
-        dprint('ops_builder', f'[ops_builder] truss-only 노드 {len(truss_only_nids)}개 회전 fix, 그 중 {n_oop_fixed}개는 면외 변위도 자동 fix')
 
 
 def _step_fix_base_nodes(om: OpsModel, am: AnalysisModel) -> None:
@@ -529,6 +528,16 @@ def _step_fix_base_nodes(om: OpsModel, am: AnalysisModel) -> None:
                 n = am.nodes[nid]
                 if abs(n.coord[2] - z_min) <= _SAME_NODE_TOL:
                     base_set.add(n.id)
+    # [2026-06-03] 코어 노드 전부 6DOF 고정 — 코어를 '바닥처럼 안 움직이는' 고정
+    # 경계로 본다(트러스 격자 폐기). role 이 core_ 로 시작하는 모든 부재(슬래브 보
+    # 포함)의 노드를 고정해 코어가 강체 지지가 되고, R09(코어=master)로 묶인 모듈의
+    # 횡변위가 구속된다. R09 가 코어를 master(retained)로 쓰므로 fix 와 충돌 없음.
+    for m in am.members.values():
+        if str(getattr(m, 'role', '') or '').startswith('core_'):
+            for nid in (m.n1, m.n2):
+                if nid in am.nodes:
+                    base_set.add(nid)
+
     from modular_3d.analysis.model_spec import FixRec as _FR
     for nid in sorted(base_set):
         ops.fix(nid, 1, 1, 1, 1, 1, 1)
@@ -634,7 +643,10 @@ def build_ops_model(analysis_model: AnalysisModel, scene=None,
         from modular_3d.analysis.model_spec import FixRec
         n_rot_fix = 0
         for nr in om.spec.nodes:
-            if nr.role in ('panel_z_route', 'core_proj'):
+            # [2026-06-03] core_proj 제외 — 코어 사영점은 코어 노드라
+            # _step_fix_base_nodes 가 이미 6DOF 전체 고정한다. 여기서 부분 회전
+            # fix 를 또 걸면 SP 중복(failed to add SP) 충돌. panel_z_route 만 처리.
+            if nr.role == 'panel_z_route':
                 try:
                     ops.fix(nr.tag, 0, 0, 0, 1, 1, 1)
                     # spec 거울 기록.
@@ -647,7 +659,6 @@ def build_ops_model(analysis_model: AnalysisModel, scene=None,
                     om.registration_failures.append(
                         (nr.tag, f'z_route 회전 fix: {e}')
                     )
-        dprint('ops_builder', f'[ops_builder] z_route 중간 노드 {n_rot_fix}개 회전 자유도 자동 fix')
 
     # 7) 강체 다이어프램 — 유지(다이어프램 시각화 필요).
     _build_diaphragms_and_core(om)
@@ -755,15 +766,10 @@ def _snap_dependent_cantilever_to_module(am: AnalysisModel, scene) -> None:
                     best_d = d
                     best_pair = (cnid, mnid)
         if best_pair is None:
-            print(f'[DBG snap-cant] comp#{cid} 부모 모듈 노드 페어 못찾음')
             continue
         if best_d < 1.0:
-            print(f'[DBG snap-cant] comp#{cid} 이미 정렬됨(거리 {best_d:.1f}mm) — 건너뜀')
             continue
         if best_d > 400.0:
-            print(f'[DBG snap-cant] comp#{cid} 거리 {best_d:.0f}mm > 400 — 정렬 건너뜀')
-            dprint('n', f'  캔틸 노드 좌표: {[am.nodes[n].coord.tolist() for n in cant_nids]}')
-            print(f'  모듈 노드 좌표(가장 가까운): {am.nodes[best_pair[1]].coord.tolist()}')
             continue
         cnid, mnid = best_pair
         # 캔틸 보 전체를 평행 이동 — 보 길이 유지하면서 한 끝이 모듈 노드와
@@ -773,7 +779,6 @@ def _snap_dependent_cantilever_to_module(am: AnalysisModel, scene) -> None:
             am.nodes[nid].coord = am.nodes[nid].coord + delta
         kind_label = ('캔틸레버보' if ct == ComponentType.CANTILEVER_BEAM
                       else '캔틸레버슬래브')
-        dprint('ops_builder', f'[ops_builder] 종속 {kind_label} 평행 이동: comp#{cid} delta={delta.tolist()} (원래 거리 {best_d:.0f}mm)')
 
 
 def _build_diaphragms_and_core(om: OpsModel) -> None:
@@ -797,7 +802,7 @@ def _build_diaphragms_and_core(om: OpsModel) -> None:
     am_local = om.analysis_model
     if am_local is None or not getattr(am_local, 'diaphragms', None):
         if _DBG:
-            dprint('DBG-DIA', '[DBG-DIA] am.diaphragms 비어있음 → 다이어프램 등록 스킵')
+            pass
         return
 
     # [정책 2026-05-18 split 노드 좌표 기반 자동 흡수 — 2 단계]
@@ -885,7 +890,7 @@ def _build_diaphragms_and_core(om: OpsModel) -> None:
         # master 가 ops.node 에 등록돼 있는지 확인 (am.nodes 에 있으면 _step_register_nodes 에서 등록됨)
         if master not in om.node_tags:
             if _DBG:
-                dprint('DBG-DIA', f'[DBG-DIA] master {master} 미등록 — 스킵 (comp_id={d.comp_id})')
+                pass
             continue
         # [정책 2026-05-18 시각화-해석 분리]
         # 시각화용 슬레이브(viz_slaves)는 base-fix 노드 포함 → spec.diaphragms 에
@@ -897,7 +902,7 @@ def _build_diaphragms_and_core(om: OpsModel) -> None:
                       if s in om.node_tags and s != master]
         if len(viz_slaves) < 3:
             if _DBG:
-                dprint('DBG-DIA', f'[DBG-DIA] comp_id={d.comp_id} z={d.z:.0f} viz 슬레이브 {len(viz_slaves)}개 → 스킵')
+                pass
             continue
         fixed_set = set(om.fixed_nodes)
         ops_slaves = [s for s in viz_slaves if s not in fixed_set]
@@ -947,7 +952,6 @@ def _build_diaphragms_and_core(om: OpsModel) -> None:
                     break
         n_dia += 1
 
-    dprint('ops_builder', f'[ops_builder][diaphragm] 컴포넌트별 다이어프램 {n_dia}개 등록')
 
 
 # ── 통계 / 자체 점검 ──────────────────────────────────────────

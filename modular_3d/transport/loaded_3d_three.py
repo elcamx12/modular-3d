@@ -552,7 +552,7 @@ const COLORS = {
   floor_beam: 0x2266cc,  // 바닥보/하부보 (파랑)
   ceil_beam:  0x5599dd,  // 천장보/상부보 (하늘)
   slab:       0xd2d2be,  // 슬래브 (베이지)
-  wall:       0xd0d0d0,  // 구조벽 (회색)
+  wall:       0xd0d0d0,  // 벽패널 (회색)
   wall_nl:    0x7799aa,  // 비내력벽 (청회색)
   wall_seg:   0x7799aa,  // 벽 세그먼트 = 비내력벽 색
   core:       0xc0c0c0,  // 코어 (밝은 회색)

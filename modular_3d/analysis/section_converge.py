@@ -710,7 +710,7 @@ def _is_indep_steel_comp(scene, cid: int) -> bool:
         return False
     if int(getattr(c, 'sub_index', 0) or 0) != 0:
         return False
-    # 바닥패널에 흡수된 구조벽(merged_fp_id)은 별도 타입이 아니라 부모 패널 구성에
+    # 바닥패널에 흡수된 벽패널(merged_fp_id)은 별도 타입이 아니라 부모 패널 구성에
     # 포함된다 → 단면설계 타입 목록에서 제외(라벨은 배치설계 표시용으로만 부여).
     if getattr(c, 'merged_fp_id', None):
         return False

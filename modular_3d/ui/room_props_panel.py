@@ -21,6 +21,43 @@ from PyQt5.QtWidgets import (
 )
 
 from modular_3d.카탈로그.room_types import ROOM_TYPES, get_room_type
+from modular_3d.ui.fonts import F_BODY, F_HEAD, ensure_fonts_loaded
+
+
+# ── 종합탭 톤 디자인 토큰 ─────────────────────────────────
+_PAGE_BG     = "#EDF2F7"
+_CARD_BG     = "#FFFFFF"
+_CARD_BORDER = "#DDE4ED"
+_HEAD_FG     = "#1F4E79"
+_BODY_FG     = "#1F2A37"
+_SUB_FG      = "#5B6573"
+_ACCENT      = "#1F4E79"
+_ACCENT_HOV  = "#163A5E"
+_ACCENT_SOFT = "#F5F8FF"
+
+# 패널 전체 스타일시트 — GroupBox/Label/입력/버튼 폰트·색 규칙.
+# - QGroupBox 타이틀 / QLabel(묻는 글) → Paperlogy
+# - QLineEdit / QComboBox(값·입력) → Freesentation
+_ROOM_QSS = (
+    "QGroupBox {"
+    f" font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 15px; font-weight: 800; color: {_HEAD_FG};"
+    f" background: {_CARD_BG}; border: 1px solid {_CARD_BORDER};"
+    " border-radius: 10px; margin-top: 14px;"
+    " padding: 14px 12px 12px 12px; }"
+    "QGroupBox::title { subcontrol-origin: margin; left: 12px;"
+    f" padding: 0 6px; background: {_CARD_BG};"
+    " }"
+    "QLabel {"
+    f" font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 13px; font-weight: 700; color: {_HEAD_FG};"
+    " background: transparent; }"
+    "QLineEdit, QComboBox {"
+    f" font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 13px; color: {_BODY_FG}; padding: 4px 8px;"
+    f" border: 1px solid {_CARD_BORDER}; border-radius: 6px;"
+    " background: white; min-height: 22px; }"
+)
 
 
 class RoomPropertiesPanel(QWidget):
@@ -39,10 +76,16 @@ class RoomPropertiesPanel(QWidget):
         self.clear()
 
     def _build_ui(self):
+        ensure_fonts_loaded()  # Paperlogy/Freesentation 등록 보장
+        self.setStyleSheet(
+            f"RoomPropertiesPanel {{ background: {_PAGE_BG}; }}" + _ROOM_QSS
+        )
         v = QVBoxLayout(self)
-        v.setContentsMargins(4, 4, 4, 4)
+        v.setContentsMargins(12, 12, 12, 12)
+        v.setSpacing(8)
         box = QGroupBox("실 속성")
         bv = QVBoxLayout(box)
+        bv.setSpacing(8)
 
         # 용도
         type_row = QHBoxLayout()
@@ -71,25 +114,49 @@ class RoomPropertiesPanel(QWidget):
         sdl_row.addWidget(QLabel("kN/㎡"))
         bv.addLayout(sdl_row)
 
-        # 분류 안내(읽기)
+        # 분류 안내(읽기) — KDS 기준·기본값 정보 → Freesentation.
         self._info = QLabel("")
-        self._info.setStyleSheet("color:#666; font-size:10px;")
+        self._info.setStyleSheet(
+            f"font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+            f" color: {_SUB_FG}; font-size: 11px; background: transparent;"
+        )
         self._info.setWordWrap(True)
         bv.addWidget(self._info)
         self._type_combo.currentIndexChanged.connect(self._on_type_changed)
 
-        # 버튼
+        # 버튼 — 적용(액센트 채움) / 삭제(빨강 외곽). 둘 다 Freesentation.
         btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
         self._apply_btn = QPushButton("적용")
         self._del_btn = QPushButton("삭제")
+        self._apply_btn.setStyleSheet(
+            "QPushButton {"
+            f" font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+            f" font-size: 13px; font-weight: 700; color: white;"
+            f" background: {_ACCENT}; border: none; border-radius: 8px;"
+            " padding: 8px 16px; }"
+            f"QPushButton:hover {{ background: {_ACCENT_HOV}; }}"
+        )
+        self._del_btn.setStyleSheet(
+            "QPushButton {"
+            f" font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+            " font-size: 13px; font-weight: 700; color: #C00000;"
+            " background: white; border: 1px solid #C00000;"
+            " border-radius: 8px; padding: 8px 16px; }"
+            "QPushButton:hover { background: #C00000; color: white; }"
+        )
         self._apply_btn.clicked.connect(self._on_apply)
         self._del_btn.clicked.connect(self._on_delete)
         btn_row.addWidget(self._apply_btn)
         btn_row.addWidget(self._del_btn)
         bv.addLayout(btn_row)
 
+        # 빈 상태 안내 — 안내문 → Paperlogy.
         self._empty = QLabel("실 모드에서 실을 클릭해 선택하세요.")
-        self._empty.setStyleSheet("color:#999;")
+        self._empty.setStyleSheet(
+            f"font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+            f" color: {_SUB_FG}; font-size: 13px; background: transparent;"
+        )
         self._empty.setWordWrap(True)
         bv.addWidget(self._empty)
 

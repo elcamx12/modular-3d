@@ -62,7 +62,6 @@ class JointEditController:
         오버라이드 반영 결과를 즉시 와이어프레임에 반영하기 위함.
         """
         if not self.window._scene.components:
-            dprint('JOINT-EDIT', '[JOINT-EDIT] Scene 이 비어 있음 — 프리뷰 생략')
             return
         v = self.window._viewer
         # [2026-05-25 D4 수정] ops 뷰가 이미 활성이어도 _joint_om 이 아직 없으면
@@ -70,7 +69,6 @@ class JointEditController:
         # 그렇지 않으면 픽킹이 None 모델을 참조해 무반응.
         if (not force and self._joint_om is not None
                 and hasattr(v, 'is_ops_view_active') and v.is_ops_view_active()):
-            dprint('JOINT-EDIT', '[JOINT-EDIT] ops 뷰 이미 활성 — 프리뷰 재실행 생략')
             return
         try:
             from modular_3d.analysis.topology import build_analysis_model
@@ -89,7 +87,6 @@ class JointEditController:
             # 접합 픽킹을 위해 마지막 빌드 결과 보관.
             self._joint_om = om_view
             self._joint_am = am
-            dprint('JOINT-EDIT', '[JOINT-EDIT] spec 빌드 완료 — solve 생략. 와이어프레임 표시.')
             v.show_ops_view(om_view)
             # [Phase 5] 범례 동적 갱신 — spec 의 모든 결합 레코드에서 rule_id 수집.
             try:

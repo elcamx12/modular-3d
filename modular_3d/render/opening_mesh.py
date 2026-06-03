@@ -171,6 +171,16 @@ def _face_corners_for_opening(comp, face=None):
             if slab is not None:
                 return (np.asarray(slab.corners, dtype=np.float64), 'slab',
                         float(getattr(slab, 'thickness', 150.0)))
+        elif face.startswith('slab_'):
+            # 수직 3층 모듈: 바닥 슬래브 3개(slabs[0..2]). 'slab_N' → slabs[N].
+            try:
+                i = int(face.split('_')[1])
+            except (IndexError, ValueError):
+                return None, '', 0.0
+            sbs = getattr(comp, 'slabs', None) or []
+            if 0 <= i < len(sbs):
+                return (np.asarray(sbs[i].corners, dtype=np.float64), 'slab',
+                        float(getattr(sbs[i], 'thickness', 150.0)))
         elif face == 'wall':
             wf = getattr(comp, 'wall_fill', None)
             if wf is not None:
@@ -215,7 +225,7 @@ def resolve_opening_face(comp, wx, wy):
     """클릭 위치에서 개구부 대상 면 결정. 'slab'|'wall'|'wall_N' 또는 None.
 
     모듈: 4벽 중 가장 가까운 벽이 가장자리 밴드 안이면 그 벽, 아니면 바닥 슬래브.
-    구조벽: 'wall'. 그 외 슬래브 보유 부재: 'slab'.
+    벽패널: 'wall'. 그 외 슬래브 보유 부재: 'slab'.
     """
     from modular_3d.model import ComponentType as _CT
     if (comp.comp_type in (_CT.STRUCT_WALL, _CT.INTERIOR_WALL)
@@ -237,6 +247,10 @@ def resolve_opening_face(comp, wx, wy):
         band = min(WALL_HIT_BAND_MAX_MM, WALL_HIT_BAND_RATIO * min(w, dd))
         if best_i >= 0 and best_d <= band:
             return f'wall_{best_i}'
+        # 벽 밴드 밖 → 바닥 슬래브. 수직모듈은 slabs[0..2] 중 1F(slab_0)을 반환하고
+        # commit 단계에서 3개 층 바닥에 동시 적용한다(벽과 동일 정책).
+        if getattr(comp, 'slabs', None):
+            return 'slab_0'
         if getattr(comp, 'slab', None) is not None:
             return 'slab'
         return None

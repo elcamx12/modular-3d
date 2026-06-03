@@ -64,7 +64,7 @@ _JS_KEY_TO_QT = {
     '5': Qt.Key_5, '6': Qt.Key_6, '7': Qt.Key_7, '8': Qt.Key_8,
     '9': Qt.Key_9, '0': Qt.Key_0,
     'x': Qt.Key_X, 'y': Qt.Key_Y, 'r': Qt.Key_R, 'v': Qt.Key_V,
-    'm': Qt.Key_M, 'c': Qt.Key_C, 'z': Qt.Key_Z,
+    'm': Qt.Key_M, 'c': Qt.Key_C, 'z': Qt.Key_Z, 'i': Qt.Key_I,
     'escape': Qt.Key_Escape, 'enter': Qt.Key_Return,
     'delete': Qt.Key_Delete, 'backspace': Qt.Key_Backspace,
     'f5': Qt.Key_F5, 'f6': Qt.Key_F6,
@@ -116,6 +116,8 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
         self._layer = LAYER_BOTTOM
         self._state = STATE_IDLE
         self._selected_id = -1
+        # 내벽 수동 종속(i 키): 부모 클릭을 기다리는 내벽 id (-1=비활성).
+        self._wall_attach_id = -1
         self._direction = None          # 'X' or 'Y'
         self._reference_edge = None     # (axis, coord) axis: 0=V(x)선, 1=H(y)선
         self._hover_id = -1
@@ -327,6 +329,23 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
                     parts.append(f'Δy={dy:.0f}')
                 mis_label = ' / '.join(parts) if parts else None
 
+            # [C4·F1] 라벨은 1개 층만(floor_index==0). 독립 부재는 '모듈A-1',
+            # 종속(캔틸 등)은 '모듈A-2 캔틸레버보1', 코어벽 'RC코어벽1',
+            # 코어 슬래브 'RC코어 슬래브'(같은 텍스트라 겹쳐도 1개로 보임).
+            _raw_label = (type_labels.get(int(cid), f'{tname}#{int(cid)}')
+                          if int(getattr(comp, 'floor_index', 0) or 0) == 0
+                          else '')
+            # 종속 부재 라벨('부모라벨 종속명')은 2D 표시에서 두 줄로 — 부모↔종속을
+            # 가르는 첫 공백만 줄바꿈한다. 코어 슬래브 'RC코어 슬래브'처럼 단일
+            # 명칭 안의 공백은 분리하면 안 되므로 코어류는 제외한다. 흡수(합체)
+            # 벽패널도 '패널라벨 벽패널1' 형식이라 함께 두 줄 처리한다.
+            _ctv = ct.value if ct is not None else ''
+            _is_dep_label = (int(getattr(comp, 'sub_index', 0) or 0) > 0
+                             and _ctv not in ('core', 'core_slab'))
+            _is_merged_wall = (_ctv == 'struct_wall'
+                               and getattr(comp, 'merged_fp_id', None))
+            if (_is_dep_label or _is_merged_wall) and ' ' in _raw_label:
+                _raw_label = _raw_label.replace(' ', '\n', 1)
             components.append({
                 'id': int(cid),
                 'comp_type': ct.value if ct is not None else '',
@@ -335,12 +354,7 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
                 'sub_index': int(getattr(comp, 'sub_index', 0) or 0),
                 'rects': rects,
                 'bbox': [float(bx0), float(by0), float(bx1), float(by1)],
-                # [C4·F1] 라벨은 1개 층만(floor_index==0). 독립 부재는 '모듈A-1',
-                # 종속(캔틸 등)은 '모듈A-2 캔틸레버보1', 코어벽 'RC코어벽1',
-                # 코어 슬래브 'RC코어 슬래브'(같은 텍스트라 겹쳐도 1개로 보임).
-                'label': (type_labels.get(int(cid), f'{tname}#{int(cid)}')
-                          if int(getattr(comp, 'floor_index', 0) or 0) == 0
-                          else ''),
+                'label': _raw_label,
                 'highlight': hl,
                 'mis_label': mis_label,
             })
@@ -641,7 +655,7 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
         self._f5_on_import_commit = on_import_commit
         self._f5_on_import_cancel = on_import_cancel
 
-    # ── DEPENDENCY_PICK 외부 진입 (구조벽 ↔ FP 합체 대상 선택용) ──
+    # ── DEPENDENCY_PICK 외부 진입 (벽패널 ↔ FP 합체 대상 선택용) ──
     # [2026-05-11] 좌측 팔레트 버튼용 진입점.
     # 키 1~8 입력 시 keyPressEvent 안의 분기와 100% 동일한 동작을 수행.
     # 캔틸레버보(4) · 캔틸레버슬래브(5) · 중간보(6) · 중간기둥(7) 은 DEPENDENCY_PICK
@@ -649,7 +663,6 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
     def handle_palette_select(self, comp_type: ComponentType):
         if self._f5_in_preview or self._state != STATE_IDLE:
             # 진행 중인 배치/이동 흐름 있음 — 기존 흐름 유지를 위해 무시
-            print(f'[PALETTE] 배치/이동 진행 중 — 무시 ({comp_type})')
             return
         if comp_type in (
             ComponentType.CANTILEVER_BEAM,
@@ -663,7 +676,6 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
             self._state = STATE_DEPENDENCY_PICK
             self.setFocus()
             self.update()
-            print(f'[PALETTE → F5] DEPENDENCY_PICK 진입 ({comp_type.value}) — 부모 부재 클릭')
             return
         # 일반 부재 — 컨트롤러의 type_key 콜백 직접 호출 (사이즈 입력)
         if self._f5_on_type_key is not None:
@@ -672,7 +684,7 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
     def enter_dependency_pick(self, dep_type):
         """controls.py 가 dim 확정 후 호출 — DEPENDENCY_PICK 상태로 진입.
 
-        구조벽의 경우 dim 패널의 '바닥패널과 병합' 체크박스가 켜진 상태로
+        벽패널의 경우 dim 패널의 '바닥패널과 병합' 체크박스가 켜진 상태로
         Enter 가 눌렸을 때 사용자가 합체할 FP 를 명시적으로 클릭하도록 안내.
         """
         self._f5_pending_dep_type = dep_type
@@ -702,7 +714,6 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
         self._edit_mode = mode
         self.setFocus()
         self.update()
-        print(f'[MODE] 편집 모드 → {mode}')
 
     @property
     def edit_mode(self) -> str:
@@ -731,7 +742,6 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
         }
         self.setFocus()
         self.update()
-        print(f'[OPENING] 미리보기 시작 ({mode}) — 마우스 이동/클릭, R/V, Esc')
 
     def _op_effective_wh(self):
         """rot(0/90) 반영 유효 폭·높이."""
@@ -811,7 +821,6 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
         }
         self.setFocus()
         self.update()
-        print('[IMPORT] 그룹 미리보기 — 마우스 이동, R 회전, V 기준점, 클릭 배치, Esc')
 
     def _import_pivot(self):
         pv = self._import_preview
@@ -862,7 +871,6 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
         }
         self.setFocus()
         self.update()
-        print(f'[ROOM] 미리보기 시작 ({mode}) — V=기준꼭짓점, R=90°회전, 클릭=확정, Esc')
 
     def _room_preview_polygon(self, wx=None, wy=None):
         """현재 미리보기 상태의 폴리곤(월드) 계산.
@@ -962,7 +970,6 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
         self._room_snap_point = None
         self.setFocus()
         self.update()
-        print('[ROOM] 실 그리기 — 좌클릭=점, Enter=완료, 우클릭/Back=취소점, Esc=취소')
 
     def clear_room_selection(self):
         """실 선택 해제(패널 삭제 등 외부 트리거용) — 시그널 발생 없음."""
@@ -1003,7 +1010,7 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
         if len(pts) >= 3 and self._f5_on_room_complete is not None:
             self._f5_on_room_complete(pts)
         else:
-            print(f'[ROOM] 점 {len(pts)}개 — 3개 미만이라 실 생성 취소')
+            pass
 
     def _room_snap(self, wx, wy):
         """실 점 스냅: ① 부재 꼭짓점 → ② 부재 모서리(축별)/직교 → ③ 격자(100mm).
@@ -1059,6 +1066,7 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
         """선택/방향/기준을 모두 초기화."""
         self._state = STATE_IDLE
         self._selected_id = -1
+        self._wall_attach_id = -1
         self._direction = None
         self._reference_edge = None
         self._hover_id = -1
@@ -1144,6 +1152,18 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
     def _process_press_at(self, mx, my, button):
         """좌/우클릭 처리 — vispy mousePressEvent 와 three.js handle_world_click
         이 공유. mx, my 는 *vispy screen 좌표*, button 은 Qt.LeftButton 등."""
+        # ── 내벽 수동 종속(i 키): 부모 클릭 대기 ──
+        # 좌클릭한 모듈/패널을 부모로 삼아 종속. 우클릭/빈 곳/취소면 모드 해제.
+        if getattr(self, '_wall_attach_id', -1) > 0:
+            if button == Qt.LeftButton:
+                hit = self._hit_test_component(mx, my)
+                ctrl = self._controller
+                if (hit and int(hit) > 0
+                        and hasattr(ctrl, '_f5_attach_wall_to_parent')):
+                    ctrl._f5_attach_wall_to_parent(self._wall_attach_id, int(hit))
+            self._wall_attach_id = -1
+            self.reset_state()
+            return
         # ── 정의 가져오기 미리보기: 좌클릭 확정 ──
         if self._import_preview is not None:
             if button == Qt.LeftButton:
@@ -1218,8 +1238,6 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
                 dep_type = self._f5_pending_dep_type
                 allowed = _allowed_parent_types(dep_type)
                 if parent.comp_type not in allowed:
-                    print(f'[F5 DEP] {parent.comp_type.value}는 '
-                          f'{dep_type.value}의 종속 대상이 아님')
                     return
                 # anchor_edge_id: 클릭 위치에서 가장 가까운 부모 모서리(0~3)
                 wx, wy = self._screen_to_world(mx, my)
@@ -1404,7 +1422,6 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
                     return
                 if key == Qt.Key_Escape:
                     self._cancel_room_draw()
-                    print('[ROOM] 실 그리기 취소')
                     return
                 if key in (Qt.Key_Backspace, Qt.Key_Delete):
                     if self._room_points:
@@ -1532,13 +1549,25 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
             self._f5_on_undo()
             return
 
-        # 2b) F5 SELECTED + Delete → 그룹 통째 삭제
+        # 2b) F5 SELECTED + Delete → 삭제. 이동과 동일 대상으로 '자기 줄' 만 지운다:
+        #     - 종속 부재(sub>0, 비코어): 같은 group_id+sub_index(모든 층).
+        #     - 코어벽(core): 같은 group_id+xy(모든 층) 한 줄 — 다른 코어벽·슬래브는
+        #       남는다.
+        #     본체·코어슬래브는 기존처럼 그룹 통째 삭제.
         if (self._state == STATE_SELECTED and self._selected_id > 0
                 and key in (Qt.Key_Delete, Qt.Key_Backspace)
                 and self._f5_on_delete is not None):
             scene = self._controller._scene.components
             comp = scene.get(self._selected_id)
             if comp is not None:
+                ctrl = self._controller
+                sub = int(getattr(comp, 'sub_index', 0) or 0)
+                ctv = getattr(getattr(comp, 'comp_type', None), 'value', '')
+                line_only = (sub > 0 and ctv not in ('core', 'core_slab')) or (ctv == 'core')
+                if line_only and hasattr(ctrl, '_f5_delete_member_line'):
+                    ctrl._f5_delete_member_line(self._selected_id)
+                    self.reset_state()
+                    return
                 gid = getattr(comp, 'group_id', 0)
                 if gid > 0:
                     self._f5_on_delete(gid)
@@ -1575,7 +1604,6 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
                 self._f5_pending_dep_type = ct
                 self._state = STATE_DEPENDENCY_PICK
                 self.update()
-                print(f'[F5] DEPENDENCY_PICK 진입 ({ct.value}) — 부모 부재 클릭')
             else:
                 # 일반 부재: 기존 흐름
                 self._f5_on_type_key(ct)
@@ -1586,7 +1614,6 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
             self._f5_pending_dep_type = None
             self._state = STATE_IDLE
             self.update()
-            print('[F5] DEPENDENCY_PICK 취소')
             return
 
         # 6) Esc 처리 — 정책 (b) 2026-05-12: 어떤 상태든 IDLE 로 완전 취소.
@@ -1618,6 +1645,16 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
             if key == Qt.Key_C:
                 if self._f5_on_copy is not None:
                     self._f5_on_copy(self._selected_id)
+                return
+            # I 키(개발자용 수동 종속): 선택한 내벽을 다음에 클릭하는 모듈/패널에
+            # 종속시킨다. 자동 종속이 실패한 내벽을 직접 붙이는 루트.
+            if key == Qt.Key_I:
+                comp = self._controller._scene.components.get(self._selected_id)
+                ctv = getattr(getattr(comp, 'comp_type', None), 'value', '')
+                if comp is not None and ctv == 'interior_wall':
+                    self._wall_attach_id = int(self._selected_id)
+                    self._hover_id = -1
+                    self.update()
                 return
 
         # (옛 중복 분기 제거 2026-05-12) REFERENCE+hover 1~5 키 처리는 위쪽
@@ -1799,9 +1836,8 @@ class AlignmentDockPanel(QWidget):
             self._floors_spin.blockSignals(True)
             self._floors_spin.setValue(snapped)
             self._floors_spin.blockSignals(False)
-            print(f'[F5] 층수 {n} → 가장 가까운 3 배수 {snapped} 로 보정')
         else:
-            print(f'[F5] 층수 변경 → {snapped}')
+            pass
         self.floors_changed.emit(snapped)
 
     def request_focus(self):
@@ -1823,10 +1859,34 @@ class AlignmentDockPanel(QWidget):
         from modular_3d.model.multi_floor import translate_group
 
         gid = getattr(comp, 'group_id', 0)
+        sub = getattr(comp, 'sub_index', 0)
         delta_vec = np.zeros(3)
         delta_vec[axis] = delta
 
-        if gid > 0:
+        # 함정: 키 이동(X/Y 정렬)과 마우스 자유 이동의 대상 집합이 달라, 종속
+        # 부재나 코어벽을 키로 옮기면 group_id 전체가 끌려오는 버그가 있었다.
+        # 마우스 이동과 동일하게 _resolve_move_targets 로 '자기 줄' 만 움직인다:
+        #  - 종속 부재(sub>0, 비코어): 같은 group_id + 같은 sub_index(모든 층).
+        #  - 코어벽(CORE): 같은 group_id + 같은 xy(모든 층) 한 줄 — 다른 코어벽·
+        #    슬래브는 제자리.
+        # 본체·코어슬래브·레거시는 기존 경로(translate_group, 부수효과 보존).
+        from modular_3d.model import ComponentType as _CT
+        _ct = comp.comp_type
+        _is_core = _ct in (_CT.CORE, _CT.CORE_SLAB)
+        _line_only = (sub > 0 and not _is_core) or (_ct == _CT.CORE)
+        if gid > 0 and _line_only and hasattr(ctrl, '_resolve_move_targets'):
+            for cid in ctrl._resolve_move_targets(comp_id):
+                c = ctrl._scene.components.get(cid)
+                if c is None:
+                    continue
+                c.position = c.position + delta_vec
+                c.generate_sub_components()
+                ctrl._viewer.remove_component_visual(cid)
+                v, f, cl = build_component_mesh(c)
+                ctrl._viewer.add_component_visual(cid, v, f, cl)
+                ctrl._snap.remove_component(cid)
+                ctrl._snap.add_component(cid, c)
+        elif gid > 0:
             # 그룹 통째 이동
             affected = translate_group(ctrl._scene, gid, delta_vec)
             # 코어 그룹 이동 시 코어 슬래브가 regenerate 되어 옛 ID 가
@@ -1857,8 +1917,6 @@ class AlignmentDockPanel(QWidget):
                 ctrl._viewer.add_component_visual(cid_extra, v, f, cl)
                 ctrl._snap.remove_component(cid_extra)
                 ctrl._snap.add_component(cid_extra, comp_extra)
-            print(f'[ALIGN] group={gid} ({len(affected)}개) '
-                  f'{"XY"[axis]}축 {delta:+.0f}mm')
         else:
             # 그룹 미부여(레거시 부재) — 단일 부재만 이동
             comp.position = comp.position + delta_vec
@@ -1868,7 +1926,6 @@ class AlignmentDockPanel(QWidget):
             ctrl._viewer.add_component_visual(comp_id, v, f, cl)
             ctrl._snap.remove_component(comp_id)
             ctrl._snap.add_component(comp_id, comp)
-            print(f'[ALIGN] #{comp_id} (단일) {"XY"[axis]}축 {delta:+.0f}mm')
 
         ctrl._status.update_count(ctrl._scene.component_count)
         # X/Y 정렬·스냅으로 코어벽이 이동했으면 슬래브 자동 재생성(코어 변경 시에만).

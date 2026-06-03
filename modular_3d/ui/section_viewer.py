@@ -1,13 +1,13 @@
 """거실 단면 정보 다이얼로그 — 배치설계 탭의 "단면 정보" 버튼이 호출.
 
-[2026-06-01] 1단계 골격
+[2026-06-01] 1단계 골격 / [2026-06-03] 로직 갱신
 - 배치설계 탭에서 사용자가 `room_type='living'` 으로 지정한 거실 Room 을 찾는다.
-- 거실 폴리곤의 *가장 긴 변* 을 외벽으로 간주 (사용자 의도: "외부와 가장 많은
-  면적이 닿아있는 부분"). 그 변과 *평행* 한 직선이 거실 무게중심을 지나가도록
-  단면선을 잡는다. 가장 긴 변이 X 방향이면 단면도 X 방향(특정 y 에서 자름),
-  Y 방향이면 단면도 Y 방향.
+- 거실 폴리곤의 외벽(외부 접촉 변)을 가로/세로 방향별로 합산해 *외부와 가장
+  많이 닿은 면* 의 방향을 외벽 방향으로 본다. 그 방향과 *평행* 하게, 거실
+  *무게중심* 을 지나는 단면선을 잡는다. (외벽이 가로면 단면축 X, 세로면 Y.)
 - 단면선을 교차하는 1층·2층 모듈/벽/패널을 모아 QPainter 로 2D 단면 이미지
   생성. 1·2층만 표시(사용자 요구).
+- 단면 표현: 거실 범위만 반투명 빨강, 그 외 부재는 색 없이 외곽선만(사용자 요구).
 
 [정책]
 - 좌표 단위 mm (씬 정책과 동일).
@@ -154,61 +154,60 @@ def _find_exterior_edges(poly: List[Tuple[float, float]],
 
 def compute_section_line(room: Any, inset_mm: float = 2000.0,
                           scene: Any = None) -> Optional[Dict[str, Any]]:
-    """거실 polygon 의 **외벽(외부와 접한 변) 중 가장 긴 변** 과 평행 + 그
-    외벽에서 거실 안쪽으로 `inset_mm` (기본 2 m) 만큼 이동한 단면선.
+    """거실 polygon 에서 **외부와 가장 많이 닿은 면(외벽) 방향** 과 평행하게,
+    거실 **무게중심**을 지나는 단면선.
 
-    scene 이 주어지면 외벽 검출(_find_exterior_edges) 수행, 없으면 fallback
-    으로 가장 긴 변(_longest_edge) 사용 (기존 동작).
+    [2026-06-03] 사용자 요구로 로직 변경:
+      - 기준 방향: 외벽(외부 접촉) 변들을 가로(X평행)/세로(Y평행)로 나눠
+        *방향별 총 접촉 길이* 가 더 큰 쪽을 외벽 방향으로 채택. 즉 "가장 긴
+        단일 변"이 아니라 "외부와 가장 많이 닿은 면"이 기준.
+      - 절단 위치: 외벽에서 inset 이 아니라 거실 무게중심을 지난다.
+        (inset_mm 인자는 하위호환 위해 남겨두되 더 이상 사용하지 않음.)
+      - scene 이 없으면 외벽 검출 불가 → 가장 긴 변 방향으로 fallback.
     """
     poly = list(getattr(room, 'polygon', []) or [])
     if not poly:
         return None
     cx, cy = _polygon_centroid(poly)
-    edge = None
-    if scene is not None:
-        ext_edges = _find_exterior_edges(poly, (cx, cy), scene)
-        if ext_edges:
-            # 외벽 후보 중 가장 긴 것
-            edge = max(ext_edges, key=lambda e: e[2])
-    if edge is None:
-        edge = _longest_edge(poly)
-    if edge is None:
-        return None
-    p0, p1, L = edge
-    dx_e = p1[0] - p0[0]
-    dy_e = p1[1] - p0[1]
-    # 외벽 변의 중점
-    mx = (p0[0] + p1[0]) / 2.0
-    my = (p0[1] + p1[1]) / 2.0
-    # 변에 수직인 단위벡터 — polygon 내부(centroid) 방향으로 향하도록 부호 결정
-    perp_x, perp_y = -dy_e, dx_e
-    plen = math.hypot(perp_x, perp_y)
-    if plen < 1e-9:
-        return None
-    perp_x /= plen
-    perp_y /= plen
-    # 변 중점→centroid 벡터와 같은 방향(안쪽)이 되도록
-    if perp_x * (cx - mx) + perp_y * (cy - my) < 0:
-        perp_x = -perp_x
-        perp_y = -perp_y
-    # 외벽에서 안쪽으로 inset_mm 이동한 절단점
-    cut_x = mx + perp_x * inset_mm
-    cut_y = my + perp_y * inset_mm
 
-    # 가장 긴 변이 거의 X 방향이면 단면 축도 X (절단은 y=cut_y), 아니면 Y
-    if abs(dx_e) >= abs(dy_e):
+    # ── 외벽 방향 결정 — 외부 접촉 변을 방향별로 합산해 큰 쪽 채택 ──
+    ext_len_x = 0.0   # 가로(X 평행) 외벽 총 접촉 길이
+    ext_len_y = 0.0   # 세로(Y 평행) 외벽 총 접촉 길이
+    if scene is not None:
+        for (e0, e1, L) in _find_exterior_edges(poly, (cx, cy), scene):
+            if abs(e1[0] - e0[0]) >= abs(e1[1] - e0[1]):
+                ext_len_x += L
+            else:
+                ext_len_y += L
+
+    if ext_len_x <= 0.0 and ext_len_y <= 0.0:
+        # 외벽 검출 실패 → 가장 긴 변 방향으로 fallback
+        edge = _longest_edge(poly)
+        if edge is None:
+            return None
+        e0, e1, L = edge
+        horizontal = abs(e1[0] - e0[0]) >= abs(e1[1] - e0[1])
+        dominant_len = L
+    else:
+        horizontal = ext_len_x >= ext_len_y
+        dominant_len = max(ext_len_x, ext_len_y)
+
+    # ── 절단선 — 외벽 방향과 평행, 무게중심을 지남 ──
+    # 외벽이 가로(X평행)면 단면 평면 y=상수 → 단면축 'x'(X-Z 단면), 값=무게중심 y.
+    # 외벽이 세로(Y평행)면 단면 평면 x=상수 → 단면축 'y'(Y-Z 단면), 값=무게중심 x.
+    if horizontal:
         axis = 'x'
-        value = float(cut_y)
+        value = float(cy)
         room_extent = (min(p[0] for p in poly), max(p[0] for p in poly))
     else:
         axis = 'y'
-        value = float(cut_x)
+        value = float(cx)
         room_extent = (min(p[1] for p in poly), max(p[1] for p in poly))
 
     return {
         'axis': axis,
         'value': value,
-        'edge_length_mm': float(L),
+        'edge_length_mm': float(dominant_len),
         'room_extent': (float(room_extent[0]), float(room_extent[1])),
         'inset_mm': float(inset_mm),
     }
@@ -326,12 +325,8 @@ def slice_component_mesh(comp: Any, section: Dict[str, Any]
                 uniq.add((round(float(row[0]), 2),
                           round(float(row[1]), 2),
                           round(float(row[2]), 2)))
-            print(f"[mesh-color] {type(comp).__name__}: verts={len(v)} "
-                  f"unique_colors={len(uniq)} 샘플={list(uniq)[:6]}",
-                  flush=True)
         else:
-            print(f"[mesh-color] {type(comp).__name__}: 색정보 없음 "
-                  f"(c={None if c is None else c.shape})", flush=True)
+            pass
     except Exception:
         pass
     axis = section['axis']
@@ -566,8 +561,6 @@ class SectionViewerDialog(QDialog):
                                          len(uniq_seg_colors))
         type_summary = " · ".join(f"{t} {n}" for t, n in sorted(type_counts.items()))
         color_diag = " · ".join(f"{t}:색{n}종" for t, n in sorted(mesh_color_variety.items()))
-        print(f"[section_viewer] 단면축={section['axis']} 값={section['value']:.0f}mm "
-              f"tol={150}mm 잡힌부재={len(comps)} ({type_summary})", flush=True)
         # 각 타입이 어느 색 카테고리로 분류되는지 출력
         def _classify(tname: str) -> str:
             t = tname.lower()
@@ -579,13 +572,12 @@ class SectionViewerDialog(QDialog):
             if 'module' in t: return '모듈(베이지)'
             return '기타'
         class_map = {t: _classify(t) for t in type_counts}
-        print(f"[section_viewer] 색분류: {class_map}", flush=True)
 
         floors_str = ", ".join(f"{fi+1}F" for fi in sorted({c['floor_index'] for c in comps}))
         re = section.get('room_extent', (0.0, 0.0))
         self._info.setText(
             f"단면 축 = {section['axis'].upper()} · "
-            f"외벽에서 {section.get('inset_mm', 2000):.0f} mm 안쪽 절단 · "
+            f"외벽 평행 · 거실 무게중심 절단 · "
             f"잡힌 부재 {len(comps)}개 → [{type_summary}] · "
             f"mesh 색 다양성: [{color_diag}] · "
             f"거실 범위 {re[0]:.0f}~{re[1]:.0f}mm · 표시 층 = {floors_str}"
@@ -689,86 +681,24 @@ class SectionViewerDialog(QDialog):
                 tw = fm.horizontalAdvance("거실")
                 p.drawText(QPointF(room_cx - tw / 2.0, room_cy + 6), "거실")
 
-        # ── 부재 그리기 (거실 범위 안 부재는 외곽선 강조) ──
-        def _in_room(c) -> bool:
-            if re is None:
-                return False
-            return not (c['a1'] < re[0] or c['a0'] > re[1])
-
-        # [2026-06-02] 진짜 2D 단면 — mesh 의 모든 삼각형을 절단 평면과 교차
-        # 시킨 선분들을 그림. mesh 교차 선분이 없거나 빈약하면 AABB 사각형
-        # fallback.
-        # [2026-06-02] 부재 종류별 색 — 6 분류 (사용자 요청: 기둥/보 별도).
-        # (fill, stroke) 쌍 — 사각형 fill + mesh 선분 stroke 둘 다 사용.
-        # 범례와 정확히 일치.
-        def _colors(tname: str) -> Tuple[QColor, QColor]:
-            t = tname.lower()
-            # 우선순위: column → beam → slab/panel → wall → core → module
-            if 'column' in t:
-                return QColor("#E74C3C"), QColor("#7A1A12")  # 빨강 — 기둥
-            if 'beam' in t:
-                return QColor("#F39C12"), QColor("#7A4D0A")  # 주황 — 보
-            if 'slab' in t or 'panel' in t or 'floor' in t:
-                return QColor("#BDBDBD"), QColor("#5A5A5A")  # 회색 — 슬래브/패널
-            if 'wall' in t:
-                return QColor("#5B9BD5"), QColor("#1F4E79")  # 파랑 — 벽
-            if 'core' in t:
-                return QColor("#9C7BC7"), QColor("#4B2E83")  # 보라 — 코어
-            if 'module' in t:
-                return QColor("#FFE9A8"), QColor("#1A1A1A")  # 베이지+검정 — 모듈
-            return QColor("#F5F9FF"), QColor("#2C2C2C")
-
-        # [2026-06-02] 부재 그리기 — mesh 교차 선분을 *삼각형의 vertex color*
-        # 로 그림. mesh_builder 가 sub-part(기둥=빨강 0xCC3333, 바닥보=파랑
-        # 0x2266CC, 천장보=밝은파랑 0x5599DD, 슬래브=베이지 0xD2D2BE, 벽=청록회색
-        # 0x7799AA, 강철=#808080)별로 다른 색을 줘서, mesh 색을 그대로 사용하면
-        # Module 내부 sub-part 가 자동으로 색 구분됨. fill 제거.
+        # [2026-06-03] 사용자 요구 — 거실만 반투명 빨강, 그 외 부재는 *색 없이*
+        # 외곽선(짙은 회색)만. 부재 채움색·mesh sub-part 색을 모두 제거하고
+        # 단면 윤곽선만 단색으로 그린다. (라이브 경로 render_section_pixmap 과 동일)
+        _OUTLINE = QColor("#333333")
         for c in comps:
-            tname = c['type']
-            fallback_fill, fallback_pen = _colors(tname)
-            highlight = _in_room(c)
-            base_w = 2.4 if highlight else 1.6
-
             segs = c.get('segments') or []
             x0 = tx(c['a0']); x1 = tx(c['a1'])
             y_top = ty(c['z1']); y_bot = ty(c['z0'])
-
-            # mesh 색 다양성 확인 — 단일색 이하면 type 기반 fill 도 함께
-            seg_color_set = set()
-            for seg in segs:
-                if len(seg) >= 3 and seg[2] is not None:
-                    seg_color_set.add((round(seg[2][0], 1),
-                                       round(seg[2][1], 1),
-                                       round(seg[2][2], 1)))
-            need_type_fill = len(seg_color_set) <= 1
-
-            if need_type_fill:
-                # type 기반 fill 사각형 — mesh 색이 단일/없을 때 보장
-                fill_alpha = QColor(fallback_fill); fill_alpha.setAlpha(180)
-                p.setBrush(QBrush(fill_alpha))
-                p.setPen(Qt.NoPen)
-                p.drawRect(QRectF(x0, y_top, x1 - x0, y_bot - y_top))
-
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(_OUTLINE, 1.6))
             if segs and len(segs) >= 2:
-                p.setBrush(Qt.NoBrush)
+                # 진짜 2D 단면 — mesh 교차 선분 윤곽
                 for seg in segs:
                     a = seg[0]; b = seg[1]
-                    seg_rgb = seg[2] if len(seg) >= 3 else None
-                    if seg_rgb is not None:
-                        col = QColor.fromRgbF(
-                            max(0.0, min(1.0, seg_rgb[0])),
-                            max(0.0, min(1.0, seg_rgb[1])),
-                            max(0.0, min(1.0, seg_rgb[2])),
-                        )
-                    else:
-                        col = fallback_pen
-                    p.setPen(QPen(col, base_w))
                     p.drawLine(QPointF(tx(a[0]), ty(a[1])),
                                QPointF(tx(b[0]), ty(b[1])))
             else:
-                # mesh 교차 없음 → 사각형 외곽선만
-                p.setBrush(Qt.NoBrush)
-                p.setPen(QPen(fallback_pen, base_w))
+                # mesh 교차 없음 → AABB 사각형 윤곽 fallback
                 p.drawRect(QRectF(x0, y_top, x1 - x0, y_bot - y_top))
 
         # 층 라벨 (좌측)
@@ -910,50 +840,24 @@ def render_section_pixmap(scene: Any, max_size: int = 2000,
             p.drawRect(QRectF(tx(ra0c), ty(z_max),
                                (ra1c - ra0c) * s, (z_max - z_min) * s))
 
-    # 부재
-    def _colors(tname: str):
-        t = tname.lower()
-        if 'column' in t: return QColor("#E74C3C"), QColor("#7A1A12")
-        if 'beam' in t: return QColor("#F39C12"), QColor("#7A4D0A")
-        if 'slab' in t or 'panel' in t or 'floor' in t: return QColor("#BDBDBD"), QColor("#5A5A5A")
-        if 'wall' in t: return QColor("#5B9BD5"), QColor("#1F4E79")
-        if 'core' in t: return QColor("#9C7BC7"), QColor("#4B2E83")
-        if 'module' in t: return QColor("#FFE9A8"), QColor("#1A1A1A")
-        return QColor("#F5F9FF"), QColor("#2C2C2C")
-
+    # [2026-06-03] 사용자 요구 — 거실만 반투명 빨강, 그 외 부재는 *색 없이*
+    # 외곽선(짙은 회색)만. 부재 채움색·mesh sub-part 색(기둥 빨강/보 파랑 등)을
+    # 모두 제거하고 단면 윤곽선만 단색으로 그린다.
+    _OUTLINE = QColor("#333333")
     for c in comps:
-        fallback_fill, fallback_pen = _colors(c['type'])
         segs = c.get('segments') or []
         x0, x1 = tx(c['a0']), tx(c['a1'])
         y_top, y_bot = ty(c['z1']), ty(c['z0'])
-        # mesh 색 다양성 확인
-        seg_color_set = set()
-        for seg in segs:
-            if len(seg) >= 3 and seg[2] is not None:
-                seg_color_set.add((round(seg[2][0], 1), round(seg[2][1], 1), round(seg[2][2], 1)))
-        if len(seg_color_set) <= 1:
-            fa = QColor(fallback_fill); fa.setAlpha(180)
-            p.setBrush(QBrush(fa)); p.setPen(Qt.NoPen)
-            p.drawRect(QRectF(x0, y_top, x1 - x0, y_bot - y_top))
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(_OUTLINE, 1.2))
         if segs and len(segs) >= 2:
-            p.setBrush(Qt.NoBrush)
+            # 진짜 2D 단면 — mesh 교차 선분 윤곽
             for seg in segs:
                 a = seg[0]; b = seg[1]
-                seg_rgb = seg[2] if len(seg) >= 3 else None
-                if seg_rgb is not None:
-                    col = QColor.fromRgbF(
-                        max(0.0, min(1.0, seg_rgb[0])),
-                        max(0.0, min(1.0, seg_rgb[1])),
-                        max(0.0, min(1.0, seg_rgb[2])),
-                    )
-                else:
-                    col = fallback_pen
-                p.setPen(QPen(col, 1.2))
                 p.drawLine(QPointF(tx(a[0]), ty(a[1])),
                            QPointF(tx(b[0]), ty(b[1])))
         else:
-            p.setBrush(Qt.NoBrush)
-            p.setPen(QPen(fallback_pen, 1.2))
+            # mesh 교차 없음 → AABB 사각형 윤곽 fallback
             p.drawRect(QRectF(x0, y_top, x1 - x0, y_bot - y_top))
 
     # 거실 텍스트 — 픽스맵 크기에 비례한 큰 폰트 (카드에 축소 표시돼도 잘 보이게)
@@ -980,10 +884,10 @@ def render_section_pixmap(scene: Any, max_size: int = 2000,
 
 def show_section_dialog(scene: Any, parent: Optional[QWidget] = None,
                          capture_pixmap=None) -> None:
-    """배치설계 탭의 '단면 정보' 버튼이 호출하는 진입점.
+    """(구) 배치설계 탭 '단면 정보' 버튼 진입점 — 현재 버튼은 제거됨(미사용).
+    비교 탭은 render_section_pixmap 을 직접 사용한다.
 
-    capture_pixmap: 3D 뷰의 정면 클리핑 캡처 (QPixmap). main_3d._on_section_info_clicked
-    가 viewer_three.capture_section_front 로 얻은 이미지를 전달.
+    capture_pixmap: 주어지면 2D 그리기 대신 그 이미지를 표시(현재 호출처 없음).
     """
     dlg = SectionViewerDialog(scene, parent, capture_pixmap=capture_pixmap)
     dlg.showMaximized()

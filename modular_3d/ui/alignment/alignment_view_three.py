@@ -46,7 +46,7 @@ class _AlignmentThreeBridge(QObject):
 
     @pyqtSlot(str)
     def js_log(self, msg: str) -> None:
-        print(f'[AlignmentCanvasThree JS] {msg}')
+        pass
 
     @pyqtSlot(float, float, int)
     def on_2d_click(self, wx: float, wy: float, button: int) -> None:

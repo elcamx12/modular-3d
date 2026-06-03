@@ -106,7 +106,7 @@ class MainWindow(QMainWindow):
             ensure_fonts_loaded()
         except Exception:
             pass
-        self.setWindowTitle('모듈러 설계 프로그램')
+        self.setWindowTitle('모듈러 설계 프로그램 [재실행확인-거실단면V32]')
         self.resize(1600, 950)
 
         # ── 모델 ─────────────────────────────────────────
@@ -223,8 +223,9 @@ class MainWindow(QMainWindow):
             on_wall_place=self._on_wall_place,
         )
         # (2026-05-13) 폭 확장 — 한글 라벨 잘림 방지.
-        self._palette.setFixedWidth(220)
-        self._design_props.setFixedWidth(320)
+        # [디자인 통일] 종합탭 톤 카드 패딩 수용 위해 폭 소폭 확대.
+        self._palette.setFixedWidth(240)
+        self._design_props.setFixedWidth(330)
 
         # ── 모듈 정의 탭 (2026-05-24 디자인 2분리) ──────────
         # 배치 설계 탭과 완전 분리된 독립 작업공간(자체 Scene·Viewer·Controller).
@@ -499,9 +500,11 @@ class MainWindow(QMainWindow):
     def _build_design_tab(self) -> QWidget:
         """디자인 탭: 좌 팔레트 + 중앙(3D | 2D) + 우 속성 + 하단 치수."""
         page = QWidget()
+        # 종합탭 톤 페이지 배경 + 패널 간 간격/여백 확대.
+        page.setStyleSheet("QWidget { background: #EDF2F7; }")
         h = QHBoxLayout(page)
-        h.setContentsMargins(0, 0, 0, 0)
-        h.setSpacing(2)
+        h.setContentsMargins(12, 12, 12, 12)
+        h.setSpacing(12)
 
         # 좌측 팔레트
         h.addWidget(self._palette)
@@ -512,11 +515,22 @@ class MainWindow(QMainWindow):
         cv.setContentsMargins(0, 0, 0, 0)
         cv.setSpacing(0)
 
+        # [디자인 통일] 3D/2D 영역을 흰색 카드 프레임으로 감싸 위·아래 레벨 일치.
+        # 두 패널은 같은 가로 분할 안이라 높이가 같으므로, 같은 카드 스타일·여백을
+        # 주면 단면 컨트롤(좌 하단)·층수 컨트롤(우 상단)이 카드 안으로 들어가고
+        # 두 카드의 위/아래 모서리가 자동으로 정렬된다.
+        _design_card_qss = (
+            "QWidget#designCardPane { background: #FFFFFF;"
+            " border: 1px solid #DDE4ED; border-radius: 10px; }"
+        )
         self._design_center_split = QSplitter(Qt.Horizontal)
         # 좌(3D) / 우(2D) placeholder QWidget — 탭 전환 시 reparent 대상
         self._design_left_pane = QWidget()
+        self._design_left_pane.setObjectName("designCardPane")
+        self._design_left_pane.setStyleSheet(_design_card_qss)
         self._design_left_lay = QVBoxLayout(self._design_left_pane)
-        self._design_left_lay.setContentsMargins(0, 0, 0, 0)
+        self._design_left_lay.setContentsMargins(8, 8, 8, 8)
+        self._design_left_lay.setSpacing(6)
         # UI 마이그레이션 M2 — Strangler 세로 분할: 상단 vispy(탭 전환마다 reparent)
         # / 하단 three.js(영구 부착). 다른 탭 진입 시 vispy 만 빠져나가고 three.js 는
         # 디자인 탭에 그대로 남는다(보이지 않을 뿐). 비율 1:1 시작.
@@ -536,13 +550,17 @@ class MainWindow(QMainWindow):
         self._design_left_lay.addWidget(self._build_section_slider())
         # [2026-06-02] 벽 채움면 / 실 표기 표시 토글 (체크박스 2개). (내 작업)
         self._design_left_lay.addWidget(self._build_wall_room_toggles())
-        # [2026-06-01] Y축 단면 슬라이더 — Z축과 같은 패턴, normal (0,-1,0) (팀원)
-        self._design_left_lay.addWidget(self._build_section_y_slider())
+        # [2026-06-03] Y축 단면 슬라이더 제거(사용자 요구) — 거실 단면과 무관한
+        # 3D 뷰 시각화 전용 기능이라 삭제. Z축 단면 슬라이더는 유지.
         self._design_right_pane = QWidget()
+        # [디자인 통일] 좌측 3D 카드와 동일 스타일·여백 → 위/아래 레벨 정렬.
+        self._design_right_pane.setObjectName("designCardPane")
+        self._design_right_pane.setStyleSheet(_design_card_qss)
         # M3-b 마운트는 빌더 끝에서 _design_right_lay 안에 세로 분할 추가
         # (코드는 아래에서 _design_right_lay 정의 후).
         self._design_right_lay = QVBoxLayout(self._design_right_pane)
-        self._design_right_lay.setContentsMargins(0, 0, 0, 0)
+        self._design_right_lay.setContentsMargins(8, 8, 8, 8)
+        self._design_right_lay.setSpacing(6)
         # UI 마이그레이션 M3-b — 우측 2D 도 세로 분할: 상단 vispy AlignmentDockPanel
         # / 하단 three.js AlignmentDockPanelThree. 좌측 3D 와 같은 Strangler 패턴.
         self._design_right_split = QSplitter(Qt.Vertical)
@@ -579,10 +597,10 @@ class MainWindow(QMainWindow):
 
         # 우측 속성 패널 — 부재 속성 + 실 속성(선택 시 전환)
         right = QWidget()
-        right.setFixedWidth(320)
+        right.setFixedWidth(330)
         rv = QVBoxLayout(right)
         rv.setContentsMargins(0, 0, 0, 0)
-        rv.setSpacing(4)
+        rv.setSpacing(8)
         rv.addWidget(self._design_props)
         rv.addWidget(self._room_props)
         self._room_props.setVisible(False)
@@ -621,7 +639,7 @@ class MainWindow(QMainWindow):
     def _build_wall_room_toggles(self) -> QWidget:
         """[2026-06-02] 배치설계 표시 토글 — 벽 채움면 + 실 표기를 한 체크박스로.
 
-        '벽·실' 하나로 묶어 동시에 끄고 켠다. 벽=구조벽 채움·내벽(칸막이)·모듈
+        '벽·실' 하나로 묶어 동시에 끄고 켠다. 벽=벽패널 채움·내벽(칸막이)·모듈
         외피 벽 채움(기둥·런너 프레임·슬래브·코어벽은 유지), 실=실 표기 반투명
         색면. 기본 ON.
         """
@@ -631,7 +649,7 @@ class MainWindow(QMainWindow):
         self._wall_room_check = QCheckBox('벽·실 표시')
         self._wall_room_check.setChecked(True)
         self._wall_room_check.setToolTip(
-            '벽 채움면(구조벽 채움·내벽·모듈 외피 벽)과 실 표기를 함께 끄거나 '
+            '벽 채움면(벽패널 채움·내벽·모듈 외피 벽)과 실 표기를 함께 끄거나 '
             '켭니다. 프레임·슬래브·코어벽은 항상 표시됩니다.')
         self._wall_room_check.toggled.connect(self._on_wall_room_toggled)
         lay.addWidget(self._wall_room_check)
@@ -681,77 +699,10 @@ class MainWindow(QMainWindow):
         if three is not None and hasattr(three, 'set_section_z'):
             three.set_section_z(z, enabled)
 
-    # ── [2026-06-01] Y축 단면 (Z축 슬라이더와 동일 패턴) ─────────────
-    def _build_section_y_slider(self) -> QWidget:
-        """Y축 단면(수직 평면 절단) 컨트롤 — 체크박스 + 슬라이더 + 라벨.
-
-        체크 ON 이면 슬라이더 y(mm) 한쪽을 잘라 평면을 본다(three.js 클리핑).
-        normal (0,-1,0) → y < constant 영역만 보임.
-        """
-        box = QWidget()
-        lay = QHBoxLayout(box)
-        lay.setContentsMargins(6, 2, 6, 2)
-        self._section_y_check = QCheckBox('단면 Y')
-        self._section_y_check.setToolTip(
-            '체크 시 슬라이더 y 값 한쪽을 잘라 평면을 봅니다.')
-        lay.addWidget(self._section_y_check)
-        self._section_y_slider = QSlider(Qt.Horizontal)
-        self._section_y_slider.setRange(-10000, 10000)
-        # [2026-06-01] 반대 방향 시작 — 최솟값에서 전체 보임
-        self._section_y_slider.setValue(-10000)
-        self._section_y_slider.setSingleStep(100)
-        lay.addWidget(self._section_y_slider, stretch=1)
-        self._section_y_label = QLabel('y = -10000 mm')
-        self._section_y_label.setFixedWidth(120)
-        lay.addWidget(self._section_y_label)
-        self._section_y_check.toggled.connect(self._on_section_y_toggled)
-        self._section_y_slider.valueChanged.connect(self._on_section_y_changed)
-        box.setMaximumHeight(34)
-        return box
-
-    def _update_section_y_range(self):
-        """Y 슬라이더 범위를 건물 y 범위로 갱신."""
-        from modular_3d.render.mesh_builder import build_component_mesh
-        y_min = 0.0
-        y_max = 0.0
-        first = True
-        for comp in self._scene.components.values():
-            try:
-                v, _f, _c = build_component_mesh(comp)
-            except Exception:
-                continue
-            if v is not None and len(v):
-                cy_min = float(v[:, 1].min())
-                cy_max = float(v[:, 1].max())
-                if first:
-                    y_min, y_max = cy_min, cy_max
-                    first = False
-                else:
-                    y_min = min(y_min, cy_min)
-                    y_max = max(y_max, cy_max)
-        # 여유 100 mm
-        y_min = int(round(y_min)) - 100
-        y_max = int(round(y_max)) + 100
-        if y_max <= y_min:
-            y_max = y_min + 1000
-        self._section_y_slider.blockSignals(True)
-        self._section_y_slider.setRange(y_min, y_max)
-        # [2026-06-01] 반대 방향 — 슬라이더 최솟값에서 전체 보임, 올리면 작은 y 쪽부터 잘림
-        self._section_y_slider.setValue(y_min)
-        self._section_y_slider.blockSignals(False)
-
-    def _on_section_y_toggled(self, checked: bool):
-        if checked:
-            self._update_section_y_range()
-        self._on_section_y_changed()
-
-    def _on_section_y_changed(self, *_):
-        y = float(self._section_y_slider.value())
-        enabled = self._section_y_check.isChecked()
-        self._section_y_label.setText(f'y = {int(y)} mm')
-        three = getattr(self._viewer, 'three', None)
-        if three is not None and hasattr(three, 'set_section_y'):
-            three.set_section_y(y, enabled)
+    # [2026-06-03] Y축 단면 슬라이더/핸들러(_build_section_y_slider,
+    # _update_section_y_range, _on_section_y_toggled, _on_section_y_changed)
+    # 제거 — 사용자 요구. 거실 단면(비교 탭)과 무관한 3D 뷰 시각화 전용이었음.
+    # Z축 단면(_build_section_slider 등)은 유지.
 
     def _build_joint_edit_tab(self) -> QWidget:
         """접합부 조정 탭: 중앙(3D 와이어프레임) + 우 접합부 UI placeholder.
@@ -765,19 +716,26 @@ class MainWindow(QMainWindow):
           를 이쪽으로 이동.
         """
         page = QWidget()
+        # 종합탭 톤 페이지 배경 + 패널 간격·여백 확대.
+        page.setStyleSheet("QWidget { background: #EDF2F7; }")
         h = QHBoxLayout(page)
-        h.setContentsMargins(0, 0, 0, 0)
-        h.setSpacing(2)
+        h.setContentsMargins(12, 12, 12, 12)
+        h.setSpacing(12)
 
-        # 중앙: 3D 와이어프레임 placeholder
+        # 중앙: 3D 와이어프레임 placeholder — 흰 카드 프레임으로 감쌈.
         self._joint_center_pane = QWidget()
+        self._joint_center_pane.setObjectName("designCardPane")
+        self._joint_center_pane.setStyleSheet(
+            "QWidget#designCardPane { background: #FFFFFF;"
+            " border: 1px solid #DDE4ED; border-radius: 10px; }")
         self._joint_center_lay = QVBoxLayout(self._joint_center_pane)
-        self._joint_center_lay.setContentsMargins(0, 0, 0, 0)
+        self._joint_center_lay.setContentsMargins(8, 8, 8, 8)
         h.addWidget(self._joint_center_pane, stretch=1)
 
         # 우측: 접합부 UI placeholder — _on_tab_changed 진입 시 reparent.
+        # [2026-06-02] 3D 카드를 좁히고 접합부 패널을 키움 — 폭 330 → 470.
         self._joint_right_pane = QWidget()
-        self._joint_right_pane.setFixedWidth(320)
+        self._joint_right_pane.setFixedWidth(470)
         self._joint_right_lay = QVBoxLayout(self._joint_right_pane)
         self._joint_right_lay.setContentsMargins(0, 0, 0, 0)
         h.addWidget(self._joint_right_pane)
@@ -786,17 +744,29 @@ class MainWindow(QMainWindow):
     def _build_analysis_tab(self) -> QWidget:
         """구조해석 탭: 중앙(3D + 변형슬라이더) + 우 AnalysisPanel(요약/내부력)."""
         page = QWidget()
+        # 종합탭 톤 페이지 배경 + 패널 간격·여백 확대.
+        page.setStyleSheet("QWidget { background: #EDF2F7; }")
         h = QHBoxLayout(page)
-        h.setContentsMargins(0, 0, 0, 0)
-        h.setSpacing(2)
+        h.setContentsMargins(12, 12, 12, 12)
+        h.setSpacing(12)
 
         center = QWidget()
+        # [2026-06-02] 중앙 3D 최소폭을 작게 둬 우측 패널(_force_pane_width 고정폭)이
+        #   우선되게 — 부재 표 전 컬럼(L·N·V·M)이 한눈에 보이고 3D 가 좁아짐.
+        #   단, 0 collapse 방지로 최소 480 은 확보(3D 가 너무 작아지지 않게).
+        center.setMinimumWidth(480)
         cv = QVBoxLayout(center)
         cv.setContentsMargins(0, 0, 0, 0)
         cv.setSpacing(0)
+        # 중앙 3D 영역 — 흰 카드 프레임으로 감쌈(배치·접합부 탭과 동일).
         self._analysis_center_pane = QWidget()
+        self._analysis_center_pane.setObjectName("designCardPane")
+        self._analysis_center_pane.setMinimumWidth(0)
+        self._analysis_center_pane.setStyleSheet(
+            "QWidget#designCardPane { background: #FFFFFF;"
+            " border: 1px solid #DDE4ED; border-radius: 10px; }")
         self._analysis_center_lay = QVBoxLayout(self._analysis_center_pane)
-        self._analysis_center_lay.setContentsMargins(0, 0, 0, 0)
+        self._analysis_center_lay.setContentsMargins(8, 8, 8, 8)
         cv.addWidget(self._analysis_center_pane, stretch=1)
         h.addWidget(center, stretch=1)
 
@@ -822,17 +792,24 @@ class MainWindow(QMainWindow):
         """
         from PyQt5.QtWidgets import QSizePolicy as _QSP
         page = QWidget()
+        # [2026-06-02 디자인 통일] 종합탭 톤 페이지 배경 + 패널 간격·여백 확대.
+        page.setStyleSheet("QWidget { background: #EDF2F7; }")
         h = QHBoxLayout(page)
-        h.setContentsMargins(0, 0, 0, 0)
-        h.setSpacing(2)
+        h.setContentsMargins(12, 12, 12, 12)
+        h.setSpacing(12)
 
         center = QWidget()
         cv = QVBoxLayout(center)
         cv.setContentsMargins(0, 0, 0, 0)
         cv.setSpacing(0)
+        # 중앙 3D 영역 — 흰 카드 프레임으로 감쌈(배치·접합부·구조해석 탭과 동일).
         self._section_center_pane = QWidget()
+        self._section_center_pane.setObjectName("designCardPane")
+        self._section_center_pane.setStyleSheet(
+            "QWidget#designCardPane { background: #FFFFFF;"
+            " border: 1px solid #DDE4ED; border-radius: 10px; }")
         self._section_center_lay = QVBoxLayout(self._section_center_pane)
-        self._section_center_lay.setContentsMargins(0, 0, 0, 0)
+        self._section_center_lay.setContentsMargins(8, 8, 8, 8)
         cv.addWidget(self._section_center_pane, stretch=1)
         h.addWidget(center, stretch=1)
 
@@ -871,17 +848,24 @@ class MainWindow(QMainWindow):
         from modular_3d.ui.quantity_panel import QuantityPanel
 
         page = QWidget()
+        # [2026-06-02 디자인 통일] 종합탭 톤 페이지 배경 + 패널 간격·여백 확대.
+        page.setStyleSheet("QWidget { background: #EDF2F7; }")
         h = QHBoxLayout(page)
-        h.setContentsMargins(0, 0, 0, 0)
-        h.setSpacing(2)
+        h.setContentsMargins(12, 12, 12, 12)
+        h.setSpacing(12)
 
         center = QWidget()
         cv = QVBoxLayout(center)
         cv.setContentsMargins(0, 0, 0, 0)
         cv.setSpacing(0)
+        # 중앙 물량 3D 영역 — 흰 카드 프레임으로 감쌈(다른 탭과 동일).
         self._quantity_center_pane = QWidget()
+        self._quantity_center_pane.setObjectName("designCardPane")
+        self._quantity_center_pane.setStyleSheet(
+            "QWidget#designCardPane { background: #FFFFFF;"
+            " border: 1px solid #DDE4ED; border-radius: 10px; }")
         self._quantity_center_lay = QVBoxLayout(self._quantity_center_pane)
-        self._quantity_center_lay.setContentsMargins(0, 0, 0, 0)
+        self._quantity_center_lay.setContentsMargins(8, 8, 8, 8)
         cv.addWidget(self._quantity_center_pane, stretch=1)
         h.addWidget(center, stretch=1)
 
@@ -939,20 +923,28 @@ class MainWindow(QMainWindow):
         from PyQt5.QtWebEngineWidgets import QWebEngineView
         from PyQt5.QtWidgets import QSplitter
         page = QWidget()
+        # [2026-06-02 디자인 통일] 종합탭 톤 페이지 배경 + 패널 간격·여백 확대.
+        page.setStyleSheet("QWidget { background: #EDF2F7; }")
         root = QVBoxLayout(page)
-        root.setContentsMargins(0, 0, 0, 0)
+        root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(0)
 
         # 메인 2 단 splitter (중앙 3D + 우 결과)
         self._transport_splitter = QSplitter(Qt.Horizontal)
+        self._transport_splitter.setHandleWidth(12)
         # 중 영역
         center = QWidget()
         cv = QVBoxLayout(center)
         cv.setContentsMargins(0, 0, 0, 0)
         cv.setSpacing(0)
+        # 중앙 운송 3D 영역 — 흰 카드 프레임으로 감쌈(다른 탭과 동일).
         self._transport_center_pane = QWidget()
+        self._transport_center_pane.setObjectName("designCardPane")
+        self._transport_center_pane.setStyleSheet(
+            "QWidget#designCardPane { background: #FFFFFF;"
+            " border: 1px solid #DDE4ED; border-radius: 10px; }")
         self._transport_center_lay = QVBoxLayout(self._transport_center_pane)
-        self._transport_center_lay.setContentsMargins(0, 0, 0, 0)
+        self._transport_center_lay.setContentsMargins(8, 8, 8, 8)
         cv.addWidget(self._transport_center_pane, stretch=1)
         # center pane resize → 실행 버튼 오버레이 우상단 추종(eventFilter 분기).
         self._transport_center_pane.installEventFilter(self)
@@ -984,16 +976,16 @@ class MainWindow(QMainWindow):
         )
         # 초기 안내 HTML — Three.js 스타일에 맞춘 어두운 테마
         empty_html = (
-            "<html><body style='margin:0;padding:0;background:#0d1117;'>"
+            "<html><body style='margin:0;padding:0;background:#ffffff;'>"
             "<div style='display:flex;align-items:center;justify-content:center;"
             "height:100vh;font-family:Segoe UI,sans-serif;"
-            "color:#8b949e;font-size:16px;'>"
+            "color:#5a6573;font-size:16px;'>"
             "<div style='text-align:center;'>"
             "<div style='font-size:56px;margin-bottom:20px;'>🚚</div>"
-            "<div style='color:#e6edf3;font-size:18px;font-weight:600;'>"
+            "<div style='color:#1f2a37;font-size:18px;font-weight:600;'>"
             "운송 적재 3D 도식</div>"
             "<div style='margin-top:14px;color:#6e7681;font-size:14px;'>"
-            "우측에서 <span style='color:#58a6ff;font-weight:500;'>"
+            "우측에서 <span style='color:#2563eb;font-weight:500;'>"
             "[▷ 운송 계산 실행]</span> 버튼을 눌러주세요"
             "</div></div></div></body></html>"
         )
@@ -1080,11 +1072,11 @@ class MainWindow(QMainWindow):
             if pack is None or not pack.trips:
                 empty_html = (
                     "<div style='display:flex;align-items:center;justify-content:center;"
-                    "height:100vh;font-family:sans-serif;background:#0d1117;"
-                    "color:#8b949e;font-size:16px;'>"
+                    "height:100vh;font-family:sans-serif;background:#ffffff;"
+                    "color:#5a6573;font-size:16px;'>"
                     "<div style='text-align:center;'>"
                     "<div style='font-size:48px;margin-bottom:20px;'>🚚</div>"
-                    "<div><b>회차 없음</b></div>"
+                    "<div style='color:#1f2a37;'><b>회차 없음</b></div>"
                     "<div style='margin-top:10px;color:#6e7681;font-size:14px;'>"
                     "운송 가능 화물이 없거나 패킹 결과가 비어있습니다"
                     "</div></div></div>"
@@ -1207,7 +1199,8 @@ class MainWindow(QMainWindow):
             # 3D — 어댑터로 부재 형상 item 생성(v3 세움). cid→item 은 source_index.
             ti = build_transport_input(
                 self._scene, am, dr, '단면설계',
-                TransportOptions(treat_v3_module_as_lying=False))
+                TransportOptions(treat_v3_module_as_lying=False,
+                                 treat_wall_as_lying=False))
             name_to_item = {}
             for it in list(ti.modules) + list(ti.panels):
                 name_to_item[it.name] = it
@@ -1236,8 +1229,7 @@ class MainWindow(QMainWindow):
                 })
             if missing:
                 # 타입↔item 불일치 진단(§4-보강): 단면 룩업 실패 등으로 item 누락.
-                print(f"[물량 3D] item 없는 cid {missing}개 스킵 "
-                      f"(단면 미배정/어댑터 제외 가능)", flush=True)
+                pass
 
             html = build_quantity_3d_html(items_by_type)
             path = self._write_quantity_3d_temp_html(html)
@@ -1345,7 +1337,6 @@ class MainWindow(QMainWindow):
             v = self._viewer
             if hasattr(v, 'is_ops_view_active') and v.is_ops_view_active():
                 v.hide_ops_view()
-                dprint('ANALYSIS', '[ANALYSIS] 접합부 조정 → 구조해석/물량 — ops 뷰 무효화 후 재빌드 예정')
 
         # [9C-1 임시 진단] 배치·단면 설계 탭 진입 시 타입 라벨/시그니처 콘솔 출력.
         #   동일 모듈 병합 실패·c3 중복 원인(시그니처 차이) 파악용 — 확정 후 제거.
@@ -1921,14 +1912,12 @@ class MainWindow(QMainWindow):
         - OFF 상태에서만 호출하여 새로 빌드 + ON.
         """
         if not self._scene.components:
-            dprint('ANALYSIS', '[ANALYSIS] Scene 이 비어 있음 — 해석 생략')
             return
         if not hasattr(self._controller, '_run_structural_analysis'):
             return
         # 이미 ON 이면 그대로 둠 (탭 간 이동 시 시각화 유지)
         v = self._viewer
         if hasattr(v, 'is_ops_view_active') and v.is_ops_view_active():
-            dprint('ANALYSIS', '[ANALYSIS] ops 뷰 이미 활성 — 재실행 생략 (탭 이동)')
             return
         try:
             self._controller._run_structural_analysis()
@@ -2456,7 +2445,6 @@ class MainWindow(QMainWindow):
         if comp_type is None:
             # '선택 해제' 버튼
             self._design_props.refresh_active(None)
-            dprint('PALETTE', '[PALETTE] 선택 해제')
             return
         # 캔버스에 위임 — 종속/일반 분기는 캔버스가 결정.
         # [2026-05-24] '새로/가져오기' 프롬프트는 캔버스가 거치는 컨트롤러

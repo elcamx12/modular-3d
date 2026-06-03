@@ -65,12 +65,34 @@ class SchedulePanel(QWidget):
         super().__init__(parent)
         from PyQt5.QtWebEngineWidgets import QWebEngineView
 
+        # [2026-06-02 디자인 통일] 다른 탭과 동일한 외곽 구조 — 페이지 톤(#EDF2F7)
+        #   배경 + 12px 여백 + 중앙 흰색 카드 프레임(designCardPane) 안에 웹뷰를 둠.
+        self.setStyleSheet(
+            "SchedulePanel { background: #EDF2F7; }"
+            "QWidget#designCardPane { background: #FFFFFF;"
+            " border: 1px solid #DDE4ED; border-radius: 10px; }")
         v = QVBoxLayout(self)
-        v.setContentsMargins(0, 0, 0, 0)
+        v.setContentsMargins(12, 12, 12, 12)
         v.setSpacing(0)
 
+        # 중앙 카드 — 다른 탭의 3D 카드와 동일한 흰 프레임.
+        card = QWidget()
+        card.setObjectName("designCardPane")
+        card_lay = QVBoxLayout(card)
+        card_lay.setContentsMargins(8, 8, 8, 8)
+
         self._web = QWebEngineView()
-        v.addWidget(self._web, stretch=1)
+        # [2026-06-02] 웹뷰(QWebEnginePage) 기본 배경색이 흰/회색이라, HTML 본문이
+        #   뷰포트를 다 못 덮는 영역·로딩 중에 회색으로 보였다. 페이지 캔버스 배경을
+        #   페이지 톤(#EDF2F7)으로 지정해 항상 연한 하늘색이 비치게 한다.
+        from PyQt5.QtGui import QColor
+        self._web.page().setBackgroundColor(QColor("#EDF2F7"))
+        # [2026-06-02] 공정표 전체 글자·표를 키운다 — 개별 CSS px 를 일일이 안 고치고
+        #   웹뷰 배율로 비율 확대(Chromium 이 폭에 맞춰 재배치). 헤더 통일(16px)도 같이 확대.
+        self._zoom_factor = 1.15
+        self._web.setZoomFactor(self._zoom_factor)
+        card_lay.addWidget(self._web, stretch=1)
+        v.addWidget(card, stretch=1)
 
         self._page_loaded: bool = False
         self._pending_data: Optional[Dict[str, Any]] = None
@@ -204,6 +226,11 @@ class SchedulePanel(QWidget):
     # ── 내부 ─────────────────────────────────────────────────
     def _on_load_finished(self, ok: bool) -> None:
         self._page_loaded = bool(ok)
+        # 페이지 로드 후 배율 재적용(네비게이션 시 초기화 대비).
+        try:
+            self._web.setZoomFactor(getattr(self, '_zoom_factor', 1.15))
+        except Exception:
+            pass
         if ok and self._pending_data is not None:
             data = self._pending_data
             self._pending_data = None

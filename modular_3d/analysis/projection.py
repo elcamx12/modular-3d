@@ -212,7 +212,6 @@ def _self_test():
     assert not is_orthogonal_pair(np.array([0.0, 0.0, 0.0]),
                                   np.array([100.0, 10.0, 0.0]))  # dy=10 > 5
 
-    print('projection._self_test 통과')
 
 
 if __name__ == '__main__':

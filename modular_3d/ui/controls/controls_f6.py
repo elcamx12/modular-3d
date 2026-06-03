@@ -44,7 +44,6 @@ class F6Mixin:
         """
         f5_dock = getattr(self, '_f5_dock', None)
         if f5_dock is None:
-            dprint('F5', '[F5] 도킹 패널 미등록 — main_3d.set_f5_dock 호출 누락?')
             return
 
         if f5_dock.isVisible():
@@ -63,7 +62,6 @@ class F6Mixin:
             self._viewer.set_ghost_enabled(False)  # 게이트 OFF
             self._viewer.clear_ghost()
             self._viewer.canvas.native.setFocus()
-            dprint('F5', '[F5] 도킹 닫힘')
             return
 
         # F5 진입: F6 도킹 + ops 시각화 + 선택 박스 모두 정리 (2-3·8-7·버그 패치)
@@ -99,7 +97,6 @@ class F6Mixin:
         if self._state in (AppState.PLACEMENT_PREVIEW, AppState.MOVING,
                            AppState.DIMENSION_INPUT):
             self._set_state(AppState.IDLE)
-        dprint('F5', '[F5] 도킹 열림')
 
     def _run_structural_analysis(self):
         """F6: OpenSeesPy 기반 구조해석 (Phase 1 = 모델 빌드 + 좌측 OpenSees 뷰).
@@ -116,13 +113,11 @@ class F6Mixin:
         f5_was_open = f5_dock is not None and f5_dock.isVisible()
         if f5_was_open:
             f5_dock.setVisible(False)
-            dprint('ANALYSIS', '[ANALYSIS] F6 진입 — F5 도킹 닫음')
         # F6에서는 고스트가 어떤 경로로도 나오면 안 됨 — 게이트 강제 OFF
         self._viewer.set_ghost_enabled(False)
         self._viewer.clear_ghost()
 
         if not self._scene.components:
-            dprint('ANALYSIS', '[ANALYSIS] Scene 이 비어 있음 — 해석 생략')
             # F5 만 닫고 종료(F6 토글 아님)
             return
 
@@ -134,7 +129,6 @@ class F6Mixin:
                 self._deformed_check.blockSignals(True)
                 self._deformed_check.setChecked(False)
                 self._deformed_check.blockSignals(False)
-            dprint('ANALYSIS', '[ANALYSIS] ops 뷰 OFF (메쉬 뷰 복귀)')
             self._viewer.canvas.native.setFocus()
             return
 
@@ -146,7 +140,6 @@ class F6Mixin:
             dprint('ANALYSIS', f'[ANALYSIS] OpenSees 해석 모듈 import 실패: {e}')
             return
 
-        dprint('ANALYSIS', '[ANALYSIS] F6 → OpenSees 하중조합 자동 해석 시작')
         try:
             # 토폴로지 공유 제공자 경유 — 해석·단면·접합뷰·공정이 같은 am 을
             # 재사용. 제공자 실패 시 기존 직접 빌드로 폴백(동작 보존).
@@ -157,20 +150,19 @@ class F6Mixin:
                 am = build_analysis_model(self._scene)
             # 시각화용으로 한 번 빌드 (마지막 케이스의 ops 상태가 남음 — 시각화엔 영향 없음)
             om_view = build_ops_model(am, scene=self._scene)
-            print(om_view.summary())
             check_result = self_check(om_view)
             # SelfCheckResult 인터페이스: .issues (List[str]), .problem_node_ids, .is_critical
             issues = check_result.issues
             critical = check_result.is_critical
             if issues:
                 if critical:
-                    dprint('ANALYSIS', '[ANALYSIS][중대 경고] mechanism 위험 — 좌측 빨강 강조 부재 점검:')
+                    pass
                 else:
-                    dprint('ANALYSIS', '[ANALYSIS][경고] self_check 이상 항목:')
+                    pass
                 for s in issues:
-                    print('  -', s)
+                    pass
             else:
-                dprint('ANALYSIS', '[ANALYSIS] self_check 통과')
+                pass
 
             # KDS 하중조합 일괄 해석 (1.4D, D+L, 지진/풍 ±조합, 전도방지)
             # [2026-06-02 성능] 위에서 get_analysis_model 로 확보한 am 을 그대로
@@ -178,7 +170,7 @@ class F6Mixin:
             # 가 build_analysis_model 을 다시 호출해(캐시 우회) 같은 토폴로지를 또 짓는다.
             results = solve_all_cases(self._scene, prebuilt_am=am)
             for name, res in results.items():
-                print(res.summary())
+                pass
 
             # 좌측 뷰 전환 (시각화는 om_view 사용)
             self._viewer.show_ops_view(om_view)
@@ -236,14 +228,12 @@ class F6Mixin:
             if (getattr(self, '_deformed_check', None) is not None
                     and self._deformed_check.isChecked()):
                 self._refresh_deformed_view()
-            dprint('ANALYSIS', '[ANALYSIS] 좌측 ops 뷰 ON — F6 다시 눌러 OFF')
         except Exception as e:
             import traceback
             dprint('ANALYSIS', f'[ANALYSIS] 실행 중 오류: {e}')
             traceback.print_exc()
         finally:
             self._viewer.canvas.native.setFocus()
-        dprint('ANALYSIS', '[ANALYSIS] F6 → 종료')
 
     def _populate_ops_panel(self, report_text, ops_model, analysis_model,
                             ops_results=None, all_results=None):
@@ -332,7 +322,6 @@ class F6Mixin:
         sd = self._quantity_from_section_design()
         if sd is not None:
             design_results, am = sd
-            dprint('QTY', '[QTY] 단면 설계 결과를 단일 출처로 물량 산출(초기)')
         else:
             design_results = design_all_policies(am, dl_results)
         reports = build_all_reports(self._scene, am, design_results)
@@ -355,14 +344,11 @@ class F6Mixin:
             self._analysis_panel.populate_transport(design_results, policy)
 
         # 콘솔 요약
-        dprint('QTY', '[QTY] 물량산출 자동 실행 완료')
         for policy, rep in reports.items():
             total_ton = rep.steel_items[-1].total_weight_ton if rep.steel_items else 0.0
             sec_summary = ', '.join(f'{g}:{s.name}'
                                      for g, s in rep.sections_by_group.items())
-            print(f'  {policy}: {sec_summary}  / 강재 {total_ton:.3f} ton')
         slab = next(iter(reports.values())).slab
-        print(f'  슬래브: {slab.total_volume_m3:.3f} m³, 철근 {slab.rebar_weight_ton:.3f} ton')
 
     def _run_quantity_takeoff_for_case(self, am, all_results, case_name: str):
         """(2026-05-19 작업 5) 선택 케이스에 대해 단면 산정 + 물량 집계 재실행.
@@ -394,7 +380,6 @@ class F6Mixin:
             if hasattr(self._analysis_panel, 'populate_transport'):
                 policy = getattr(self._analysis_panel, '_current_policy', '3종')
                 self._analysis_panel.populate_transport(design_results, policy)
-            dprint('QTY', f'[QTY] 케이스 {case_name} — 단면 설계 단일 출처 사용')
             return
 
         if case_name == 'ENVELOPE':
@@ -440,21 +425,16 @@ class F6Mixin:
         if hasattr(self._analysis_panel, 'populate_transport'):
             policy = getattr(self._analysis_panel, '_current_policy', '3종')
             self._analysis_panel.populate_transport(design_results, policy)
-        dprint('QTY',
-                f'[QTY] 케이스 {case_name} (K={n_seg}) 물량/응력비 재산정 완료')
 
     def _on_column_segments_changed(self, n_seg: int):
         """(2026-05-19) 기둥 층구간 분할 '적용' 버튼 → 현재 케이스 재산정."""
         from PyQt5.QtCore import Qt as _Qt
-        print(f'[QTY] 기둥 층구간 적용 클릭 — K={n_seg}')
         last_ops = getattr(self, '_last_ops_analysis', None)
         if last_ops is None or len(last_ops) < 4:
-            print('[QTY] _last_ops_analysis 없음 — 먼저 F6 해석을 한 번 실행해야 함')
             return
         am = last_ops[1]
         all_results = last_ops[3]
         if not isinstance(all_results, dict) or am is None:
-            print('[QTY] all_results 또는 am 누락')
             return
         case_name = getattr(self, '_current_case_name', 'D+L') or 'D+L'
         # 패널이 보고 있는 케이스(콤보 itemData=내부키) 우선 사용.
@@ -465,10 +445,8 @@ class F6Mixin:
                 case_name = sel
         except Exception:
             pass
-        print(f'[QTY] 재산정 시작 — case={case_name}, K={n_seg}')
         try:
             self._run_quantity_takeoff_for_case(am, all_results, case_name)
-            print(f'[QTY] 재산정 완료')
         except Exception as e:
             from modular_3d._utils.debug import log_error
             log_error(f'기둥 층구간 재산정 실패: {e}', cat='controls_f6', exc=True)
@@ -504,7 +482,6 @@ class F6Mixin:
         # 은 'ENVELOPE' 그대로 유지 — _active_case_results 가 D+L 로 폴백.
         self._current_case_name = (
             'D+L' if case_name == 'ENVELOPE' else case_name)
-        dprint('ANALYSIS', f'[ANALYSIS] 케이스 전환 → {case_name}')
 
         # 물량 보고서 재산정 — 단면 산정/응력비가 케이스에 따라 달라진다.
         last_ops = getattr(self, '_last_ops_analysis', None)
@@ -996,8 +973,6 @@ class F6Mixin:
             c1 = om.node_tags.get(m.n1)
             c2 = om.node_tags.get(m.n2)
             comp_ids = m.source_comp_ids if hasattr(m, 'source_comp_ids') else []
-            print(f'[F6 SELECT] mid={mid} kind={m.kind} role={m.role} '
-                  f'comp={comp_ids} n1={m.n1}@{c1} n2={m.n2}@{c2}')
             self._viewer.highlight_ops_member(om, m.n1, m.n2)
             # Phase 16 — 트리 잎 클릭 → 캔버스 우하단으로 정보창 등장
             self._pin_member_at_canvas_corner(int(mid))

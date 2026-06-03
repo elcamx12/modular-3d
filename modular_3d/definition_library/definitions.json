@@ -2,30 +2,30 @@
   "version": 1,
   "definitions": [
     {
-      "name": "11",
-      "root_type": "core",
-      "component_count": 4,
-      "type_summary": "core×2, core_slab×2",
+      "name": "A시나리오 작은모듈",
+      "root_type": "module",
+      "component_count": 3,
+      "type_summary": "interior_wall×2, module×1",
       "state": {
         "version": 1,
         "n_floors": 1,
         "components": [
           {
-            "id": 2,
-            "comp_type": "core",
+            "id": 1,
+            "comp_type": "module",
             "position": [
-              -600.0,
-              1800.0,
+              -2800.0,
+              -2300.0,
               0.0
             ],
             "rotation": 0,
             "dimensions": {
               "width": 3400.0,
-              "depth": 300.0,
+              "depth": 5700.0,
               "height": 3400.0
             },
             "anchor": 0,
-            "group_id": 1,
+            "group_id": 8,
             "floor_index": 0,
             "sub_index": 0,
             "anchor_edge_id": -1,
@@ -35,141 +35,154 @@
             "merged_wall_ids": [],
             "parent_id": 0,
             "joint_records": [],
-            "openings": [],
+            "openings": [
+              {
+                "face": "wall_0",
+                "u": 450.0,
+                "v": 900.0,
+                "w": 2200.0,
+                "h": 1400.0
+              }
+            ],
             "beam_section_type": "shs"
           },
           {
-            "id": 6,
-            "comp_type": "core",
+            "id": 2,
+            "comp_type": "interior_wall",
             "position": [
-              2800.0,
-              2100.0,
+              -1200.0,
+              3200.0,
               0.0
             ],
             "rotation": 270,
             "dimensions": {
-              "width": 3400.0,
-              "depth": 300.0,
+              "width": 2400.0,
+              "depth": 100.0,
               "height": 3400.0
             },
             "anchor": 0,
-            "group_id": 1,
-            "floor_index": 0,
-            "sub_index": 0,
-            "anchor_edge_id": -1,
-            "mid_beam_level": null,
-            "merge_with_panel": false,
-            "merged_fp_id": null,
-            "merged_wall_ids": [],
-            "parent_id": 0,
-            "joint_records": [],
-            "openings": [],
-            "beam_section_type": "shs"
-          },
-          {
-            "id": 10,
-            "comp_type": "core_slab",
-            "position": [
-              -600.0,
-              -1300.0,
-              3220.0
-            ],
-            "rotation": 0,
-            "dimensions": {
-              "width": 3700.0,
-              "depth": 3400.0,
-              "thickness": 180.0,
-              "height": 180.0,
-              "wall_thickness": 300.0
-            },
-            "anchor": 0,
-            "group_id": 1,
+            "group_id": 8,
             "floor_index": 0,
             "sub_index": 1,
-            "anchor_edge_id": -1,
+            "anchor_edge_id": 1,
             "mid_beam_level": null,
             "merge_with_panel": false,
             "merged_fp_id": null,
             "merged_wall_ids": [],
-            "parent_id": 0,
+            "parent_id": 1,
             "joint_records": [],
             "openings": [],
             "beam_section_type": "shs"
           },
           {
-            "id": 11,
-            "comp_type": "core_slab",
+            "id": 3,
+            "comp_type": "interior_wall",
             "position": [
-              -600.0,
-              -1300.0,
-              -180.0
-            ],
-            "rotation": 0,
-            "dimensions": {
-              "width": 3700.0,
-              "depth": 3400.0,
-              "thickness": 180.0,
-              "height": 180.0,
-              "wall_thickness": 300.0
-            },
-            "anchor": 0,
-            "group_id": 1,
-            "floor_index": 0,
-            "sub_index": 2,
-            "anchor_edge_id": -1,
-            "mid_beam_level": null,
-            "merge_with_panel": false,
-            "merged_fp_id": null,
-            "merged_wall_ids": [],
-            "parent_id": 0,
-            "joint_records": [],
-            "openings": [],
-            "beam_section_type": "shs"
-          }
-        ],
-        "rooms": [],
-        "joint_overrides": []
-      }
-    },
-    {
-      "name": "2",
-      "root_type": "module",
-      "component_count": 1,
-      "type_summary": "module×1",
-      "state": {
-        "version": 1,
-        "n_floors": 1,
-        "components": [
-          {
-            "id": 69,
-            "comp_type": "module",
-            "position": [
-              1400.0,
-              -4000.0,
+              -2600.0,
+              700.0,
               0.0
             ],
             "rotation": 0,
             "dimensions": {
-              "width": 3400.0,
-              "depth": 6820.0,
+              "width": 3000.0,
+              "depth": 100.0,
               "height": 3400.0
             },
             "anchor": 0,
-            "group_id": 1,
+            "group_id": 8,
             "floor_index": 0,
-            "sub_index": 0,
-            "anchor_edge_id": -1,
+            "sub_index": 2,
+            "anchor_edge_id": 3,
             "mid_beam_level": null,
             "merge_with_panel": false,
             "merged_fp_id": null,
             "merged_wall_ids": [],
-            "parent_id": 0,
+            "parent_id": 1,
             "joint_records": [],
             "openings": [],
             "beam_section_type": "shs"
           }
         ],
-        "rooms": [],
+        "rooms": [
+          {
+            "id": 10,
+            "room_type": "bedroom",
+            "polygon": [
+              [
+                -2800.0,
+                700.0
+              ],
+              [
+                -2800.0,
+                -2300.0
+              ],
+              [
+                600.0,
+                -2300.0
+              ],
+              [
+                600.0,
+                700.0
+              ]
+            ],
+            "floor_index": 0,
+            "group_id": 1,
+            "live_load_override": null,
+            "sdl_override": null
+          },
+          {
+            "id": 12,
+            "room_type": "bathroom",
+            "polygon": [
+              [
+                -1100.0,
+                3400.0
+              ],
+              [
+                -1100.0,
+                800.0
+              ],
+              [
+                600.0,
+                800.0
+              ],
+              [
+                600.0,
+                3400.0
+              ]
+            ],
+            "floor_index": 0,
+            "group_id": 2,
+            "live_load_override": null,
+            "sdl_override": null
+          },
+          {
+            "id": 13,
+            "room_type": "entrance",
+            "polygon": [
+              [
+                -2800.0,
+                3400.0
+              ],
+              [
+                -2800.0,
+                800.0
+              ],
+              [
+                -1200.0,
+                800.0
+              ],
+              [
+                -1200.0,
+                3400.0
+              ]
+            ],
+            "floor_index": 0,
+            "group_id": 3,
+            "live_load_override": null,
+            "sdl_override": null
+          }
+        ],
         "joint_overrides": []
       }
     }

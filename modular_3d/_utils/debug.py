@@ -108,9 +108,13 @@ def _get_logger() -> logging.Logger:
             pass
 
     # 콘솔 핸들러 — INFO+, 메시지만(기존 print 느낌 유지), cp949 안전.
+    # [2026-06-03 출력 정리] 평상시 진단/통계 print 를 전수 삭제하고, 실패 알림
+    # (대부분 except 블록의 dprint) 만 남겼다. 그 버그 출력이 콘솔에 보이도록
+    # 레벨을 INFO 로 둔다. 정상 동작 중에는 except 에 안 들어가 콘솔이 비어 있고,
+    # 문제가 생기면(=버그) 그 메시지만 떠서 즉시 인지된다.
     try:
         sh = _SafeStreamHandler(sys.stdout)
-        sh.setLevel(logging.WARNING)
+        sh.setLevel(logging.INFO)
         sh.setFormatter(logging.Formatter('%(message)s'))
         logger.addHandler(sh)
     except Exception:

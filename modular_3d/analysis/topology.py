@@ -523,48 +523,26 @@ def _extract_vertical_module(comp: Vertical3Module) -> _LocalExtract:
 
 
 def _extract_core(comp: Core) -> _LocalExtract:
-    """Core (RC 코어벽) → 외곽 boundary 프레임 + 내부 등가 트러스 격자.
+    """Core (RC 코어벽) → 고정 경계용 단순 선 프레임.
 
-    [정책 2026-05-17 — 트러스 등가 모델]
-    학계 표준(Panagiotou et al. 2012 / OpenSeesWiki Squat RC Wall) 의 격자
-    + X 대각 트러스 패턴을 적용. 외곽 boundary element 는 elasticBeamColumn
-    으로 유지(다른 컴포넌트와 6DOF 결합 인터페이스), 내부 격자는 truss
-    element 로 면내 거동(전단·휨) 표현.
+    [정책 2026-06-03 — 트러스 격자 폐기 → 고정 경계]
+    코어를 강성 요소가 아니라 '바닥처럼 안 움직이는 고정 경계'로 본다
+    (ops_builder._step_fix_base_nodes 가 코어 노드를 전부 6DOF 고정). 따라서
+    면내 강성을 표현하던 트러스 등가 격자(column/runner/truss_v/h/d)를 버리고,
+    R09 접합 인터페이스 + 고정 노드 확보용 단순 선만 만든다. 짧은벽·ㅗ자 연결에서
+    격자가 mechanism 을 만들어 발산하던 문제가 원천 제거된다.
 
-    [z 범위 정책 — 2026-05-18 갱신]
-    격자 z 범위 = 0 ~ h (코어 본체 전체 높이). 이전엔 모듈 천장보와 맞춰
-    z_top = h - SECTION_W_MM 였으나, 그러면 코어 슬래브 코너(z=h) 와
-    격자 상단(z=h-200) 사이 200mm 갭이 생겨 슬래브-코어벽 노드 통합이
-    실패했다. 격자를 z=0~h 전체로 확장해 슬래브 코너가 격자 상단 노드와
-    일치하도록. 모듈 천장보(z=h-SECTION_W_MM) 와의 결합은 R09 코어 룰이
-    코어 축선 사영으로 별도 처리하므로 격자에 흡수하지 않는다.
+    [형상] 코어벽 길이방향 중심선(로컬 y=half_t)을 3 z 레벨에 수평선으로 생성:
+      - z=0            : 바닥 (role core_bottom_runner)
+      - z=h-SECTION_W  : 모듈 천장보 레벨 (role core_ceiling_runner) — 천장 접합
+                         사영용. 모듈 천장보(z=h-SECTION_W)와 같은 평면이라 R09 성립.
+      - z=h+gap        : 코어 슬래브 받침 (role core_top_runner)
+    + 양 끝 수직 기둥선(role core_column, z 레벨 사이 분절)으로 형상·고정 노드 확보.
+    강성은 무의미(전부 고정)하나 부재 등록/단면이 깨지지 않게 유효값을 유지한다.
 
-    [형상]
-    1. 외곽 4 코너 + 분할 노드 — z 양 끝(0, h) 두 변에 N_x+1 노드 한 줄씩,
-       x 양 끝(half_t, L-half_t) 두 변에 N_y+1 노드 한 줄씩. 격자 내부에
-       (N_x-1)×(N_y-1) 내부 노드. 총 (N_x+1)×(N_y+1) 노드.
-    2. 격자 단위 ≈ CORE_TRUSS_GRID_MM(800mm). 분할 수 N = round(치수/800).
-       격자 칸 크기 dx = inner_width/N_x, dy = h/N_y.
-
-    [부재]
-    - 외곽 컬럼 (kind='column', role='core_column'):
-        i=0 또는 i=N_x 의 한 줄. 각 segment 단면 = t × dx/2 (트러스 등가).
-    - 외곽 런너 (kind='beam', role='core_top_runner'/'core_bottom_runner'):
-        j=0 또는 j=N_y 의 한 줄. 각 segment 단면 = t × dy/2.
-    - 내부 수직 truss (kind='truss', role='core_truss_v'):
-        i=1..N_x-1 의 각 segment. A = t × dx.
-    - 내부 수평 truss (kind='truss', role='core_truss_h'):
-        j=1..N_y-1 의 각 segment. A = t × dy.
-    - X 대각 truss (kind='truss', role='core_truss_d'):
-        각 격자 칸에 2 본. A = t × min(dx,dy)/2 (보수적 면내 전단 강성).
-
-    [결합 인터페이스]
-    외곽 boundary 노드는 elasticBeamColumn 끝점이라 6DOF — 다른 컴포넌트와
-    자연 결합. 내부 truss 노드는 elasticBeamColumn 무관해 회전 자유도가
-    무사용 → ops_builder 가 자동으로 회전 자유도 fix(0,0,0,1,1,1) 처리.
+    [짧은 벽] L<=t 면 수평선 길이가 0 이하 → 수직 기둥선 1줄(x 중앙)만 만든다.
+    인접 벽·슬래브 노드와 _round_key 통합 또는 ㄷ자 빈공간 연결선으로 결합된다.
     """
-    TARGET_GRID = CORE_TRUSS_GRID_MM   # 격자 단위 목표 (mm) — 카탈로그 노출
-
     L = float(comp.dimensions['width'])
     t = float(comp.dimensions['depth'])
     h = float(comp.dimensions['height'])
@@ -572,102 +550,54 @@ def _extract_core(comp: Core) -> _LocalExtract:
     ax, ay = comp._anchor_offset(L, t)
     rot = comp.rotation
     pos = comp.position
-
     to_world = make_local_to_world(ax, ay, rot, pos)
     half_t = t / 2.0
-    # [정책 2026-06-01 코어벽 상단 = 코어 슬래브 받침 평면(z = h + gap)]
-    # 코어 슬래브 frame 노드는 슬래브윗면 + MODULE_JOINT_GAP_MM(=h+gap) 에 생성
-    # (아래 _build_core_slab 의 z_top_local = t + gap, R09 모듈천장 정합용).
-    # 코어벽 상단을 h 로만 두면 슬래브 노드(h+gap)와 20mm 어긋나 노드 통합 실패
-    # → 코어 슬래브가 벽 위에 안 얹히고 떠서 횡력에 발산(2026-06-01 진단).
-    # 상단을 h+gap 으로 올려 ① 코어 슬래브 받침 노드와 z 일치(자동 통합) ②
-    # 층고 H=h+gap 이므로 상단(k·H+h+gap)=다음층 코어벽 base((k+1)·H) → 층간
-    # 코어벽 연속까지 동시 충족. 모듈 천장(h-SECTION_W) 결합은 R09 축선 사영이라
-    # 격자 z 범위 확장에 영향 없음.
+
+    # z 레벨 — 바닥 / 슬래브받침. 중복 제거 후 정렬(예외 방어).
+    # [2026-06-03] 천장보 레벨(z=h-SECTION_W) 수평선은 코어벽마다 독립이라 박스
+    # 모서리에서 끊긴다 → 코어 슬래브가 천장보 레벨에도 폐곡선(core_ceiling_runner)을
+    # 만들어 박스로 닫는다(_extract_core_slab). 여기선 바닥·슬래브받침 수평선 + 기둥만.
+    z_floor = 0.0
     z_top = h + MODULE_JOINT_GAP_MM
-    # 외곽 두께 안쪽 격자 폭 — 양 끝 노드는 x=half_t, x=L-half_t 에 위치.
-    inner_width = L - t
+    run_role = {z_floor: 'core_bottom_runner', z_top: 'core_top_runner'}
+    z_levels = sorted({z_floor, z_top})
 
-    # 격자 분할 수 — round(치수 / TARGET_GRID), 최소 1.
-    N_x = max(1, int(round(inner_width / TARGET_GRID)))
-    N_y = max(1, int(round(z_top / TARGET_GRID)))
-    dx = inner_width / N_x
-    dy = z_top / N_y
-
-    # 노드 격자 (i, j) → key, (N_x+1) × (N_y+1)
     coords: Dict[Tuple[int, int, int], np.ndarray] = {}
-    node_keys: Dict[Tuple[int, int], Tuple[int, int, int]] = {}
-    for i in range(N_x + 1):
-        x_local = half_t + dx * i
-        for j in range(N_y + 1):
-            z_local = dy * j
-            world = to_world(x_local, half_t, z_local)
-            key = _round_key(world)
-            coords[key] = world
-            node_keys[(i, j)] = key
-
     members: List[dict] = []
 
-    # ── 외곽 컬럼 (i=0 좌측, i=N_x 우측) — elasticBeamColumn ──
-    # 단면: 폭 t × 높이 dx/2 (한 격자 칸의 양쪽 컬럼이 콘크리트 면적 절반씩 분담)
-    outer_col_h = dx / 2.0
-    for i in (0, N_x):
-        for j in range(N_y):
+    def _key(x: float, z: float) -> Tuple[int, int, int]:
+        w = to_world(x, half_t, z)
+        k = _round_key(w)
+        coords[k] = w
+        return k
+
+    inner_width = L - t
+    x0 = half_t           # 길이방향 끝(기둥 중심) — 외곽 두께 안쪽.
+    x1 = L - half_t
+
+    if inner_width > 1.0:
+        # 정상 벽 — 각 z 레벨 수평선 + 양 끝 수직 기둥선.
+        for z in z_levels:
             members.append(dict(
-                n1_key=node_keys[(i, j)],
-                n2_key=node_keys[(i, j + 1)],
+                n1_key=_key(x0, z), n2_key=_key(x1, z),
+                kind='beam', role=run_role.get(z, 'core_ceiling_runner'),
+                section_w=t, section_h=SECTION_W_MM, section_t=t,
+            ))
+        for xe in (x0, x1):
+            for za, zb in zip(z_levels[:-1], z_levels[1:]):
+                members.append(dict(
+                    n1_key=_key(xe, za), n2_key=_key(xe, zb),
+                    kind='column', role='core_column',
+                    section_w=t, section_h=t, section_t=t,
+                ))
+    else:
+        # 짧은 벽 — 수직 기둥선 1줄(x 중앙)만(수평선은 길이 0이라 생략).
+        xc = L / 2.0
+        for za, zb in zip(z_levels[:-1], z_levels[1:]):
+            members.append(dict(
+                n1_key=_key(xc, za), n2_key=_key(xc, zb),
                 kind='column', role='core_column',
-                section_w=t, section_h=outer_col_h, section_t=t,
-            ))
-
-    # ── 외곽 런너 (j=0 하단, j=N_y 상단) — elasticBeamColumn ──
-    outer_run_h = dy / 2.0
-    for j, role in ((0, 'core_bottom_runner'), (N_y, 'core_top_runner')):
-        for i in range(N_x):
-            members.append(dict(
-                n1_key=node_keys[(i, j)],
-                n2_key=node_keys[(i + 1, j)],
-                kind='beam', role=role,
-                section_w=t, section_h=outer_run_h, section_t=t,
-            ))
-
-    # ── 내부 수직 truss (i=1..N_x-1) ──
-    for i in range(1, N_x):
-        for j in range(N_y):
-            members.append(dict(
-                n1_key=node_keys[(i, j)],
-                n2_key=node_keys[(i, j + 1)],
-                kind='truss', role='core_truss_v',
-                section_w=t, section_h=dx, section_t=t,
-            ))
-
-    # ── 내부 수평 truss (j=1..N_y-1) ──
-    for j in range(1, N_y):
-        for i in range(N_x):
-            members.append(dict(
-                n1_key=node_keys[(i, j)],
-                n2_key=node_keys[(i + 1, j)],
-                kind='truss', role='core_truss_h',
-                section_w=t, section_h=dy, section_t=t,
-            ))
-
-    # ── X 대각 truss (각 격자 칸 2 본) ──
-    diag_h = min(dx, dy) / 2.0
-    for i in range(N_x):
-        for j in range(N_y):
-            # / 대각: (i, j) ↔ (i+1, j+1)
-            members.append(dict(
-                n1_key=node_keys[(i, j)],
-                n2_key=node_keys[(i + 1, j + 1)],
-                kind='truss', role='core_truss_d',
-                section_w=t, section_h=diag_h, section_t=t,
-            ))
-            # \ 대각: (i+1, j) ↔ (i, j+1)
-            members.append(dict(
-                n1_key=node_keys[(i + 1, j)],
-                n2_key=node_keys[(i, j + 1)],
-                kind='truss', role='core_truss_d',
-                section_w=t, section_h=diag_h, section_t=t,
+                section_w=t, section_h=t, section_t=t,
             ))
 
     return _LocalExtract(coords=coords, members=members, merge_group=None)
@@ -709,7 +639,14 @@ def _extract_core_slab(comp: CoreSlab) -> _LocalExtract:
     #       천장 코너 평면) 으로 이동. 슬래브 두께 변경에 자동 대응.
     # 부수: 슬래브 frame 자중·강성 작용 위치가 슬래브 윗면보다 20mm 위로
     #       올라가지만 모멘트 팔 영향 미미. 다이어프램은 같은 평면 → 일관성 향상.
-    z_top_local = t + MODULE_JOINT_GAP_MM
+    #
+    # [함정 — 천장 슬래브 ↔ 1층 바닥 슬래브 구분 필수]
+    # 위 +갭 정책은 '모듈 천장에 얹히는 천장 슬래브' 전용이다. 1층 바닥 코어
+    # 슬래브(multi_floor.regenerate_core_slabs 가 pos.z=-thickness 로 추가)는
+    # 상면이 지면(z=0)에 맞아야 하므로 갭을 더하면 노드가 20mm 떠 코어벽 바닥
+    # (z=0)과 어긋난다. 바닥 슬래브는 pos.z<0 으로만 식별되므로 그때는 갭 제외.
+    is_bottom_slab = float(pos[2]) < 0.0
+    z_top_local = t if is_bottom_slab else t + MODULE_JOINT_GAP_MM
 
     # 4 노드 — 코너만 (다이어프램이 면내 강성 전담 → 중앙 mid 노드 불필요)
     p_c0 = to_world(inset,             inset,             z_top_local)
@@ -737,6 +674,24 @@ def _extract_core_slab(comp: CoreSlab) -> _LocalExtract:
         dict(n1_key=k_c3, n2_key=k_c0, kind='beam', role='core_slab_beam',
              section_w=b_w, section_h=b_h, section_t=t),
     ]
+    # [2026-06-03] 천장보 레벨 폐곡선 — 천장 슬래브면 모듈 천장보 레벨(슬래브 받침
+    # − SECTION_W − gap = 코어벽 base + h − SECTION_W)에도 같은 footprint 4변 보를
+    # 만들어 박스로 닫는다. 코어벽 천장보 수평선이 모서리에서 끊기던 문제를 없애고,
+    # R09 천장 접합(모듈 천장보 사영)이 이 폐곡선 위에서 성립한다.
+    if not is_bottom_slab:
+        zc = z_top_local - (SECTION_W_MM + MODULE_JOINT_GAP_MM)
+        q = [to_world(inset, inset, zc),
+             to_world(inset + W_inner, inset, zc),
+             to_world(inset + W_inner, inset + D_inner, zc),
+             to_world(inset, inset + D_inner, zc)]
+        kq = [_round_key(p) for p in q]
+        for i in range(4):
+            coords[kq[i]] = q[i]
+        for a, b in ((0, 1), (1, 2), (2, 3), (3, 0)):
+            members.append(dict(
+                n1_key=kq[a], n2_key=kq[b], kind='beam',
+                role='core_ceiling_runner',
+                section_w=t_wall, section_h=SECTION_W_MM, section_t=t_wall))
     return _LocalExtract(coords=coords, members=members, merge_group=None)
 
 
@@ -954,7 +909,7 @@ def _merge_panel_overlaps_and_check(model: AnalysisModel) -> None:
 
 def build_analysis_model(scene: Scene) -> AnalysisModel:
     """Scene → AnalysisModel."""
-    # [2026-05-25 A7 수정] 종속(캔틸·중간보)·합체 구조벽의 보 단면 타입은
+    # [2026-05-25 A7 수정] 종속(캔틸·중간보)·합체 벽패널의 보 단면 타입은
     # 부모/패널을 따라가야 한다. comp.beam_section_type 직접 사용은 UI 동기화가
     # 선행돼야만 옳아(불러오기 후 미동기화 시 어긋남) effective 로 항상 부모 추종.
     from modular_3d.model import effective_beam_section_type
@@ -986,7 +941,6 @@ def build_analysis_model(scene: Scene) -> AnalysisModel:
             n1 = local_key_to_gid[md['n1_key']]
             n2 = local_key_to_gid[md['n2_key']]
             if n1 == n2:
-                dprint('topology', f"[topology] WARN: 길이 0 부재 무시 — comp #{comp.id}, role={md['role']}")
                 continue
             # 셸 요소: 4 노드 + kind='shell'. n3_key/n4_key 가 dict 에 있음.
             n3 = 0
@@ -1026,6 +980,7 @@ def build_analysis_model(scene: Scene) -> AnalysisModel:
     # 끝점에서 분할하고 노드를 공유 — mid_* 가 모듈에 구조적으로 종속되도록.
     _split_hosts_for_mid_endpoints(model)
 
+
     # 완전 겹침 통합 + 부분 겹침 검사 (좌표 기반, 노드 독립)
     _merge_panel_overlaps_and_check(model)
     _merge_duplicate_members(model)
@@ -1064,7 +1019,9 @@ def _build_diaphragms(model: AnalysisModel, scene: Scene) -> None:
     group_z: Dict[Tuple[int, int], float] = {}  # 대표 z (평균)
     group_hidden: Dict[Tuple[int, int], bool] = {}  # 시각화 숨김 플래그
 
-    diaphragm_body_types = (Module, FloorPanel, CoreSlab, Vertical3Module)
+    # [2026-06-03] CoreSlab 제외 — 코어는 고정 경계라 다이어프램 불필요. 코어
+    # 슬래브는 R09 접합용 선(4변 보)으로만 두고, 그 노드는 코어 고정에 포함된다.
+    diaphragm_body_types = (Module, FloorPanel, Vertical3Module)
 
     # 1) 본체 컴포넌트별 z 레벨 그룹화
     # [정책 2026-05-18 바닥만 다이어프램]
@@ -1182,6 +1139,8 @@ def _consolidate_dependent_nodes(model: AnalysisModel, scene: Scene) -> None:
     - 노드 사전·부재 사전·comp_to_nodes·cantilever_anchor_node_ids 모두 갱신.
     """
     pairs: List[Tuple[int, int]] = []  # (a, b) — 두 nid 를 같은 root 로 통합
+    # 코어 모서리 통합 노드의 목표 좌표(두 벽 중심선 직각 교차점). 통합 후 적용.
+    corner_targets: Dict[int, np.ndarray] = {}
 
     # 1) 캔틸레버 종속
     for cid, comp in scene.components.items():
@@ -1319,11 +1278,12 @@ def _consolidate_dependent_nodes(model: AnalysisModel, scene: Scene) -> None:
                             break
 
     # 3) 코어 다층 적층 (같은 group_id 인접 floor_index)
+    # [2026-06-03] 코어 노드는 전부 6DOF 고정(고정 경계)이라 다층 적층·모서리
+    # 통합이 불필요하다. 게다가 통합 로직(xy 일치 + dz 5~500)이 새 선 모델의
+    # 천장보 레벨 노드(z=3200)와 위층 base(z=3420, dz=220)를 잘못 합쳐 zero-length
+    # 기둥선을 만든다 → 코어 통합을 비활성. 코어 연결은 R09 사영 + 빈공간 연결선이
+    # 담당하고, 중복 좌표 노드는 전부 고정이라 무해하다.
     cores_by_gid: Dict[int, List[Tuple[int, object]]] = {}
-    for cid, comp in scene.components.items():
-        if isinstance(comp, Core):
-            gid = getattr(comp, 'group_id', 0)
-            cores_by_gid.setdefault(gid, []).append((cid, comp))
     # [2026-05-13 wide-column 전환 후 단순화]
     # 같은 group_id 내 모든 코어 노드 페어 중 xy 일치(< 1mm) + z 갭 ≤ 500mm
     # 페어를 통합. 인접 층 적층이든 같은 층 모서리든 자동 처리(모서리는
@@ -1358,6 +1318,14 @@ def _consolidate_dependent_nodes(model: AnalysisModel, scene: Scene) -> None:
     # 좌표가 정확히 일치하지 않음. 평면 거리 ≤ 임계 페어를 같은 nid 로 통합해
     # 시각상 한 점에서 만나도록 보정.
     CORE_CORNER_TOL = 500.0  # 두께 t(300) + 여유. 두 벽 끝점 사이 거리 한도.
+    # [함정 — 통합 좌표를 생성순서(작은 nid)에 맡기면 모서리가 좌우 비대칭이 된다]
+    # 두 벽 중심선은 ㄷ자 모서리에서 두께 절반씩 어긋난다(가로벽 중심선이 세로벽
+    # 중심선까지 못 닿음). union-find 가 살리는 root 좌표를 그대로 두면, root 가
+    # 가로벽이면 세로벽이 끌려와 사선이 되고, root 가 세로벽이면 가로벽이 끌려와
+    # 사선 없이 늘어난다 — 즉 어느 쪽이 끌려가는지가 부재 생성순서에 좌우돼 한쪽
+    # 모서리만 망가진다. 해결: 모서리 페어마다 '두 벽 중심선 직각 교차점'을 미리
+    # 계산해 두고(corner_targets), 통합 후 살아남은 노드 좌표를 교차점으로 덮어쓴다.
+    # → 양쪽 모서리 모두 가로벽이 교차점까지 늘어나고 세로벽은 그대로 → 좌우 대칭.
     for gid, lst in cores_by_gid.items():
         same_floor: Dict[int, List[Tuple[int, object]]] = {}
         for cid, c in lst:
@@ -1366,10 +1334,14 @@ def _consolidate_dependent_nodes(model: AnalysisModel, scene: Scene) -> None:
         for fi, sf_lst in same_floor.items():
             if len(sf_lst) < 2:
                 continue
+            comp_of = {cid: c for cid, c in sf_lst}
             cids = [x[0] for x in sf_lst]
             for i in range(len(cids)):
                 for j in range(i + 1, len(cids)):
                     ci, cj = cids[i], cids[j]
+                    # 가로(rot%180==0) / 세로(rot%180==90) 판별 — 교차점 산출용
+                    ri = int(round(float(getattr(comp_of[ci], 'rotation', 0)))) % 180
+                    rj = int(round(float(getattr(comp_of[cj], 'rotation', 0)))) % 180
                     ci_nids = model.comp_to_nodes.get(ci, [])
                     cj_nids = model.comp_to_nodes.get(cj, [])
                     for nid_a in ci_nids:
@@ -1387,6 +1359,16 @@ def _consolidate_dependent_nodes(model: AnalysisModel, scene: Scene) -> None:
                             if dxy < 1.0 or dxy > CORE_CORNER_TOL:
                                 continue
                             pairs.append((nid_a, nid_b))
+                            # 한 벽 가로 + 한 벽 세로일 때만 직각 교차점 정의:
+                            # 세로벽 노드의 x, 가로벽 노드의 y 를 취한다.
+                            if ri != rj:
+                                if ri == 90:   # ci 세로, cj 가로
+                                    xc, yc = na.coord[0], nb.coord[1]
+                                else:          # ci 가로, cj 세로
+                                    xc, yc = nb.coord[0], na.coord[1]
+                                tgt = np.array([xc, yc, na.coord[2]], dtype=np.float64)
+                                corner_targets[nid_a] = tgt
+                                corner_targets[nid_b] = tgt
 
     if not pairs:
         return
@@ -1455,7 +1437,14 @@ def _consolidate_dependent_nodes(model: AnalysisModel, scene: Scene) -> None:
         new_anchors.add(remap.get(nid, nid))
     model.cantilever_anchor_node_ids = new_anchors
 
-    dprint('topology', f'[topology] 종속 관계 노드 통합: {len(remap)} 노드 흡수 (캔틸/합체 벽-FP/코어 다층)')
+    # 코어 모서리: 살아남은 노드 좌표를 두 벽 중심선 직각 교차점으로 보정.
+    # (생성순서로 정해진 root 좌표를 덮어 좌우 모서리 동작을 대칭화 — 사선 제거)
+    for nid, tgt in corner_targets.items():
+        root = _find(nid)
+        node = model.nodes.get(root)
+        if node is not None:
+            node.coord = tgt
+
 
 
 # ── 중간보·중간기둥 ↔ host 보 분할 매칭 ────────────────────────
@@ -1577,7 +1566,7 @@ def _split_hosts_for_mid_endpoints(model: 'AnalysisModel') -> None:
         n_split += 1
 
     if n_split > 0:
-        dprint('topology', f'[topology] mid_*/host 보 분할 매칭: {n_split}건')
+        pass
 
 
 # ── 디버그 요약 ──────────────────────────────────────────────

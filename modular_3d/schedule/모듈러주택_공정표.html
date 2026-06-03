@@ -749,15 +749,23 @@
   }
   body {
   font-family: 'Freesentation', 'Malgun Gothic', 'Segoe UI', Arial, sans-serif;
-  background: #F0F0F0;
+  /* [2026-06-02] 회색(#F0F0F0) → 다른 탭과 동일한 페이지 톤(#EDF2F7, 연한 하늘색). */
+  background: #EDF2F7;
   color: #202020;
+  /* [2026-06-02] 전체 글자 크기는 웹뷰 배율(setZoomFactor)로 키운다 — 개별 px 를
+     일일이 안 건드려도 모든 텍스트·표가 비율로 커지고 폭에 맞춰 재배치됨. */
   font-size: 12px;
   }
+  html { background: #EDF2F7; }
   /* [2026-06-01] 전역 폰트 강제 — input/select/button/table 등 inherit 안 되는 요소도
      모두 Freesentation 으로. Paperlogy 는 헤더에서 별도 지정. */
   body, input, select, button, textarea, table, th, td, span, div, label, p, h1, h2, h3, h4, h5, h6 {
   font-family: 'Freesentation', 'Malgun Gothic', 'Segoe UI', Arial, sans-serif;
   }
+  /* [2026-06-02] 카드 안 모든 글자·숫자를 Freesentation 으로 *강제*(!important) —
+     표 셀·입력값·간트 라벨 등 개별(inline) 폰트가 남아 있어 안 바뀌던 것들까지 덮는다.
+     헤더(.card-header)는 아래 Paperlogy !important 규칙이 specificity 로 우선되어 유지됨. */
+  * { font-family: 'Freesentation', 'Malgun Gothic', 'Segoe UI', Arial, sans-serif !important; }
   /* Paperlogy 는 .card-header 와 명시된 곳에만. */
   .card-header, .card-header.blue, .card-header.red, .card-header.purple, .card-header.dark {
   font-family: 'Paperlogy', 'Malgun Gothic', sans-serif !important;
@@ -817,16 +825,27 @@
   .card-header.red,
   .card-header.purple,
   .card-header.dark {
-  background: #1F4E79 !important;
-  color: #FFFFFF !important;
-  border-bottom: none;
-  padding: 10px 16px;
+  /* [2026-06-02] 다른 탭 카드처럼 — 다크블루로 꽉 찬 헤더 바 대신, 흰 배경 위에
+     다크블루 제목 글씨 + 얇은 구분선. (다른 탭 GroupBox 제목 톤과 통일) */
+  background: #FFFFFF !important;
+  color: #1F4E79 !important;
+  border-bottom: 1px solid #DDE4ED;
+  padding: 12px 16px 10px 16px;
   font-family: 'Paperlogy', 'Malgun Gothic', sans-serif;
-  font-weight: 700;
-  font-size: 14px;
-  letter-spacing: 0.2px;
+  font-weight: 800;
+  /* [2026-06-02] 모든 카드 헤더 글자 크기 동일하게(공정바가 작던 문제) + 키움. */
+  font-size: 16px !important;
+  letter-spacing: 0;
   }
-  .card-body { padding: 8px 10px; }
+  /* 헤더 안 제목 span(공정바 등)도 동일 크기로 — 우측 줌 컨트롤(작은 글자)은 제외. */
+  /* [2026-06-02] 헤더 제목 span(공정바 등)은 Paperlogy. 위 * 규칙이 span 에 직접
+     Freesentation 을 박아 상속을 이기므로, 제목 span 에 Paperlogy 를 직접 지정한다.
+     (우측 줌 컨트롤은 :first-child 가 아니라 영향 없음 → Freesentation 유지) */
+  .card-header > span:first-child {
+  font-family: 'Paperlogy', 'Malgun Gothic', sans-serif !important;
+  font-size: 16px !important; font-weight: 800;
+  }
+  .card-body { padding: 10px 12px; }
 
   /* ── 입력 — Qt LineEdit 톤 (흰바탕·얇은 회색테두리·검정글씨) ── */
   .input-group label {
@@ -1381,14 +1400,14 @@
   <span class="note-text">바닥패널 1개 양중 시간 = 모듈 × <b>0.7</b>. 바닥패널 <span id="r_층당바닥패널표시">0</span>개/층.</span>
   </div>
   <div class="input-group" id="g_벽패널양중계수" style="display:none;">
-  <label>구조벽패널 양중 계수
+  <label>벽패널패널 양중 계수
   <span class="note-text" style="font-weight:400; margin-left:6px;">(모듈 대비 배수)</span>
   </label>
   <div class="input-row">
   <input type="number" id="i_벽패널양중계수" value="0.6" min="0.1" max="1" step="0.01" oninput="calc()">
   <span class="unit">× 모듈</span>
   </div>
-  <span class="note-text">구조벽패널(struct_wall) 1개 양중 시간 = 모듈 × <b>0.6</b>. 벽패널 <span id="r_층당벽패널표시">0</span>개/층.</span>
+  <span class="note-text">벽패널패널(struct_wall) 1개 양중 시간 = 모듈 × <b>0.6</b>. 벽패널 <span id="r_층당벽패널표시">0</span>개/층.</span>
   </div>
   <!-- 캔틸레버 슬래브: 공장에서 모듈에 부착돼 옴 → 별도 양중 입력 없음 -->
   <input type="hidden" id="i_캔틸슬래브양중계수" value="0">
@@ -1461,7 +1480,8 @@
   <span class="note-text">OTKCRK p.47 천안두정: 대지 971.2㎡ − 건축 402.16㎡ = <b>569.04㎡</b>·40작업일 → <b>14.23㎡/일</b>. 사용자 입력 면적 ÷ 14.23 = 부대공사 작업일.</span>
   </div>
   <div class="input-group" style="grid-column: 1 / -1;">
-  <button id="btn_접합현황" class="ref-btn ref-btn-inline" style="font-size:12px; padding:6px 14px; width:100%; max-width:100%; box-sizing:border-box; white-space:normal; justify-content:center; text-align:center; display:flex;" onclick="toggle접합현황()">층별 R01-R09 접합 현황 보기</button>
+  <!-- [2026-06-02 사용자 요청] '층별 R01-R09 접합 현황 보기' 버튼 제거(숨김). 토글 함수·박스는 유지(로직 불변). -->
+  <button id="btn_접합현황" class="ref-btn ref-btn-inline" style="display:none;" onclick="toggle접합현황()">층별 R01-R09 접합 현황 보기</button>
   <!-- [2026-05-30] INPUT 카드 아웃라인 안에서 표시. 9열 표는 박스 안에서 가로 스크롤. -->
   <div id="box_접합현황" style="display:none; margin-top:10px; padding:10px 12px; background:#F5F8FA; border:1px solid #BFC9D4; border-radius:4px; overflow-x:auto;">
   <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">

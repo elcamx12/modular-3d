@@ -517,8 +517,6 @@ def _distribute_vertical3_slabs(
             if abs(zmid - target_z) <= 5.0:
                 cand.append(mid)
         if len(cand) != 4:
-            print(f"[load] WARN: vertical_module #{cid} 슬래브 {slab_kind} 둘레 보가 "
-                  f"4개 아님 ({len(cand)}, target_z={target_z:.0f}) — skip")
             continue
 
         long_ids, short_ids, long_len, short_len = (
@@ -696,7 +694,6 @@ def _apply_slab_loads(scene: Scene, model: AnalysisModel, result: LoadResult) ->
                     mem_ids.append(mid)
                     seen.add(mid)
         if len(mem_ids) != 4:
-            print(f"[load] WARN: comp #{cid} 둘레 보가 4개 아님 ({len(mem_ids)}) — 슬래브 분배 skip")
             continue
 
         long_ids, short_ids, long_len, short_len = _classify_4_beams_by_direction(mem_ids, model)
@@ -822,10 +819,10 @@ def _nearest_beam_to_xy(model: AnalysisModel, beam_ids: List[int],
 
 def _apply_wall_loads(scene: Scene, model: AnalysisModel,
                       result: LoadResult) -> None:
-    """모듈 4면 벽 + 구조벽 채움 자중을 변의 보에 선하중으로 추가.
+    """모듈 4면 벽 + 벽패널 채움 자중을 변의 보에 선하중으로 추가.
 
     - 단위질량: 운송 wall_classifier 의 외부/내부 자동판별(외부 55 / 내부 30
-      가중평균). 모듈은 면별로, 구조벽은 양면 평균.
+      가중평균). 모듈은 면별로, 벽패널은 양면 평균.
     - 개구부 면적은 차감. 무게는 그 변에 가장 가까운 보의 self_weight 에 등분포.
     (내벽은 _comp_slab_pressures 에서 슬래브 면적평균으로 별도 처리.)
     """
@@ -927,7 +924,7 @@ def calculate_loads(scene: Scene, model: AnalysisModel) -> LoadResult:
     result = LoadResult()
     _apply_self_weight(model, result)
     _apply_slab_loads(scene, model, result)
-    # 모듈 4면 벽·구조벽 채움 자중 → 변 보 선하중 (내벽은 슬래브 압력에 포함).
+    # 모듈 4면 벽·벽패널 채움 자중 → 변 보 선하중 (내벽은 슬래브 압력에 포함).
     _apply_wall_loads(scene, model, result)
     # (2026-05-12) 코어 슬래브 자중은 이제 실제 셸 자중으로 처리
     # — _apply_core_slab_self_weight 호출 제거 (구버전 core_column 가정 dead code).

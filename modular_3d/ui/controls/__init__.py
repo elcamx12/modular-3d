@@ -206,7 +206,6 @@ class Controller(F5Mixin, F6Mixin):
         # F7 + 키 1/2/3/4 (레거시 시각화 모드) Phase 5 에서 폐기됨.
         # OpenSees 뷰는 F6 + 우측 패널 콤보박스로 모두 제어.
         if qt_key == Qt.Key_F7:
-            dprint('ANALYSIS', '[ANALYSIS] F7 시각화 모드는 폐기됨 — F6 + 우측 패널 사용')
             return
 
         # Phase 14 (설계서_부재호버.md) — F6 ops 뷰 활성 시 ESC = 모든 정보창 닫기.
@@ -247,12 +246,10 @@ class Controller(F5Mixin, F6Mixin):
             elif text.lower() == 'r':
                 self._move_rotation = (self._move_rotation + 90) % 360
                 self._update_moving_preview()
-                print(f'[MOVE ROTATE] {self._move_rotation}°')
             elif text.lower() == 'v':
                 self._move_anchor = (self._move_anchor + 1) % 4
                 self._update_moving_preview()
                 anchor_names = ['좌하', '우하', '우상', '좌상']
-                print(f'[MOVE ANCHOR] {anchor_names[self._move_anchor]}')
 
         elif self._state == AppState.PLACEMENT_PREVIEW:
             # 단계 6 (i1): PREVIEW 중 1~7 부재 타입 변경 키도 폐기.
@@ -261,14 +258,12 @@ class Controller(F5Mixin, F6Mixin):
                 # 90° 회전
                 self._preview_rotation = (self._preview_rotation + 90) % 360
                 self._update_preview(self._preview_position)
-                dprint('ROTATE', f'[ROTATE] {self._preview_rotation}°')
 
             elif text.lower() == 'v':
                 # 앵커 변경
                 self._preview_anchor = (self._preview_anchor + 1) % 4
                 self._update_preview(self._preview_position)
                 anchor_names = ['좌하', '우하', '우상', '좌상']
-                dprint('ANCHOR', f'[ANCHOR] {anchor_names[self._preview_anchor]}')
 
             elif text.lower() == 'z':
                 self._do_undo()
@@ -479,7 +474,7 @@ class Controller(F5Mixin, F6Mixin):
             self._f5_pending_placement = False
             self._dim_panel.deactivate()
 
-            # 구조벽 + 바닥패널 병합 체크박스 ON: DEPENDENCY_PICK 진입 →
+            # 벽패널 + 바닥패널 병합 체크박스 ON: DEPENDENCY_PICK 진입 →
             # 사용자가 합체할 FP 를 명시적으로 클릭하게 한다.
             ct = self._current_comp_type
             wants_merge = bool(dims.get('merge', False))
@@ -489,8 +484,7 @@ class Controller(F5Mixin, F6Mixin):
                     self._f5_panel.canvas.enter_dependency_pick(ct)
                     self._f5_panel.canvas.setFocus()
                 self._dim_panel.set_mode_text(
-                    '[F5 구조벽 합체: 노란 강조된 바닥패널을 클릭]')
-                dprint('F5', '[F5] 구조벽 dims 확정 → DEPENDENCY_PICK (합체할 FP 클릭)')
+                    '[F5 벽패널 합체: 노란 강조된 바닥패널을 클릭]')
                 return
 
             # 캔버스를 preview 상태로 (마우스 클릭 대기)
@@ -506,7 +500,6 @@ class Controller(F5Mixin, F6Mixin):
             name = TYPE_NAMES.get(self._current_comp_type, '')
             self._dim_panel.set_mode_text(
                 f'[F5 배치: {name} — 캔버스 클릭으로 위치 확정 / R: 회전 / V: 앵커]')
-            dprint('F5', f'[F5] dims 확정 → PREVIEW 진입 ({name})')
             return
 
         # 중간보/기둥: 자동 계산된 position/rotation 사용
@@ -529,7 +522,6 @@ class Controller(F5Mixin, F6Mixin):
         verts, faces, colors = build_component_mesh(comp)
         self._viewer.add_component_visual(comp_id, verts, faces, colors)
         self._snap.add_component(comp_id, comp)
-        dprint('PLACED', f'[PLACED] {comp.comp_type.value} #{comp_id} z={pos[2]:.0f}')
 
         # ── 중간보/기둥: 스냅 대상 모듈에 종속 등록 + 페어에도 동일 배치 ──
         if ct in (ComponentType.MID_BEAM, ComponentType.MID_COLUMN):
@@ -562,7 +554,6 @@ class Controller(F5Mixin, F6Mixin):
                     self._child_pairs[comp_id] = top_copy_id
                     self._child_pairs[top_copy_id] = comp_id
                     self._copy_ids.add(top_copy_id)
-                    dprint('AUTO', f'[AUTO] 천장보 {comp.comp_type.value} #{top_copy_id} z={top_z:.0f}')
 
             if snapped_id is not None and snapped_id in self._floor_pairs:
                 pair_id = self._floor_pairs[snapped_id]
@@ -582,7 +573,6 @@ class Controller(F5Mixin, F6Mixin):
                     self._child_parent[mid] = pair_id
                     mirror_comp.parent_id = pair_id
                     self._copy_ids.add(mid)
-                    dprint('AUTO', f'[AUTO] 페어 {comp.comp_type.value} #{mid} z={mirror_pos[2]:.0f}')
 
                     # 중간보: 페어 모듈의 천장보에도 복사
                     if ct == ComponentType.MID_BEAM:
@@ -606,7 +596,6 @@ class Controller(F5Mixin, F6Mixin):
                         # 바닥보 쌍끼리 child_pairs 연결
                         self._child_pairs[comp_id] = mid
                         self._child_pairs[mid] = comp_id
-                        dprint('AUTO', f'[AUTO] 페어 천장보 {comp.comp_type.value} #{tp_id} z={top_pair_pos[2]:.0f}')
                     else:
                         self._child_pairs[comp_id] = mid
                         self._child_pairs[mid] = comp_id
@@ -625,7 +614,6 @@ class Controller(F5Mixin, F6Mixin):
             self._floor_pairs[comp_id] = copy_id
             self._floor_pairs[copy_id] = comp_id
             self._copy_ids.add(copy_id)
-            dprint('AUTO', f'[AUTO] 층간 복사 #{copy_id} z={copy_pos[2]:.0f}')
 
         self._copy_dims = None  # 복사 치수 리셋
         self._status.update_count(self._scene.component_count)
@@ -673,7 +661,6 @@ class Controller(F5Mixin, F6Mixin):
                 self._child_pairs.pop(sib_id, None)
                 self._child_pairs.pop(comp_id, None)
                 self._copy_ids.discard(sib_id)
-                print(f'[UNDO place] sibling #{sib_id}')
             # 자신의 부모 관계도 정리
             own_parent = self._child_parent.pop(comp_id, None)
             if own_parent is not None:
@@ -693,10 +680,8 @@ class Controller(F5Mixin, F6Mixin):
                 self._floor_pairs.pop(comp_id, None)
                 self._floor_pairs.pop(pair_id, None)
                 self._copy_ids.discard(pair_id)
-                print(f'[UNDO place] 층간 복사 #{pair_id}')
 
             self._status.update_count(self._scene.component_count)
-            print(f'[UNDO place] #{comp_id}')
 
         elif action.action_type == 'delete':
             # 삭제 복원: 부재를 다시 씬에 추가
@@ -719,17 +704,14 @@ class Controller(F5Mixin, F6Mixin):
                 self._floor_pairs[comp_id] = pair_id
                 self._floor_pairs[pair_id] = comp_id
                 self._copy_ids.add(pair_id)
-                print(f'[UNDO delete] 층간 복사 #{pair_id}')
 
             # children (중간보/기둥) 복원
             deleted_children = action.data.get('deleted_children', {})
             children_parent_map = action.data.get('children_parent_map', {})
             if deleted_children:
                 self._restore_children(deleted_children, children_parent_map)
-                print(f'[UNDO delete] children {len(deleted_children)}개 복원')
 
             self._status.update_count(self._scene.component_count)
-            print(f'[UNDO delete] #{comp_id}')
 
         elif action.action_type == 'move':
             # 이동 복원: 원래 위치로
@@ -745,7 +727,6 @@ class Controller(F5Mixin, F6Mixin):
                 self._viewer.add_component_visual(comp_id, verts, faces, colors)
                 self._snap.remove_component(comp_id)
                 self._snap.add_component(comp_id, comp)
-                print(f'[UNDO move] #{comp_id}')
 
             # 페어 모듈도 원래 위치로
             pair_id = action.data.get('pair_id')
@@ -762,7 +743,6 @@ class Controller(F5Mixin, F6Mixin):
                     self._viewer.add_component_visual(pair_id, pv, pf, pc)
                     self._snap.remove_component(pair_id)
                     self._snap.add_component(pair_id, pair_comp)
-                    print(f'[UNDO move] 페어 #{pair_id}')
 
             # children (중간보/기둥)도 원래 위치로
             children_old = action.data.get('children_old', {})
@@ -790,7 +770,6 @@ class Controller(F5Mixin, F6Mixin):
                     self._viewer.add_component_visual(sibling_id, sv, sf, sc)
                     self._snap.remove_component(sibling_id)
                     self._snap.add_component(sibling_id, sib_comp)
-                    print(f'[UNDO move] sibling #{sibling_id}')
 
             # merge 그룹도 원래 위치로
             merge_old = action.data.get('merge_old_positions', {})
@@ -805,7 +784,7 @@ class Controller(F5Mixin, F6Mixin):
                     self._snap.remove_component(mid)
                     self._snap.add_component(mid, mc)
             if merge_old:
-                print(f'[UNDO move] merge 그룹 {len(merge_old)}개 복원')
+                pass
 
         elif action.action_type == 'merge':
             # 합체 취소 = 분리
@@ -817,7 +796,6 @@ class Controller(F5Mixin, F6Mixin):
                 wall.merged_fp_id = None
             if isinstance(fp, FloorPanel) and wall_id in fp.merged_wall_ids:
                 fp.merged_wall_ids.remove(wall_id)
-            print(f'[UNDO merge] 구조벽 #{wall_id} ← 바닥패널 #{fp_id} 분리')
             self._refresh_all_meshes()
 
         elif action.action_type == 'unmerge':
@@ -830,7 +808,6 @@ class Controller(F5Mixin, F6Mixin):
                 wall.merged_fp_id = fp_id
             if isinstance(fp, FloorPanel) and wall_id not in fp.merged_wall_ids:
                 fp.merged_wall_ids.append(wall_id)
-            print(f'[UNDO unmerge] 구조벽 #{wall_id} → 바닥패널 #{fp_id} 합체 복원')
             self._refresh_all_meshes()
 
         elif action.action_type == 'group_place':
@@ -855,7 +832,6 @@ class Controller(F5Mixin, F6Mixin):
                     if isinstance(fp, FloorPanel) and wid in fp.merged_wall_ids:
                         fp.merged_wall_ids.remove(wid)
             self._status.update_count(self._scene.component_count)
-            print(f'[UNDO group_place] 부재 {len(removed_ids)}개 제거')
 
         elif action.action_type == 'group_move':
             # 그룹 이동 취소 — 저장된 부재별 원래 position 복원
@@ -878,7 +854,6 @@ class Controller(F5Mixin, F6Mixin):
                 self._viewer.add_component_visual(cid, v, f, c)
                 self._snap.remove_component(cid)
                 self._snap.add_component(cid, comp)
-            print(f'[UNDO group_move] {len(old_positions)}개 부재 원래 위치 복원')
 
         elif action.action_type == 'group_delete':
             # 그룹 삭제 취소 — 저장된 부재 데이터 다시 add
@@ -891,7 +866,6 @@ class Controller(F5Mixin, F6Mixin):
                 self._viewer.add_component_visual(comp.id, v, f, c)
                 self._snap.add_component(comp.id, comp)
             self._status.update_count(self._scene.component_count)
-            print(f'[UNDO group_delete] 부재 {len(deleted_comps)}개 복원')
 
         elif action.action_type in ('opening_add', 'opening_del', 'opening_move'):
             # 개구부 되돌리기 (3단계) — 해당 부재 메시 재생성으로 반영.
@@ -912,7 +886,6 @@ class Controller(F5Mixin, F6Mixin):
                     self._viewer.remove_component_visual(cid)
                     v, f, c = build_component_mesh(comp)
                     self._viewer.add_component_visual(cid, v, f, c)
-                    print(f'[UNDO {action.action_type}] #{cid}')
 
         elif action.action_type == 'opening_group':
             # 개구부 다층 동기(2026-05-28) 되돌리기 — 내부 opening_* 를 역순으로
@@ -944,21 +917,18 @@ class Controller(F5Mixin, F6Mixin):
                 self._viewer.remove_component_visual(cid)
                 v, f, c = build_component_mesh(comp)
                 self._viewer.add_component_visual(cid, v, f, c)
-            print(f'[UNDO opening_group] {len(affected)}개 부재 개구부 복원')
 
         elif action.action_type == 'room_add':
             rid = action.data['room_id']
             self._scene.rooms.pop(rid, None)
             if hasattr(self._viewer, 'remove_room_visual'):
                 self._viewer.remove_room_visual(rid)
-            print(f'[UNDO room_add] #{rid}')
 
         elif action.action_type == 'room_del':
             room = action.data['room']
             self._scene.rooms[room.id] = room
             if hasattr(self, '_render_room_3d'):
                 self._render_room_3d(room)
-            print(f'[UNDO room_del] #{room.id}')
 
         elif action.action_type == 'room_move':
             rid = action.data['room_id']
@@ -968,7 +938,6 @@ class Controller(F5Mixin, F6Mixin):
                                 for (x, y) in action.data['old_polygon']]
                 if hasattr(self, '_render_room_3d'):
                     self._render_room_3d(room)
-                print(f'[UNDO room_move] #{rid}')
 
         elif action.action_type == 'room_group':
             # 실 다층 동기(2026-05-28) 되돌리기 — 내부 room_* 를 역순으로 복원.
@@ -994,7 +963,6 @@ class Controller(F5Mixin, F6Mixin):
                             self._render_room_3d(room)
             if hasattr(self, '_refresh_2d'):
                 self._refresh_2d()
-            print(f'[UNDO room_group] {len(inner)}개 실 액션 복원')
 
     # ── 피킹 (Ray-AABB) ───────────────────────────────────────
 
@@ -1022,7 +990,6 @@ class Controller(F5Mixin, F6Mixin):
             master_id = self._floor_pairs.get(comp_id)
             if master_id is not None:
                 comp_id = master_id
-                dprint('SELECT', f'[SELECT] 복사본 → 마스터 #{comp_id}로 리다이렉트')
         self._selected_comp_id = comp_id
         comp = self._scene.components[comp_id]
 
@@ -1048,16 +1015,15 @@ class Controller(F5Mixin, F6Mixin):
         self._set_state(AppState.SELECTED)
         name = TYPE_NAMES.get(comp.comp_type, '')
         if partner_ids:
-            dprint('SELECT', f'[SELECT] {name} #{comp_id} (+합체 파트너 {partner_ids})')
+            pass
         else:
-            dprint('SELECT', f'[SELECT] {name} #{comp_id}')
+            pass
 
     def _deselect(self):
         """선택 해제."""
         self._selected_comp_id = None
         self._viewer.hide_selection_box()
         self._set_state(AppState.IDLE)
-        dprint('DESELECT', '[DESELECT]')
 
     # ── 삭제/복사 ────────────────────────────────────────────
 
@@ -1106,7 +1072,6 @@ class Controller(F5Mixin, F6Mixin):
             self._scene.components.pop(pair_id, None)
             self._viewer.remove_component_visual(pair_id)
             self._snap.remove_component(pair_id)
-            dprint('DELETE', f'[DELETE] 페어 #{pair_id}')
 
         # _floor_pairs / _copy_ids 정리
         self._floor_pairs.pop(comp_id, None)
@@ -1119,7 +1084,6 @@ class Controller(F5Mixin, F6Mixin):
         self._viewer.hide_selection_box()
         self._selected_comp_id = None
         self._set_state(AppState.IDLE)
-        dprint('DELETE', f'[DELETE] #{comp_id}')
 
     def _copy_selected(self):
         """선택된 부재와 같은 타입/치수로 배치 모드 진입."""
@@ -1139,7 +1103,6 @@ class Controller(F5Mixin, F6Mixin):
         self._selected_comp_id = None
         self._set_state(AppState.PLACEMENT_PREVIEW)
         name = TYPE_NAMES.get(comp.comp_type, '')
-        dprint('COPY', f'[COPY] {name} → 배치 모드')
 
     # ── 합체/분리 ─────────────────────────────────────────────
     # g 키 토글 함수는 F5 모드 전환과 함께 제거됨 (설계서 §7).
@@ -1174,7 +1137,6 @@ class Controller(F5Mixin, F6Mixin):
         self._move_position = comp.position.copy()
         self._viewer.hide_selection_box()
         self._set_state(AppState.MOVING)
-        dprint('MOVE', f'[MOVE] 이동 시작 #{self._selected_comp_id}')
 
     def _update_moving_preview(self):
         """이동 중 고스트로 미리보기."""
@@ -1270,7 +1232,6 @@ class Controller(F5Mixin, F6Mixin):
             self._viewer.add_component_visual(pair_id, pv, pf, pc)
             self._snap.remove_component(pair_id)
             self._snap.add_component(pair_id, pair_comp)
-            dprint('MOVE', f'[MOVE] 페어 #{pair_id} 동기화')
 
         # children (중간보/기둥)도 같은 delta만큼 이동
         for mid_id in children_old:
@@ -1281,7 +1242,6 @@ class Controller(F5Mixin, F6Mixin):
             sib_delta = delta.copy()
             sib_delta[2] = 0  # 페어 모듈끼리 Z 오프셋이 따로 있으므로 XY만
             self._move_child(sibling_id, sib_delta)
-            dprint('MOVE', f'[MOVE] sibling child #{sibling_id} 동기화')
 
         # 합체(merge)된 컴포넌트도 함께 이동
         #   - 발견된 merge 대상 + 그들의 floor_pair까지 수집
@@ -1301,7 +1261,6 @@ class Controller(F5Mixin, F6Mixin):
 
         self._viewer.clear_ghost()
         self._select_component(comp_id)
-        print(f'[MOVE DONE] #{comp_id}')
 
     def _move_merge_group(self, already_moved: set, delta: np.ndarray) -> dict:
         """합체(merge) 관계로 연결된 컴포넌트를 XY delta만큼 이동.
@@ -1354,7 +1313,7 @@ class Controller(F5Mixin, F6Mixin):
             self._snap.add_component(mid, mc)
 
         if old_positions:
-            dprint('MOVE', f'[MOVE] merge 그룹 {len(old_positions)}개 동기화')
+            pass
         return old_positions
 
     def _cancel_moving(self):
@@ -1374,7 +1333,6 @@ class Controller(F5Mixin, F6Mixin):
         self._viewer.hide_snap_marker()
         self._dim_panel.activate_move(axis)
         self._set_state(AppState.DIMENSION_INPUT)
-        print(f'[AXIS MOVE] {axis}축 거리 입력')
 
     def _confirm_axis_move(self):
         """축 이동 거리 확정."""
@@ -1468,7 +1426,6 @@ class Controller(F5Mixin, F6Mixin):
             sib_delta = delta.copy()
             sib_delta[2] = 0
             self._move_child(sibling_id, sib_delta)
-            print(f'[AXIS MOVE] sibling child #{sibling_id} 동기화')
 
         # 합체(merge)된 컴포넌트도 함께 이동
         moved_ids = {comp_id}
@@ -1485,7 +1442,6 @@ class Controller(F5Mixin, F6Mixin):
         self._viewer.canvas.native.setFocus()
         self._select_component(comp_id)
         axis = self._move_axis
-        print(f'[AXIS MOVE DONE] #{comp_id} {axis}={dist:.0f}mm')
 
     # ── 중간보/기둥 자동 배치 계산 ────────────────────────────
     # 단계 5 (2026-05-08): 본문은 controls_geom 으로 이관. 본 메소드는 위임만 한다.

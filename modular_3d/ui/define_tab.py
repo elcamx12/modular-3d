@@ -14,9 +14,10 @@
 from __future__ import annotations
 
 from PyQt5.QtCore import Qt, QEvent
+from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLabel, QGroupBox,
-    QListWidget, QLineEdit, QPushButton, QMessageBox,
+    QListWidget, QLineEdit, QPushButton, QMessageBox, QCheckBox,
 )
 
 from modular_3d.model import Scene
@@ -31,6 +32,58 @@ from modular_3d.ui.controls import Controller
 from modular_3d.ui.palette_panel import PalettePanel
 from modular_3d.ui.design_props_panel import DesignPropertiesPanel
 from modular_3d.ui.room_props_panel import RoomPropertiesPanel
+from modular_3d.ui.fonts import F_BODY, F_HEAD, ensure_fonts_loaded
+
+
+# ── 종합탭 톤 디자인 토큰 ─────────────────────────────────
+_PAGE_BG     = "#EDF2F7"
+_CARD_BG     = "#FFFFFF"
+_CARD_BORDER = "#DDE4ED"
+_HEAD_FG     = "#1F4E79"
+_BODY_FG     = "#1F2A37"
+_SUB_FG      = "#5B6573"
+_ACCENT      = "#1F4E79"
+_ACCENT_HOV  = "#163A5E"
+_ACCENT_SOFT = "#F5F8FF"
+
+# 라이브러리 패널 전용 스타일시트(이 박스에만 적용 — 공유 팔레트/속성 패널과 분리).
+# - GroupBox 타이틀 / QLabel(묻는 글) → Paperlogy
+# - QListWidget·QLineEdit(값·입력) → Freesentation, 흰 카드 톤
+# - QPushButton → Freesentation 둥근 카드형
+_LIB_QSS = (
+    "QGroupBox#libBox {"
+    f" font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 16px; font-weight: 800; color: {_HEAD_FG};"
+    f" background: {_CARD_BG}; border: 1px solid {_CARD_BORDER};"
+    " border-radius: 10px; margin-top: 14px;"
+    " padding: 14px 12px 12px 12px; }"
+    "QGroupBox#libBox::title { subcontrol-origin: margin; left: 12px;"
+    f" padding: 0 6px; background: {_CARD_BG};"
+    " }"
+    "QGroupBox#libBox QLabel {"
+    f" font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 14px; color: {_BODY_FG}; background: transparent;"
+    " }"
+    "QGroupBox#libBox QLineEdit, QGroupBox#libBox QListWidget {"
+    f" font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 14px; color: {_BODY_FG};"
+    f" border: 1px solid {_CARD_BORDER}; border-radius: 6px;"
+    " background: white; padding: 4px 6px; }"
+    # 목록 항목(item)에도 명시 — 뷰에 준 폰트가 항목 델리게이트에 전파되지
+    # 않는 Qt 동작 보완.
+    "QGroupBox#libBox QListWidget::item {"
+    f" font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 14px; color: {_BODY_FG}; padding: 2px 2px; }}"
+    f"QGroupBox#libBox QListWidget::item:selected {{"
+    f" background: {_ACCENT_SOFT}; color: {_HEAD_FG}; }}"
+    "QGroupBox#libBox QPushButton {"
+    f" font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 14px; font-weight: 700; color: {_BODY_FG};"
+    f" background: {_CARD_BG}; border: 1px solid {_CARD_BORDER};"
+    " border-radius: 8px; padding: 7px 10px; }"
+    f"QGroupBox#libBox QPushButton:hover {{ background: {_ACCENT_SOFT};"
+    f" border-color: {_ACCENT}; color: {_HEAD_FG}; }}"
+)
 
 
 class DefineTab(QWidget):
@@ -112,21 +165,45 @@ class DefineTab(QWidget):
 
     # ── UI ────────────────────────────────────────────────
     def _build_ui(self) -> None:
+        # [2026-06-02 디자인 통일] 종합탭 톤 — 페이지 배경 + 패널 간격·여백 확대.
+        ensure_fonts_loaded()
+        # 배치 설계 탭과 동일하게 QWidget 캐스케이드로 페이지 전체를 옅은 하늘색으로.
+        # [중요] QWidget 을 상속한 클래스(DefineTab)는 WA_StyledBackground 를 켜야
+        # 스타일시트의 background 가 자기 표면에 칠해진다. 이게 없으면 좌/상 여백·
+        # 속성 패널 주변 등 노출된 DefineTab 표면이 윈도우 기본 회색으로 비친다.
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet(
+            "QWidget { background: #EDF2F7; }"
+            "QWidget#defineCardPane { background: #FFFFFF;"
+            " border: 1px solid #DDE4ED; border-radius: 10px; }"
+            + _LIB_QSS)
         h = QHBoxLayout(self)
-        h.setContentsMargins(0, 0, 0, 0)
-        h.setSpacing(2)
+        h.setContentsMargins(12, 12, 12, 12)
+        h.setSpacing(12)
 
         # 좌: 팔레트
         h.addWidget(self._palette)
 
-        # 중앙: 3D | 2D + 하단 치수
+        # 중앙: 3D 카드 | 2D 카드 — 배치 설계 탭과 동일하게 두 개의 흰색 카드로 분리.
+        # (이전엔 하나의 카드 안에 3D·2D를 함께 넣었으나, 배치 설계 탭처럼
+        #  좌 3D·우 2D를 각각 독립 카드로 감싼다. 내부 split·위젯·시그널 동일.)
+        _card_qss = (
+            "QWidget#defineCardPane { background: #FFFFFF;"
+            " border: 1px solid #DDE4ED; border-radius: 10px; }"
+        )
         center = QWidget()
         cv = QVBoxLayout(center)
         cv.setContentsMargins(0, 0, 0, 0)
-        cv.setSpacing(0)
+        cv.setSpacing(8)
         split = QSplitter(Qt.Horizontal)
         # UI 마이그레이션 M8-b — 정의 탭도 three.js 단독 표시.
-        #  · 좌 3D: vispy 자리(_canvas_widget) 0 크기, three.js 전체.
+        #  · 좌 3D 카드: vispy 자리(_canvas_widget) 0 크기, three.js 전체.
+        left_pane = QWidget()
+        left_pane.setObjectName("defineCardPane")
+        left_pane.setStyleSheet(_card_qss)
+        left_lay = QVBoxLayout(left_pane)
+        left_lay.setContentsMargins(8, 8, 8, 8)
+        left_lay.setSpacing(6)
         self._left_split = QSplitter(Qt.Vertical)
         self._left_split.addWidget(self._canvas_widget)
         self._left_split.addWidget(self._three_widget)
@@ -134,18 +211,42 @@ class DefineTab(QWidget):
         self._left_split.setStretchFactor(1, 1)
         self._left_split.setSizes([0, 800])
         self._left_split.setChildrenCollapsible(True)
-        split.addWidget(self._left_split)
-        #  · 우 2D: _f5_panel 은 상단 컨트롤만 얇게(hide_canvas), three.js 가 평면뷰 전담.
+        left_lay.addWidget(self._left_split, stretch=1)
+        # [2026-06-03] 벽·실 표시 토글 — 배치설계 탭과 동일하게 3D 뷰 아래에 배치.
+        # 체크박스 하나로 벽 채움면(벽패널·내벽·모듈 외피 벽)과 실 색면을 함께
+        # 끄고 켠다. 프레임·슬래브·코어벽은 항상 표시. 기본 ON.
+        self._wall_room_check = QCheckBox('벽·실 표시')
+        self._wall_room_check.setChecked(True)
+        self._wall_room_check.setToolTip(
+            '벽 채움면(벽패널 채움·내벽·모듈 외피 벽)과 실 표기를 함께 끄거나 '
+            '켭니다. 프레임·슬래브·코어벽은 항상 표시됩니다.')
+        self._wall_room_check.toggled.connect(self._on_wall_room_toggled)
+        left_lay.addWidget(self._wall_room_check)
+        split.addWidget(left_pane)
+        #  · 우 2D 카드: _f5_panel 은 상단 컨트롤만 얇게(hide_canvas), three.js 가 평면뷰 전담.
+        right_pane = QWidget()
+        right_pane.setObjectName("defineCardPane")
+        right_pane.setStyleSheet(_card_qss)
+        right_lay = QVBoxLayout(right_pane)
+        right_lay.setContentsMargins(8, 8, 8, 8)
+        right_lay.setSpacing(6)
         self._right_split = QSplitter(Qt.Vertical)
         self._right_split.addWidget(self._f5_panel)
         self._right_split.addWidget(self._f5_panel_three)
         self._right_split.setStretchFactor(0, 0)
         self._right_split.setStretchFactor(1, 1)
-        self._right_split.setSizes([40, 800])
+        # [2026-06-02] 모듈 정의 탭은 층수 컨트롤이 숨겨져 상단 띠가 거의 비어
+        # 하늘색 빈 칸처럼 보였다 → _f5_panel 인스턴스 높이를 컨트롤 한 줄(저장/
+        # 불러오기)만큼으로 제한해 띠를 얇게, 버튼은 맨 위에 오게 한다.
+        # (공유 클래스 AlignmentDockPanel 은 그대로 — 이 인스턴스에만 적용되어
+        #  배치 설계 탭에는 영향 없음.)
+        self._f5_panel.setMaximumHeight(34)
+        self._right_split.setSizes([34, 1000])
         self._right_split.setChildrenCollapsible(True)
         if hasattr(self._f5_panel, 'hide_canvas'):
             self._f5_panel.hide_canvas()
-        split.addWidget(self._right_split)
+        right_lay.addWidget(self._right_split, stretch=1)
+        split.addWidget(right_pane)
         split.setStretchFactor(0, 7)
         split.setStretchFactor(1, 3)
         split.setSizes([700, 300])
@@ -167,13 +268,19 @@ class DefineTab(QWidget):
 
     def _build_library_panel(self) -> QWidget:
         box = QGroupBox("컴포넌트 라이브러리")
+        box.setObjectName("libBox")   # _LIB_QSS 스코프 대상
         v = QVBoxLayout(box)
         self._lib_list = QListWidget()
+        # QSS 폰트가 항목에 전파 안 되는 경우 대비 — 위젯 폰트 직접 지정(Freesentation).
+        _lib_font = QFont(F_BODY, 11)
+        self._lib_list.setFont(_lib_font)
+        self._lib_name_font = _lib_font   # 이름 입력칸과 공유
         v.addWidget(self._lib_list, stretch=1)
         # 이름 입력
         name_row = QHBoxLayout()
         name_row.addWidget(QLabel("이름:"))
         self._lib_name = QLineEdit()
+        self._lib_name.setFont(_lib_font)
         self._lib_name.setPlaceholderText("예: 표준모듈A")
         name_row.addWidget(self._lib_name, stretch=1)
         v.addLayout(name_row)
@@ -199,7 +306,9 @@ class DefineTab(QWidget):
         b_file.clicked.connect(self._on_lib_load_from_file)
         v.addWidget(b_file)
         hint = QLabel("현재 작업공간을 이름 붙여 저장 → 목록에서 선택해 불러오기")
-        hint.setStyleSheet("color:#666; font-size:10px;")
+        hint.setStyleSheet(
+            f"font-family:'{F_HEAD}','Malgun Gothic',sans-serif;"
+            f" font-size:12px; color:{_SUB_FG}; background:transparent;")
         hint.setWordWrap(True)
         v.addWidget(hint)
         return box
@@ -222,6 +331,13 @@ class DefineTab(QWidget):
             canvas.set_edit_mode('room')
         if hasattr(canvas, 'start_room_draw'):
             canvas.start_room_draw()
+
+    def _on_wall_room_toggled(self, checked: bool) -> None:
+        """'벽·실 표시' 체크박스 → 벽 채움면 + 실 색면 동시 ON/OFF."""
+        if hasattr(self._controller, 'set_wall_fill_visible'):
+            self._controller.set_wall_fill_visible(checked)
+        if hasattr(self._controller, 'set_rooms_visible'):
+            self._controller.set_rooms_visible(checked)
 
     def _on_opening_add(self):
         """'개구부' → 개구부 모드 진입 후 벽/슬래브 클릭으로 배치."""

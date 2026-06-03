@@ -26,6 +26,65 @@ from modular_3d.analysis.section_converge import (
     SCOPE_ALL, SCOPE_TYPE, SCOPE_TYPE_ROOM,
     GRAN_ALL, GRAN_COL_BEAM, GRAN_COL_CEIL_FLOOR,
 )
+from modular_3d.ui.fonts import F_BODY, F_HEAD, ensure_fonts_loaded
+
+
+# ── 종합탭 톤 디자인 토큰 ─────────────────────────────────
+_PAGE_BG     = "#EDF2F7"
+_CARD_BG     = "#FFFFFF"
+_CARD_BORDER = "#DDE4ED"
+_HEAD_FG     = "#1F4E79"
+_BODY_FG     = "#1F2A37"
+_SUB_FG      = "#5B6573"
+_ACCENT      = "#1F4E79"
+_ACCENT_HOV  = "#163A5E"
+_ACCENT_SOFT = "#F5F8FF"
+
+# 패널 전체 스타일시트 — 종합/비교탭 톤.
+# - GroupBox 타이틀 / QLabel / QRadioButton(묻는 글·옵션) → Paperlogy
+# - QComboBox·QSpinBox·QListWidget(값·입력) → Freesentation, 흰 카드 톤
+# - QPushButton → Freesentation 둥근 카드형(적용 버튼은 accent 채움 #applyBtn)
+_SECTION_QSS = (
+    f"SectionDesignPanel {{ background: {_PAGE_BG}; }}"
+    "QGroupBox {"
+    f" font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 17px; font-weight: 800; color: {_HEAD_FG};"
+    f" background: {_CARD_BG}; border: 1px solid {_CARD_BORDER};"
+    " border-radius: 10px; margin-top: 14px;"
+    " padding: 14px 12px 12px 12px; }"
+    "QGroupBox::title { subcontrol-origin: margin; left: 12px;"
+    f" padding: 0 6px; background: {_CARD_BG};"
+    " }"
+    "QLabel {"
+    f" font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 15px; color: {_BODY_FG}; background: transparent;"
+    " }"
+    "QRadioButton {"
+    f" font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 15px; color: {_BODY_FG}; background: transparent;"
+    " padding: 3px 0; }"
+    "QComboBox, QSpinBox {"
+    f" font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 15px; color: {_BODY_FG};"
+    f" border: 1px solid {_CARD_BORDER}; border-radius: 6px;"
+    " background: white; padding: 4px 8px; min-height: 24px; }"
+    "QListWidget {"
+    f" font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 15px; color: {_BODY_FG};"
+    f" background: {_CARD_BG}; border: 1px solid {_CARD_BORDER};"
+    " border-radius: 8px; }"
+    "QPushButton {"
+    f" font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 15px; font-weight: 700; color: {_BODY_FG};"
+    f" background: {_CARD_BG}; border: 1px solid {_CARD_BORDER};"
+    " border-radius: 8px; padding: 8px 14px; }"
+    f"QPushButton:hover {{ background: {_ACCENT_SOFT}; border-color: {_ACCENT};"
+    f" color: {_HEAD_FG}; }}"
+    f"QPushButton#applyBtn {{ background: {_ACCENT}; color: white;"
+    f" border-color: {_ACCENT}; font-weight: 800; }}"
+    f"QPushButton#applyBtn:hover {{ background: {_ACCENT_HOV};"
+    f" border-color: {_ACCENT_HOV}; }}"
+)
 
 
 class SectionDesignPanel(QWidget):
@@ -39,9 +98,20 @@ class SectionDesignPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # [2026-06-02 디자인 통일] 종합/비교탭 톤 적용 — 폰트 등록 + 패널 스타일시트.
+        ensure_fonts_loaded()
+        self.setStyleSheet(_SECTION_QSS)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(6, 6, 6, 6)
-        lay.setSpacing(8)
+        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(12)
+
+        # 패널 헤더 라벨(Paperlogy) — 다른 탭과 동일한 제목 톤.
+        _hdr = QLabel('단면 설계')
+        _hdr.setStyleSheet(
+            f"font-family:'{F_HEAD}','Malgun Gothic',sans-serif;"
+            f" font-size:20px; font-weight:800; color:{_HEAD_FG};"
+            " background:transparent; padding:2px 2px 2px 2px;")
+        lay.addWidget(_hdr)
 
         # ── 옵션 3열 동시 배치: [통일 범위] [묶음 입도] [기둥 층분할 구간 수(+적용)] ──
         opt_row = QHBoxLayout()
@@ -105,9 +175,10 @@ class SectionDesignPanel(QWidget):
         sum_row = QHBoxLayout()
         self._opt_summary = QLabel('')
         self._opt_summary.setWordWrap(True)
-        self._opt_summary.setStyleSheet('color:#345; padding:2px;')
+        self._opt_summary.setStyleSheet(f'color:{_SUB_FG}; padding:2px;')
         sum_row.addWidget(self._opt_summary, stretch=1)
         self._apply_btn = QPushButton('적용 (재수렴)')
+        self._apply_btn.setObjectName('applyBtn')   # accent 채움(스타일시트)
         self._apply_btn.clicked.connect(lambda: self.apply_requested.emit())
         sum_row.addWidget(self._apply_btn, alignment=Qt.AlignBottom)
         ob.addLayout(sum_row)
@@ -120,6 +191,10 @@ class SectionDesignPanel(QWidget):
         # ── 상태 라벨(수렴 결과 요약) ─────────────────────
         self._status_label = QLabel('')
         self._status_label.setWordWrap(True)
+        # 수렴 결과 요약은 값/숫자 → Freesentation.
+        self._status_label.setStyleSheet(
+            f"font-family:'{F_BODY}','Malgun Gothic',sans-serif;"
+            f" font-size:14px; color:{_SUB_FG}; background:transparent;")
         lay.addWidget(self._status_label)
 
         # ── 단면 변경 (9-7) — 콤보 바꾸면 즉시 적용·전파 ──
@@ -159,6 +234,10 @@ class SectionDesignPanel(QWidget):
         # 선택 타입 상세(단면/응력비/OK·NG).
         self._type_detail = QLabel('')
         self._type_detail.setWordWrap(True)
+        # 선택 타입 상세는 단면명·응력비 등 값 → Freesentation.
+        self._type_detail.setStyleSheet(
+            f"font-family:'{F_BODY}','Malgun Gothic',sans-serif;"
+            f" font-size:14px; color:{_BODY_FG}; background:transparent;")
         tv.addWidget(self._type_detail)
 
         # 선택 타입 단일 컴포넌트 3D (P4b-1, 색 메쉬). three.js 임베드.

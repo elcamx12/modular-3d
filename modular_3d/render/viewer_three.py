@@ -40,7 +40,6 @@ class _ViewerThreeBridge(QObject):
     @pyqtSlot(str)
     def js_log(self, msg: str) -> None:
         """JS 측 디버그 로그를 Python 콘솔로 전달."""
-        print(f'[ViewerThree JS] {msg}')
 
 
 def _ndarray_to_list(arr: Optional[np.ndarray]) -> Optional[list]:
@@ -254,36 +253,8 @@ class ViewerThree:
             f'window.setSectionZ({float(z)}, '
             f'{"true" if enabled else "false"});')
 
-    def set_section_y(self, y: float, enabled: bool) -> None:
-        """[2026-06-01] y축 단면 절단 — enabled 면 y 값 한쪽을 잘라 평면을 본다."""
-        self._run_js(
-            f'window.setSectionY({float(y)}, '
-            f'{"true" if enabled else "false"});')
-
-    def capture_section_front(self, cut_y: float) -> str:
-        """[2026-06-02] 카메라를 외벽 정면 시점으로 이동 + Y축 클리핑 적용 후
-        뷰를 PNG dataURL 로 캡처. 카메라·클리핑은 자동 원복. 비동기 JS 호출을
-        QEventLoop 로 동기처럼 처리.
-
-        반환: 'data:image/png;base64,...' 또는 '' (실패 시).
-        """
-        from PyQt5.QtCore import QEventLoop, QTimer
-        result = {"data": "", "done": False}
-        loop = QEventLoop()
-
-        def _cb(data_url):
-            result["data"] = data_url or ""
-            result["done"] = True
-            loop.quit()
-        try:
-            self._view.page().runJavaScript(
-                f"window.captureSectionFront({float(cut_y)});", _cb)
-        except Exception:
-            return ""
-        # 안전 타임아웃 — 2초 안에 콜백 안 오면 포기
-        QTimer.singleShot(2000, loop.quit)
-        loop.exec_()
-        return result["data"]
+    # [2026-06-03] set_section_y / capture_section_front 제거 — 배치설계 탭의
+    # Y축 단면 슬라이더(사용자 요구로 삭제)에서만 쓰이던 메서드. 거실 단면과 무관.
 
     def is_ops_view_active(self) -> bool:
         return False

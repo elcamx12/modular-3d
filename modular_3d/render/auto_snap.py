@@ -49,7 +49,7 @@ _MODULE_LIKE = frozenset({
 })
 
 # 종속 부재 (부모와 갭 0 으로 직접 정렬되는 부재들).
-# 사용자 정책 2026-05-12 e 단계: 캔틸레버 보/슬래브·구조벽·중간보/기둥 모두
+# 사용자 정책 2026-05-12 e 단계: 캔틸레버 보/슬래브·벽패널·중간보/기둥 모두
 # 부모와 갭 없이 부모 모서리에 직접 정렬됨. 자동 갭 정책에서도 0 으로 명시.
 _DEPENDENT_ZERO_GAP = frozenset({
     ComponentType.CANTILEVER_BEAM,
@@ -68,11 +68,11 @@ def gap_between(type_a: ComponentType, type_b: ComponentType) -> float:
     # CORE ↔ 타 부재: 시공 순서 분리 (RC 코어 선시공 + 모듈 후시공) → 갭 20
     if type_a == ComponentType.CORE or type_b == ComponentType.CORE:
         return DEFAULT_GAP
-    # 종속 부재 (캔틸레버·구조벽·중간보·중간기둥) — 부모와 갭 0.
+    # 종속 부재 (캔틸레버·벽패널·중간보·중간기둥) — 부모와 갭 0.
     # 정책 e 단계 2026-05-12: dep_snap 이 부모 모서리에 직접 정렬하므로
     # 자동 갭에서도 0 으로 통일.
     if type_a in _DEPENDENT_ZERO_GAP or type_b in _DEPENDENT_ZERO_GAP:
-        # 단 구조벽 ↔ 구조벽 은 20mm (옛 정책 유지)
+        # 단 벽패널 ↔ 벽패널 은 20mm (옛 정책 유지)
         if (type_a == ComponentType.STRUCT_WALL
                 and type_b == ComponentType.STRUCT_WALL):
             return DEFAULT_GAP

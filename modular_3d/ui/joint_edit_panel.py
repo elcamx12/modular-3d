@@ -21,6 +21,54 @@ from PyQt5.QtWidgets import (
     QPushButton, QGroupBox,
 )
 
+from modular_3d.ui.fonts import F_BODY, F_HEAD, ensure_fonts_loaded
+
+
+# ── 종합탭 톤 디자인 토큰 ─────────────────────────────────
+_PAGE_BG     = "#EDF2F7"
+_CARD_BG     = "#FFFFFF"
+_CARD_BORDER = "#DDE4ED"
+_HEAD_FG     = "#1F4E79"
+_BODY_FG     = "#1F2A37"
+_SUB_FG      = "#5B6573"
+_ACCENT      = "#1F4E79"
+_ACCENT_HOV  = "#163A5E"
+_ACCENT_SOFT = "#F5F8FF"
+
+# 패널 전체 스타일시트.
+# - QGroupBox 타이틀 / QLabel / QCheckBox(묻는 글·옵션) → Paperlogy
+# - QPushButton(동작 버튼) → Freesentation, 둥근 카드형
+_JOINT_QSS = (
+    "QGroupBox {"
+    f" font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 19px; font-weight: 800; color: {_HEAD_FG};"
+    f" background: {_CARD_BG}; border: 1px solid {_CARD_BORDER};"
+    " border-radius: 10px; margin-top: 16px;"
+    " padding: 16px 14px 14px 14px; }"
+    "QGroupBox::title { subcontrol-origin: margin; left: 12px;"
+    f" padding: 0 6px; background: {_CARD_BG};"
+    " }"
+    "QLabel {"
+    f" font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 16px; color: {_BODY_FG}; background: transparent;"
+    " }"
+    "QCheckBox {"
+    f" font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 16px; font-weight: 700; color: {_HEAD_FG};"
+    " background: transparent; }"
+    "QPushButton {"
+    f" font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 16px; font-weight: 700; color: {_BODY_FG};"
+    f" background: {_CARD_BG}; border: 1px solid {_CARD_BORDER};"
+    " border-radius: 8px; padding: 9px 12px; }"
+    f"QPushButton:hover {{ background: {_ACCENT_SOFT}; border-color: {_ACCENT};"
+    f" color: {_HEAD_FG}; }}"
+    f"QPushButton:checked {{ background: {_ACCENT}; color: white;"
+    f" border-color: {_ACCENT}; font-weight: 800; }}"
+    "QPushButton:disabled { color: #AEB6C2; background: #F3F5F8;"
+    " border-color: #E6EAF0; }"
+)
+
 
 class JointEditPanel(QWidget):
     """접합부 조정 탭 우측 패널.
@@ -65,13 +113,20 @@ class JointEditPanel(QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
+        ensure_fonts_loaded()  # Paperlogy/Freesentation 등록 보장
+        self.setStyleSheet(
+            f"JointEditPanel {{ background: {_PAGE_BG}; }}" + _JOINT_QSS
+        )
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(6, 6, 6, 6)
-        lay.setSpacing(6)
+        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(8)
 
         # ── 범례 위젯 생성만 (배치는 __init__ 끝 '변경 내용 저장' 버튼 아래) ──
         legend_title = QLabel('범례')
-        legend_title.setStyleSheet('font-weight: bold; font-size: 11px;')
+        legend_title.setStyleSheet(
+            f"font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+            f" color: {_HEAD_FG}; font-size: 18px; font-weight: 800;"
+            " background: transparent;")
         # spec 의 rule_id 집합으로 refresh_legend 가 동적으로 채운다. 'diaphragm'
         # 줄은 가시성 토글 대신 다이어프램 표시(diaphragm_toggle)로 동작한다.
         self._legend_holder = QWidget()
@@ -82,9 +137,12 @@ class JointEditPanel(QWidget):
         sep0 = QFrame()
         sep0.setFrameShape(QFrame.HLine)
 
-        # ── 제목 ───────────────────────────────────────
+        # ── 제목 ── 헤더 라벨 Paperlogy.
         title = QLabel('접합부 설계')
-        title.setStyleSheet('font-weight: bold; font-size: 12px;')
+        title.setStyleSheet(
+            f"font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+            f" color: {_HEAD_FG}; font-size: 22px; font-weight: 800;"
+            " background: transparent; padding: 2px 0 6px 2px;")
         lay.addWidget(title)
 
         # ── 전체층 적용 (편집·추가 공통, 위로 통합) ──────
@@ -94,15 +152,21 @@ class JointEditPanel(QWidget):
             '끄면(기본) 클릭한 그 층의 접합에만 적용. 켜면 같은 평면 위치의 '
             '모든 층에 일괄 적용(제거·핀·강접·추가 공통).')
         lay.addWidget(self._all_layers_toggle)
+        # 전체층 적용 ↔ 접합 변경 카드 사이 여백.
+        lay.addSpacing(26)
 
         # ── 접합 변경 (기존 접합 수정 — 디폴트 모드) ──────
         self._sel_group = QGroupBox('접합 변경')
         sel_lay = QVBoxLayout(self._sel_group)
         sel_lay.setContentsMargins(6, 6, 6, 6)
         sel_lay.setSpacing(4)
+        # 선택 접합 정보 — 값 표시이므로 Freesentation, 카드 안에.
         self._sel_info = QLabel('접합을 클릭하세요.')
         self._sel_info.setWordWrap(True)
-        self._sel_info.setStyleSheet('font-size: 11px;')
+        self._sel_info.setStyleSheet(
+            f"font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+            f" font-size: 16px; color: {_BODY_FG}; background: transparent;"
+            " line-height: 150%;")
         sel_lay.addWidget(self._sel_info)
 
         btn_row = QHBoxLayout()
@@ -126,6 +190,8 @@ class JointEditPanel(QWidget):
 
         lay.addWidget(self._sel_group)
         self.clear_selection()   # 초기 버튼 비활성
+        # 접합 변경 ↔ 접합 추가 카드 사이 여백.
+        lay.addSpacing(26)
 
         # ── 접합 추가 (수직수평 / 패널-모듈, 상호배타) ──────
         # 둘 중 하나를 켜면 접합 추가 모드, 둘 다 끄면 접합 변경(편집) 모드.
@@ -149,24 +215,14 @@ class JointEditPanel(QWidget):
         self._add_hint = QLabel(
             '수직 수평 접합 또는 패널-모듈 접합을 켜고 점1을 클릭하세요.')
         self._add_hint.setWordWrap(True)
-        self._add_hint.setStyleSheet('font-size: 11px; color: #555;')
+        # 안내문 → Paperlogy.
+        self._add_hint.setStyleSheet(
+            f"font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+            f" font-size: 14px; color: {_SUB_FG}; background: transparent;")
         add_lay.addWidget(self._add_hint)
         lay.addWidget(self._add_group)
 
-        # ── 합성거동 옵션 (더미) ──────────────────────
-        composite_label = QLabel(
-            '상부모듈 바닥보 - 하부모듈 천장보 합성거동'
-        )
-        composite_label.setWordWrap(True)
-        composite_label.setStyleSheet('font-size: 11px;')
-        lay.addWidget(composite_label)
-        self._composite_action_chk = QCheckBox('적용')
-        self._composite_action_chk.setEnabled(False)
-        self._composite_action_chk.setToolTip(
-            '체크 시 두 보가 하나의 합성 단면으로 거동한다고 가정. '
-            '현재 옵션만 노출 — 추후 해석 로직에 반영 예정.'
-        )
-        lay.addWidget(self._composite_action_chk)
+        # [2026-06-02] 합성거동 옵션(더미 라벨+체크박스) 제거 — 사용자 요청.
 
         # ── 아래쪽(다른 항목보다 아래, 완전 바닥은 아님): 초기화 → 변경 내용 저장 ──
         lay.addSpacing(16)
@@ -181,6 +237,14 @@ class JointEditPanel(QWidget):
         self._btn_save.setToolTip(
             '현재 디자인과 접합 변경을 건물 파일(기존 저장과 같은 양식)로 '
             '저장합니다. 저장한 파일은 배치 설계·모듈 정의 탭에서 불러올 수 있습니다.')
+        # 주요 동작 — 종합탭 액센트(진파랑) 채움.
+        self._btn_save.setStyleSheet(
+            "QPushButton {"
+            f" font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+            " font-size: 16px; font-weight: 800; color: white;"
+            f" background: {_ACCENT}; border: none; border-radius: 8px;"
+            " padding: 11px 12px; }"
+            f"QPushButton:hover {{ background: {_ACCENT_HOV}; }}")
         self._btn_save.clicked.connect(self.save_requested.emit)
         lay.addWidget(self._btn_save)
 
@@ -311,7 +375,9 @@ class JointEditPanel(QWidget):
         seen = sorted(set(rule_ids))
         if not seen:
             empty = QLabel('  (결합 없음)')
-            empty.setStyleSheet('color: #888; font-size: 10px;')
+            empty.setStyleSheet(
+                f"font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+                " color: #888; font-size: 14px; background: transparent;")
             self._legend_lay.addWidget(empty)
             return
         for rid in seen:
@@ -351,7 +417,9 @@ class JointEditPanel(QWidget):
             self._rule_checks[rid] = chk
             row_lay.addWidget(chk)
             line = QLabel(f'⬤  {disp}')
-            line.setStyleSheet(f'color: {hex_color}; font-size: 10px;')
+            line.setStyleSheet(
+                f"font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+                f" color: {hex_color}; font-size: 15px; background: transparent;")
             row_lay.addWidget(line)
             row_lay.addStretch(1)
             self._legend_lay.addWidget(row)

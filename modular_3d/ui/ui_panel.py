@@ -53,8 +53,8 @@ class DimensionInputPanel(QWidget):
             self._fields[name] = edit
             self._field_order.append(name)
 
-        # 구조벽 전용 "바닥패널과 병합" 체크박스 (X1·X2·g4)
-        # 기본 숨김. configure_for_type에서 구조벽일 때만 노출.
+        # 벽패널 전용 "바닥패널과 병합" 체크박스 (X1·X2·g4)
+        # 기본 숨김. configure_for_type에서 벽패널일 때만 노출.
         self._merge_check = QCheckBox('바닥패널과 병합')
         self._merge_check.setChecked(True)  # 기본 ON
         self._merge_check.setVisible(False)
@@ -84,7 +84,7 @@ class DimensionInputPanel(QWidget):
 
     def configure_for_type(self, comp_type: ComponentType):
         """부재 타입별 필드 표시/숨김."""
-        # 보 단면 타입 콤보 — 직접 선택 부재(모듈·바닥패널·수직3층모듈·구조벽)만.
+        # 보 단면 타입 콤보 — 직접 선택 부재(모듈·바닥패널·수직3층모듈·벽패널)만.
         # 종속(캔틸레버·중간보)은 부모를 따라가므로 숨김. 매 호출 기본값 각형강관.
         _show_section = comp_type in (
             ComponentType.MODULE, ComponentType.FLOOR_PANEL,
@@ -98,13 +98,13 @@ class DimensionInputPanel(QWidget):
         for f in self._fields.values():
             f.setEnabled(True)
 
-        # 병합 체크박스: 구조벽일 때만 노출
+        # 병합 체크박스: 벽패널일 때만 노출
         self._merge_check.setVisible(comp_type == ComponentType.STRUCT_WALL)
 
         labels = {
             ComponentType.MODULE: '[모듈]',
             ComponentType.FLOOR_PANEL: '[바닥패널]',
-            ComponentType.STRUCT_WALL: '[구조벽]',
+            ComponentType.STRUCT_WALL: '[벽패널]',
             ComponentType.INTERIOR_WALL: '[내벽]',
             ComponentType.CANTILEVER_BEAM: '[캔틸레버보]',
             ComponentType.CANTILEVER_SLAB: '[캔틸레버슬래브]',
@@ -193,7 +193,7 @@ class DimensionInputPanel(QWidget):
                 edit.setText(str(int(v)))
 
     def get_values(self) -> dict:
-        """현재 입력값 반환. 구조벽일 때 'merge' 키 포함 (X1).
+        """현재 입력값 반환. 벽패널일 때 'merge' 키 포함 (X1).
 
         [정책 2026-05-12] 비활성/자동/빈 값은 0.0 폴백 — 호출 측 (model.core
         의 generate_sub_components) 이 dimensions['width'] 직접 접근하므로
@@ -215,7 +215,7 @@ class DimensionInputPanel(QWidget):
                 result[name] = float(txt)
             except ValueError:
                 result[name] = 0.0
-        # 구조벽 전용 merge 플래그 (체크박스 visible 여부로 판단)
+        # 벽패널 전용 merge 플래그 (체크박스 visible 여부로 판단)
         if self._merge_check.isVisible():
             result['merge'] = bool(self._merge_check.isChecked())
         # 보 단면 타입 (콤보 visible 일 때만)

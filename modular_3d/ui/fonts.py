@@ -24,22 +24,24 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]  # source_repo
 _DIR_FREESENT = _REPO_ROOT / "프리젠테이션"
 _DIR_PAPERLOGY = _REPO_ROOT / "페이퍼로지"
 
-# [중요] 이 폰트들은 weight 별로 *별도 패밀리명* 으로 등록됩니다:
-#   "Freesentation 4 Regular", "Paperlogy 7 Bold" 등.
-# CSS font-family 에 정확한 이름을 써야 합니다.
+# [중요] addApplicationFont 로 등록하면 모든 weight 가 *하나의 패밀리명*
+#   ("Freesentation", "Paperlogy") 아래 묶입니다. weight 별 긴 이름
+#   ("Freesentation 4 Regular" 등)은 패밀리로 매칭되지 않아 Malgun Gothic 으로
+#   폴백됩니다. 따라서 family 에는 짧은 이름을 쓰고, 굵기는 CSS font-weight /
+#   QFont.setWeight 로 지정해야 합니다.
 
-# 본문 (Freesentation)
-F_BODY            = "Freesentation 4 Regular"
-F_BODY_MEDIUM     = "Freesentation 5 Medium"
-F_BODY_SEMIBOLD   = "Freesentation 6 SemiBold"
-F_BODY_BOLD       = "Freesentation 7 Bold"
+# 본문 (Freesentation) — 굵기는 font-weight 로 제어
+F_BODY            = "Freesentation"
+F_BODY_MEDIUM     = "Freesentation"
+F_BODY_SEMIBOLD   = "Freesentation"
+F_BODY_BOLD       = "Freesentation"
 
-# 헤드라인 (Paperlogy)
-F_HEAD            = "Paperlogy 7 Bold"
-F_HEAD_SEMIBOLD   = "Paperlogy 6 SemiBold"
-F_HEAD_EXTRABOLD  = "Paperlogy 8 ExtraBold"
-F_HEAD_BLACK      = "Paperlogy 9 Black"
-F_HEAD_REGULAR    = "Paperlogy 4 Regular"
+# 헤드라인 (Paperlogy) — 굵기는 font-weight 로 제어
+F_HEAD            = "Paperlogy"
+F_HEAD_SEMIBOLD   = "Paperlogy"
+F_HEAD_EXTRABOLD  = "Paperlogy"
+F_HEAD_BLACK      = "Paperlogy"
+F_HEAD_REGULAR    = "Paperlogy"
 
 _loaded = False
 _families: Set[str] = set()

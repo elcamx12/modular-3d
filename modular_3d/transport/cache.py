@@ -103,6 +103,7 @@ def compute_ti_fp(seg_fp: str, classify_fp: str, options: TransportOptions) -> s
         "floor_slab_thickness_mm": options.floor_slab_thickness_mm,
         "concrete_density_kg_m3": options.concrete_density_kg_m3,
         "treat_v3_module_as_lying": options.treat_v3_module_as_lying,
+        "treat_wall_as_lying": options.treat_wall_as_lying,
         "mid_member_inclusion": options.mid_member_inclusion,
     }
     return _sha256(seg_fp + "|" + classify_fp + "|" + json.dumps(opt, sort_keys=True))

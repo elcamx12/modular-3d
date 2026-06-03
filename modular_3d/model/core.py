@@ -30,7 +30,7 @@ class ComponentType(Enum):
     STRUCT_WALL = 'struct_wall'
 
     # 내벽(비내력 칸막이벽) — 사용자가 세대 내부에 직접 배치하는 벽 (2026-05-24).
-    # 구조벽과 별개. 기둥·보·런너 없이 채움 판 1장만. 두께 100, 높이 자동(부모).
+    # 벽패널과 별개. 기둥·보·런너 없이 채움 판 1장만. 두께 100, 높이 자동(부모).
     # 부모(모듈·바닥패널·캔틸레버슬래브)에 종속해 다층 복제된다. 하중·물량 0
     # (순수 시각). 개구부를 뚫을 수 있다. 반투명 렌더링.
     INTERIOR_WALL = 'interior_wall'
@@ -194,7 +194,7 @@ class Component:
     # ── 보 단면 형상 타입 (2026-05-25) ──────────────────────────
     # beam_section_type: 'shs'(각형강관) | 'h'(H형강). 본 부재의 모든 보에 적용.
     # 기둥은 항상 각형강관(본 값 무시). 종속 부재(캔틸레버·중간보)와 바닥패널에
-    # 합체된 구조벽은 부모/패널 타입을 따라가도록 배치 시 컨트롤러가 설정한다.
+    # 합체된 벽패널은 부모/패널 타입을 따라가도록 배치 시 컨트롤러가 설정한다.
     # generate_sub_components 끝에서 _apply_beam_section_type 로 각 보에 전파.
     beam_section_type: str = 'shs'
 
@@ -274,7 +274,7 @@ class Module(Component):
 
     [2026-05-24 3단계] wall_fills: 4면 비내력 벽(채움 패널, 두께 100, 시각 전용).
     순서 = [front(y-), back(y+), left(x-), right(x+)] → 개구부 face 'wall_0'~'wall_3'.
-    하중·물량에 들어가지 않음(구조벽 채움과 동일 — 순수 메시). 개구부로 뚫거나
+    하중·물량에 들어가지 않음(벽패널 채움과 동일 — 순수 메시). 개구부로 뚫거나
     면 전체를 덮어 그 면 벽을 시각적으로 제거할 수 있다.
     """
     columns: List[ColumnData] = field(default_factory=list)
@@ -431,7 +431,7 @@ class WallPanelData:
 
 @dataclass
 class StructWall(Component):
-    """구조벽: 기둥 2 + 런너 2 + 벽체 채움."""
+    """벽패널: 기둥 2 + 런너 2 + 벽체 채움."""
     columns: List[ColumnData] = field(default_factory=list)
     top_runner: Optional[BeamData] = None
     bottom_runner: Optional[BeamData] = None
@@ -551,6 +551,10 @@ class Vertical3Module(Component):
     bottom_beams: List[List[BeamData]] = field(default_factory=list)  # [story][4]  슬래브 받침
     top_beams: List[BeamData] = field(default_factory=list)           # 4  옥상 프레임만
     slabs: List[SlabData] = field(default_factory=list)               # 3
+    # 비내력 벽: 일반 모듈(4면)을 3개 층으로 쌓은 것과 동일하게 층마다 4면 = 12면.
+    # 순서 = [1F front,back,left,right, 2F …, 3F …] → 개구부 face 'wall_0'~'wall_11'.
+    # index = story*4 + local(0 front / 1 back / 2 left / 3 right).
+    wall_fills: List["WallPanelData"] = field(default_factory=list)   # 12 (3층 × 4면)
 
     def generate_sub_components(self):
         # 가로/세로/단층높이 — 사용자 입력은 무시되고 강제 3400 으로 채움.
@@ -621,6 +625,37 @@ class Vertical3Module(Component):
             self.top_beams.append(BeamData(
                 start=to_world(bx, s, roof_z),
                 end=to_world(bx, d - s, roof_z)))
+
+        # ── 비내력 벽 4면 × 3층 = 12면 (채움 패널, 시각 전용) ──
+        # 단층 모듈 wall_fills 패턴을 층마다 z_floor 만큼 올려 반복. face 매핑은
+        # 'wall_{story*4 + local}' — 개구부/내벽 로직(opening_mesh, mesh_builder)이
+        # wall_fills 리스트 길이만 보므로 12면도 기존 코드로 그대로 처리됨.
+        wt = _NB_WALL_T
+        self.wall_fills = []
+        for story in range(3):
+            z_floor = story * H                  # 0, 3420, 6840
+            wz0 = z_floor + half_s               # 층 바닥보 상면 레벨
+            wz1 = z_floor + h - s - half_s       # 층 천장보 하면 레벨 (= z_floor+3100)
+            # local 0 front (y=half_s, u=x)
+            self.wall_fills.append(WallPanelData(corners=np.array([
+                to_world(s, half_s, wz0), to_world(w - s, half_s, wz0),
+                to_world(w - s, half_s, wz1), to_world(s, half_s, wz1)]),
+                thickness=wt))
+            # local 1 back (y=d-half_s, u=x)
+            self.wall_fills.append(WallPanelData(corners=np.array([
+                to_world(s, d - half_s, wz0), to_world(w - s, d - half_s, wz0),
+                to_world(w - s, d - half_s, wz1), to_world(s, d - half_s, wz1)]),
+                thickness=wt))
+            # local 2 left (x=half_s, u=y)
+            self.wall_fills.append(WallPanelData(corners=np.array([
+                to_world(half_s, s, wz0), to_world(half_s, d - s, wz0),
+                to_world(half_s, d - s, wz1), to_world(half_s, s, wz1)]),
+                thickness=wt))
+            # local 3 right (x=w-half_s, u=y)
+            self.wall_fills.append(WallPanelData(corners=np.array([
+                to_world(w - half_s, s, wz0), to_world(w - half_s, d - s, wz0),
+                to_world(w - half_s, d - s, wz1), to_world(w - half_s, s, wz1)]),
+                thickness=wt))
         self._apply_beam_section_type()
 
 
@@ -1077,7 +1112,7 @@ TYPE_TO_CLASS: Dict[ComponentType, type] = {
 TYPE_NAMES: Dict[ComponentType, str] = {
     ComponentType.MODULE:           '모듈',
     ComponentType.FLOOR_PANEL:      '바닥패널',
-    ComponentType.STRUCT_WALL:      '구조벽',
+    ComponentType.STRUCT_WALL:      '벽패널',
     ComponentType.INTERIOR_WALL:    '내벽',
     ComponentType.CANTILEVER_BEAM:  '캔틸레버보',
     ComponentType.CANTILEVER_SLAB:  '캔틸레버슬래브',
@@ -1115,8 +1150,8 @@ def effective_beam_section_type(comp, scene) -> str:
     """부재의 유효 보 단면 타입 — 종속/합체는 부모/패널을 따라간다.
 
     - 캔틸레버보·캔틸레버슬래브·중간보: parent_id 부모의 타입.
-    - 바닥패널에 합체된 구조벽(merged_fp_id): 그 바닥패널의 타입.
-    - 그 외(모듈·바닥패널·수직3층모듈·독립 구조벽): 자기 beam_section_type.
+    - 바닥패널에 합체된 벽패널(merged_fp_id): 그 바닥패널의 타입.
+    - 그 외(모듈·바닥패널·수직3층모듈·독립 벽패널): 자기 beam_section_type.
     """
     ct = comp.comp_type
     if ct in (ComponentType.CANTILEVER_BEAM, ComponentType.CANTILEVER_SLAB,

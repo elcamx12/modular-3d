@@ -140,6 +140,7 @@ def main():
         and '_snapshot_원본' not in str(p)
         and '_refactor_tools' not in p.parts
         and '팀원코드' not in p.parts   # 병합 대조용 임시 클론(별도 .git) 제외
+        and '병합_diff' not in p.parts  # 3-way 병합 작업산출물(BASE/MERGED 사본) 제외
     ]
 
     out_lines = ['# 인벤토리 (자동 생성)\n']

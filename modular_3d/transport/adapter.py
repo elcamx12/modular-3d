@@ -42,12 +42,13 @@ from ..model.core import (
     Component, ComponentType, Scene,
     Module as SceneModule, FloorPanel, StructWall, Vertical3Module,
     Core, CoreSlab, CantileverBeam, CantileverSlab, MidBeam, MidColumn,
+    InteriorWall,
     BeamData, ColumnData, SlabData, WallPanelData,
     _rotate_point, _rotate_local_to_world,
     TYPE_NAMES,
 )
 from ..카탈로그.geometry import (
-    SLAB_THICKNESS_MM, FLOOR_HEIGHT,
+    SLAB_THICKNESS_MM, FLOOR_HEIGHT, SECTION_W_MM, SECTION_H_MM,
 )
 from ..카탈로그.materials import CONCRETE_DENSITY_KG_M3
 from ..카탈로그.steel_sections import SHSSection
@@ -84,6 +85,8 @@ class TransportOptions:
 
     # 수직 3 모듈
     treat_v3_module_as_lying: bool = True
+    # 독립 벽패널: 운송은 눕혀 적재(True), 물량은 세워서 표시(False).
+    treat_wall_as_lying: bool = True
 
     # Mid*
     mid_member_inclusion: str = "extra_weight"  # 'extra_weight' | 'ignore'
@@ -416,23 +419,73 @@ def _nominal_aabb_of_points(
     return (min(xs), min(ys), min(zs)), (max(xs), max(ys), max(zs))
 
 
+def _anchored_extent_1d(center_pos, comp_center, actual, nominal):
+    """단면축 1개의 [min,max] — 외곽면을 (중심선 + 부호·공칭/2) 에 고정하고
+    안쪽으로 actual 만큼 성장. 부호 = 모듈 중심 반대쪽(외곽) 방향. 부재가 모듈
+    중앙(부호 0)이면 중심 대칭. 기둥·보 공용(3D 렌더 outer_anchor 와 동일 규칙).
+
+    단면이 공칭(nominal)보다 커져도 외곽면(footprint)이 불변이라, 둘레 부재
+    단면이 커져도 모듈 외곽 폭이 늘지 않는다(→ 운송 폭 과대계산 방지).
+    """
+    d = center_pos - comp_center
+    sign = 1.0 if d > 1.0 else (-1.0 if d < -1.0 else 0.0)
+    if sign == 0.0:
+        return center_pos - actual / 2.0, center_pos + actual / 2.0
+    outer = center_pos + sign * (nominal / 2.0)   # footprint 외곽면(불변)
+    inner = outer - sign * actual                 # 안쪽으로 성장
+    return min(outer, inner), max(outer, inner)
+
+
+def _module_col_section_w(comp: Component) -> float:
+    """모듈/벽 기둥의 대표 단면폭(mm) — 보 길이축을 기둥 안쪽 면에 맞출 때 사용.
+    기둥이 없으면(바닥패널 등) 0 → 보 길이 조정 안 함."""
+    cols = getattr(comp, "columns", None) or []
+    if not cols:
+        return 0.0
+    return max(float(getattr(c, "section_w", 0.0)) for c in cols)
+
+
 def _nominal_aabb_beam(
     b: BeamData, parent_comp: Component,
 ) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
-    """보의 nominal AABB — 시작/끝 + 단면 두께 반영."""
+    """보의 nominal AABB — 시작/끝 + 단면 두께 반영.
+
+    [2026-06-03] 두 가지 외곽 보정(시각화 목적, 물량·해석 수치는 불변):
+    1. 수평 단면폭(sw)은 외곽 고정·안쪽 성장(기둥과 동일). 둘레보 단면이 커져도
+       모듈 footprint 폭이 불변 → 운송 폭 과대계산·누락 방지.
+    2. 길이축 양 끝이 모서리 기둥에 닿으면 *기둥 안쪽 면* 까지 줄이거나 늘린다.
+       기둥이 두꺼워지면 안쪽 면이 안으로 들어오므로 보가 짧아지고(겹침 방지),
+       얇아지면 길어진다(틈 방지). 길이축이 모듈 경계에서 먼 내부 보는 그대로.
+    높이(z)는 그대로 둔다.
+    """
     s_n = _world_to_parent_nominal(b.start, parent_comp)
     e_n = _world_to_parent_nominal(b.end, parent_comp)
     sw, sh = float(b.section_w), float(b.section_h)
+    W = float(parent_comp.dimensions.get("width", 0.0))
+    D = float(parent_comp.dimensions.get("depth", 0.0))
+    col_sw = _module_col_section_w(parent_comp)
     dx = abs(e_n[0] - s_n[0]); dy = abs(e_n[1] - s_n[1])
     if dx >= dy:
-        # X 방향 보 (nominal)
-        x_min, x_max = min(s_n[0], e_n[0]), max(s_n[0], e_n[0])
-        y_min, y_max = s_n[1] - sw / 2, s_n[1] + sw / 2
+        # X 방향 보 — 길이=x, 수평 단면폭 sw=y(외곽 고정), 높이 sh=z(그대로)
+        x0, x1 = min(s_n[0], e_n[0]), max(s_n[0], e_n[0])
+        if col_sw > 0.0:
+            if x0 <= SECTION_W_MM:       # near 끝 = 경계(0) 쪽 기둥
+                x0 = col_sw              # 기둥 안쪽 면
+            if x1 >= W - SECTION_W_MM:   # far 끝 = 경계(W) 쪽 기둥
+                x1 = W - col_sw
+        x_min, x_max = x0, x1
+        y_min, y_max = _anchored_extent_1d(s_n[1], D / 2.0, sw, SECTION_W_MM)
         z_min, z_max = s_n[2] - sh / 2, s_n[2] + sh / 2
     else:
-        # Y 방향 보
-        x_min, x_max = s_n[0] - sw / 2, s_n[0] + sw / 2
-        y_min, y_max = min(s_n[1], e_n[1]), max(s_n[1], e_n[1])
+        # Y 방향 보 — 길이=y, 수평 단면폭 sw=x(외곽 고정), 높이 sh=z(그대로)
+        y0, y1 = min(s_n[1], e_n[1]), max(s_n[1], e_n[1])
+        if col_sw > 0.0:
+            if y0 <= SECTION_W_MM:
+                y0 = col_sw
+            if y1 >= D - SECTION_W_MM:
+                y1 = D - col_sw
+        x_min, x_max = _anchored_extent_1d(s_n[0], W / 2.0, sw, SECTION_W_MM)
+        y_min, y_max = y0, y1
         z_min, z_max = s_n[2] - sh / 2, s_n[2] + sh / 2
     return (x_min, y_min, z_min), (x_max, y_max, z_max)
 
@@ -440,13 +493,29 @@ def _nominal_aabb_beam(
 def _nominal_aabb_column(
     c: ColumnData, parent_comp: Component,
 ) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
-    """기둥의 nominal AABB — base/top + 단면 폭/깊이."""
+    """기둥의 nominal AABB — 외곽 고정·안쪽 성장 (3D 렌더링과 동일 규칙).
+
+    [2026-06-03 버그수정] 과거엔 `중심선 ± 실제단면/2` 로 양쪽(바깥 포함)으로
+    키워, 설계가 큰 단면(예: SHS 350)을 배정하면 기둥 외곽이 모듈 footprint
+    (= 중심선 ± 공칭 SECTION_W_MM/2) 를 넘어섰다. 그 결과 폭 3400 모듈이 운송에서
+    3550 으로 잡혀 현장 폭 한도 초과로 *조용히 누락*됐다.
+
+    3D 렌더링(mesh_builder._add_columns, outer_anchor)은 모듈 중심 반대쪽(외곽)
+    면을 공칭 위치에 고정하고 *안쪽으로* 성장시켜, 단면이 커져도 외곽(footprint)이
+    불변이다. 운송도 동일 규칙을 적용해 footprint 를 보존한다.
+    """
     b_n = _world_to_parent_nominal(c.base, parent_comp)
     t_n = _world_to_parent_nominal(c.top, parent_comp)
     sw, sh = float(c.section_w), float(c.section_h)
-    x_min, x_max = b_n[0] - sw / 2, b_n[0] + sw / 2
-    y_min, y_max = b_n[1] - sh / 2, b_n[1] + sh / 2
     z_min, z_max = min(b_n[2], t_n[2]), max(b_n[2], t_n[2])
+
+    # 모듈 footprint 중심 (nominal [0,W]×[0,D])
+    W = float(parent_comp.dimensions.get("width", 0.0))
+    D = float(parent_comp.dimensions.get("depth", 0.0))
+    cx, cy = W / 2.0, D / 2.0
+
+    x_min, x_max = _anchored_extent_1d(b_n[0], cx, sw, SECTION_W_MM)
+    y_min, y_max = _anchored_extent_1d(b_n[1], cy, sh, SECTION_H_MM)
     return (x_min, y_min, z_min), (x_max, y_max, z_max)
 
 
@@ -484,6 +553,135 @@ def _nominal_aabb_wallpanel(
                 (max(xs), cy + t / 2, max(zs)))
     # 둘 다 분산 큼 — 평면이 아님 (이론상 없음)
     return ((min(xs), min(ys), min(zs)), (max(xs), max(ys), max(zs)))
+
+
+# ── 개구부 '실제 구멍' 표현 — 면을 개구부 제외 직사각형 조각으로 분할 ──────
+# 운송/물량 3D 는 부재를 AABB 박스로 그린다(three.js BoxGeometry, CSG 없음).
+# 통짜 박스 1개 대신, 개구부를 뺀 잔여 직사각형 여러 조각을 각각 박스로 만들면
+# 개구부 자리는 박스가 비어 '구멍'처럼 보인다. 회전 0/90/180/270 의 축정렬
+# 평면만 다루므로 조각 AABB 가 정확하다.
+
+def _seg_len(a, b) -> float:
+    return ((float(b[0]) - float(a[0])) ** 2
+            + (float(b[1]) - float(a[1])) ** 2
+            + (float(b[2]) - float(a[2])) ** 2) ** 0.5
+
+
+def _uv_world_pt(c0, cu, cv, fu, fv):
+    """면 코너(c0=원점, cu=+u끝, cv=+v끝)에서 보간 비율 (fu,fv) 의 월드 점."""
+    return tuple(
+        float(c0[k]) + (float(cu[k]) - float(c0[k])) * fu
+                     + (float(cv[k]) - float(c0[k])) * fv
+        for k in range(3)
+    )
+
+
+def _rects_minus_openings(U: float, V: float, ops):
+    """면 직사각형 [0,U]×[0,V] 에서 개구부들을 뺀 잔여 직사각형 조각 목록.
+
+    개구부 경계로 격자 컷을 만들고, 셀 중심이 어느 개구부에도 안 들면 채택한다.
+    개구부 없으면 통짜 1개. ops = [(u,v,w,h), ...] (면 로컬 mm).
+    """
+    if not ops:
+        return [(0.0, 0.0, U, V)]
+
+    def _clip(val, hi):
+        return max(0.0, min(hi, val))
+
+    us = sorted({0.0, U} | {_clip(o[0], U) for o in ops}
+                | {_clip(o[0] + o[2], U) for o in ops})
+    vs = sorted({0.0, V} | {_clip(o[1], V) for o in ops}
+                | {_clip(o[1] + o[3], V) for o in ops})
+    rects = []
+    for i in range(len(us) - 1):
+        u0, u1 = us[i], us[i + 1]
+        if u1 - u0 < 1.0:
+            continue
+        for j in range(len(vs) - 1):
+            v0, v1 = vs[j], vs[j + 1]
+            if v1 - v0 < 1.0:
+                continue
+            uc, vc = (u0 + u1) / 2.0, (v0 + v1) / 2.0
+            inside = any(o[0] <= uc <= o[0] + o[2] and o[1] <= vc <= o[1] + o[3]
+                         for o in ops)
+            if not inside:
+                rects.append((u0, v0, u1, v1))
+    return rects
+
+
+def _wall_rect_nominal_aabb(pts4, thickness, parent_comp):
+    """벽 평면 조각(4 월드 코너) + 두께 → nominal AABB (축정렬 평면 가정)."""
+    nps = [_world_to_parent_nominal(p, parent_comp) for p in pts4]
+    xs = [p[0] for p in nps]; ys = [p[1] for p in nps]; zs = [p[2] for p in nps]
+    t = float(thickness)
+    dx = max(xs) - min(xs); dy = max(ys) - min(ys)
+    if dx < 1.0:
+        cx = (max(xs) + min(xs)) / 2.0
+        return ((cx - t / 2, min(ys), min(zs)), (cx + t / 2, max(ys), max(zs)))
+    if dy < 1.0:
+        cy = (max(ys) + min(ys)) / 2.0
+        return ((min(xs), cy - t / 2, min(zs)), (max(xs), cy + t / 2, max(zs)))
+    return ((min(xs), min(ys), min(zs)), (max(xs), max(ys), max(zs)))
+
+
+def _slab_rect_nominal_aabb(pts4, thickness, parent_comp):
+    """슬래브 평면 조각(4 월드 코너, z=하면) + 두께(z) → nominal AABB."""
+    nps = [_world_to_parent_nominal(p, parent_comp) for p in pts4]
+    xs = [p[0] for p in nps]; ys = [p[1] for p in nps]; zs = [p[2] for p in nps]
+    zmin = min(zs)
+    return ((min(xs), min(ys), zmin), (max(xs), max(ys), zmin + float(thickness)))
+
+
+def _ops_for_face(comp, face):
+    """comp.openings 중 해당 face 의 개구부만 (레거시 face 미지정은 face 로 간주)."""
+    return [o for o in (getattr(comp, "openings", None) or [])
+            if o.get("face", face) == face]
+
+
+def _opening_split_wall_parts(wf, parent_comp, ops, kind="wall_fill"):
+    """벽 채움을 개구부 제외 조각 BodyPart 들로. 개구부 없으면 통짜 1개."""
+    c = list(wf.corners)
+    if len(c) < 4:
+        return []
+    c0, cu, cv = c[0], c[1], c[3]
+    U = _seg_len(c0, cu); V = _seg_len(c0, cv)
+    if U < 1e-3 or V < 1e-3:
+        return []
+    op_uvwh = [(float(o.get("u", 0.0)), float(o.get("v", 0.0)),
+                float(o.get("w", 0.0)), float(o.get("h", 0.0))) for o in ops]
+    out = []
+    for (u0, v0, u1, v1) in _rects_minus_openings(U, V, op_uvwh):
+        pts = [_uv_world_pt(c0, cu, cv, u0 / U, v0 / V),
+               _uv_world_pt(c0, cu, cv, u1 / U, v0 / V),
+               _uv_world_pt(c0, cu, cv, u1 / U, v1 / V),
+               _uv_world_pt(c0, cu, cv, u0 / U, v1 / V)]
+        bp = _make_body_part(kind, _wall_rect_nominal_aabb(pts, wf.thickness, parent_comp))
+        if bp is not None:
+            out.append(bp)
+    return out
+
+
+def _opening_split_slab_parts(s, parent_comp, ops):
+    """슬래브를 개구부 제외 조각 BodyPart 들로. 개구부 없으면 통짜 1개."""
+    c = list(s.corners)
+    if len(c) < 4:
+        return []
+    c0, cu, cv = c[0], c[1], c[3]
+    U = _seg_len(c0, cu); V = _seg_len(c0, cv)
+    if U < 1e-3 or V < 1e-3:
+        return []
+    op_uvwh = [(float(o.get("u", 0.0)), float(o.get("v", 0.0)),
+                float(o.get("w", 0.0)), float(o.get("h", 0.0))) for o in ops]
+    out = []
+    for (u0, v0, u1, v1) in _rects_minus_openings(U, V, op_uvwh):
+        pts = [_uv_world_pt(c0, cu, cv, u0 / U, v0 / V),
+               _uv_world_pt(c0, cu, cv, u1 / U, v0 / V),
+               _uv_world_pt(c0, cu, cv, u1 / U, v1 / V),
+               _uv_world_pt(c0, cu, cv, u0 / U, v1 / V)]
+        bp = _make_body_part("slab", _slab_rect_nominal_aabb(pts, s.thickness, parent_comp))
+        if bp is not None:
+            out.append(bp)
+    return out
 
 
 def _nominal_to_transport_box(
@@ -557,13 +755,35 @@ def _collect_module_body_parts(
                              section_type=getattr(b, "section_type", "shs"))
         if bp is not None: parts.append(bp)
     if comp.slab is not None:
-        bp = _make_body_part("slab", _nominal_aabb_slab(comp.slab, comp))
-        if bp is not None: parts.append(bp)
-    for w in comp.wall_fills:
-        nab = _nominal_aabb_wallpanel(w, comp)
-        if nab is not None:
-            bp = _make_body_part("wall_fill", nab)
-            if bp is not None: parts.append(bp)
+        parts.extend(_opening_split_slab_parts(
+            comp.slab, comp, _ops_for_face(comp, 'slab')))
+    for i, w in enumerate(comp.wall_fills):
+        parts.extend(_opening_split_wall_parts(
+            w, comp, _ops_for_face(comp, f'wall_{i}')))
+    return tuple(parts)
+
+
+def _collect_interior_wall_parts(
+    parent_comp: Component, parent_cid: int, scene: Scene,
+) -> Tuple[BodyPart, ...]:
+    """모듈에 종속된 내벽(InteriorWall) 채움판을 *시각화 전용* BodyPart 로.
+
+    물량/운송 3D 에 내벽을 보이게만 한다. 운송 패킹·겹침 검사는 화물 외곽
+    박스로만 수행하므로 내벽 개별 겹침은 보지 않으며, 내벽은 모듈 footprint
+    내부(하중 0 부재)라 외곽 차원·무게에 영향이 없다.
+    """
+    parts: List[BodyPart] = []
+    for wcid, wcomp in scene.components.items():
+        if getattr(wcomp, "parent_id", 0) != parent_cid:
+            continue
+        if not isinstance(wcomp, InteriorWall):
+            continue
+        wf = getattr(wcomp, "wall_fill", None)
+        if wf is None:
+            continue
+        # 내벽 채움도 개구부('wall' face)를 빼고 조각 박스로 — 외피 벽과 동일 렌더.
+        parts.extend(_opening_split_wall_parts(
+            wf, parent_comp, _ops_for_face(wcomp, 'wall')))
     return tuple(parts)
 
 
@@ -577,15 +797,15 @@ def _collect_floor_body_parts(
                              section_type=getattr(b, "section_type", "shs"))
         if bp is not None: parts.append(bp)
     if comp.slab is not None:
-        bp = _make_body_part("slab", _nominal_aabb_slab(comp.slab, comp))
-        if bp is not None: parts.append(bp)
+        parts.extend(_opening_split_slab_parts(
+            comp.slab, comp, _ops_for_face(comp, 'slab')))
     return tuple(parts)
 
 
 def _collect_wall_body_parts(
     comp: StructWall,
 ) -> Tuple[BodyPart, ...]:
-    """구조벽 — 양쪽 기둥 2 + 상·하 런너 2 + 채움 1."""
+    """벽패널 — 양쪽 기둥 2 + 상·하 런너 2 + 채움 1."""
     parts: List[BodyPart] = []
     for c in comp.columns:
         bp = _make_body_part("column", _nominal_aabb_column(c, comp))
@@ -599,10 +819,8 @@ def _collect_wall_body_parts(
                              section_type=getattr(comp.top_runner, "section_type", "shs"))
         if bp is not None: parts.append(bp)
     if comp.wall_fill is not None:
-        nab = _nominal_aabb_wallpanel(comp.wall_fill, comp)
-        if nab is not None:
-            bp = _make_body_part("wall_fill", nab)
-            if bp is not None: parts.append(bp)
+        parts.extend(_opening_split_wall_parts(
+            comp.wall_fill, comp, _ops_for_face(comp, 'wall')))
     return tuple(parts)
 
 
@@ -628,9 +846,13 @@ def _collect_v3_body_parts(
         bp = _make_body_part("beam", _nominal_aabb_beam(b, comp), subkind="top",
                              section_type=getattr(b, "section_type", "shs"))
         if bp is not None: parts.append(bp)
-    for s in comp.slabs:
-        bp = _make_body_part("slab", _nominal_aabb_slab(s, comp))
-        if bp is not None: parts.append(bp)
+    for i, s in enumerate(comp.slabs):
+        parts.extend(_opening_split_slab_parts(
+            s, comp, _ops_for_face(comp, f'slab_{i}')))
+    # 비내력벽 12면 — 단층 모듈과 동일하게 운송/물량 3D에 표시(운송 겹침 판정 대상은 아님).
+    for i, w in enumerate(getattr(comp, "wall_fills", None) or []):
+        parts.extend(_opening_split_wall_parts(
+            w, comp, _ops_for_face(comp, f'wall_{i}')))
     return tuple(parts)
 
 
@@ -899,6 +1121,8 @@ def convert_module(
 
     # Phase 3-fix + 캔틸 돌출 보정 — 실측 부재 + 3축 정규화 + 외곽 차원 확장
     body = _collect_module_body_parts(comp)
+    # 모듈에 종속된 내벽(칸막이) 을 시각화 전용으로 body 에 추가(운송 패킹 무영향).
+    body = body + _collect_interior_wall_parts(comp, cid, scene)
     attached = _collect_attached_parts(
         comp, scene, model, design_result, options,
         include_mid=True, include_cantilever=options.include_cantilever,
@@ -976,7 +1200,8 @@ def convert_vertical3_lying(
     extra += _sum_cantilever_weight_attached_to(cid, scene, model, design_result, options)
 
     # Phase 3-fix — 실측 부재 수집 + v3-lying 매핑 추가 회전
-    body_raw = _collect_v3_body_parts(comp)
+    # 수직모듈에 종속된 내벽(칸막이)도 시각화 전용으로 포함(눕히기 remap 까지 함께 받음).
+    body_raw = _collect_v3_body_parts(comp) + _collect_interior_wall_parts(comp, cid, scene)
     attached = _collect_attached_parts(
         comp, scene, model, design_result, options,
         include_mid=True, include_cantilever=options.include_cantilever,
@@ -1232,14 +1457,30 @@ def convert_independent_wall_panel(
     avg_unit = 0.5 * (front_unit + back_unit)
     extra = avg_unit * (w / 1000.0) * (h / 1000.0)
 
-    # 운송 매핑: width=h(층고), length=w(벽 길이), thickness=d
-    # body_parts 는 normal 매핑으로 만든 뒤 wall-lying 회전 재매핑.
     body_raw = _collect_wall_body_parts(wall)
-    body = tuple(_remap_part_wall_lying(bp) for bp in body_raw)
-    body, _ = _z_normalize_parts(body, ())
+    if options.treat_wall_as_lying:
+        # 운송: 눕혀 적재 — width=h(층고), length=w(벽 길이), thickness=d.
+        # body_parts 는 normal 매핑으로 만든 뒤 wall-lying 회전 재매핑.
+        body = tuple(_remap_part_wall_lying(bp) for bp in body_raw)
+        body, _ = _z_normalize_parts(body, ())
+        return TPanel(
+            name=label, kind="wall",
+            width=h, length=w, thickness=d,
+            beam_section=to_transport_section(beam_pick),
+            column_section=to_transport_section(col_pick),
+            wall_height=h,
+            extra_weight_kg=extra,
+            body_parts=body,
+        )
+    # 물량: 세워서 표시 — normal 매핑(높이축이 연직 Z) 그대로.
+    # [함정] 외곽 박스 차원을 (w,d) 로 하드코딩하면 벽 방향(전후벽/좌우벽)에 따라
+    # body 의 운송 x·y 가 바뀌어 박스와 90도 어긋난다. body 실측 외곽
+    # (_outer_xy_dims)으로 length·width 를 잡아 벽 방향과 무관하게 정합시킨다.
+    body, _ = _z_normalize_parts(body_raw, ())
+    outer_L, outer_W = _outer_xy_dims(body, ())
     return TPanel(
         name=label, kind="wall",
-        width=h, length=w, thickness=d,
+        width=outer_W, length=outer_L, thickness=h,
         beam_section=to_transport_section(beam_pick),
         column_section=to_transport_section(col_pick),
         wall_height=h,
@@ -1298,6 +1539,13 @@ def build_transport_input(
         if isinstance(comp, (Core, CoreSlab)):
             ti.excluded.append(ExcludedItem(cid=cid, type_name="RC 코어/슬래브",
                                             reason="현장 타설(운송 대상 아님)"))
+            continue
+
+        # 내벽(비내력 칸막이) — 렌더링 전용. 운송 점검 대상이 아니므로 제외.
+        # (분기에서 빠지면 '알 수 없는 타입' 경고가 떠 운송 확인 팝업을 채운다.)
+        if isinstance(comp, InteriorWall):
+            ti.excluded.append(ExcludedItem(cid=cid, type_name="내벽",
+                                            reason="비내력 칸막이(운송 대상 아님)"))
             continue
 
         # Mid* — 부모 모듈 extra_weight 에 흡수됨 (위에서 합산)
@@ -1364,6 +1612,32 @@ def build_transport_input(
     ti.panels = [_normalize_dims_for_transport(p) for p in ti.panels]
 
     ti.diagnostics = diag
+
+    # [2026-06-03 진단] 모듈이 운송에서 통째로 빠지는 버그 추적용.
+    #   씬의 모듈/수직3모듈 컴포넌트 중 코어·내부보강재가 아닌 "운송 대상" 개수와
+    #   실제 추출된 ti.modules 개수를 비교해, 모자라면(=convert_module 이 단면
+    #   룩업 실패로 None 반환) 콘솔에 사유를 경고로 남긴다. 정상이면 아무 출력 없음.
+    #   원인 1순위: 운송에 넘긴 model 의 부재 id 가 design_result(다른 빌드 기준)와
+    #   어긋나 lookup_section_for_member 가 전부 실패 → 모듈 0 회차.
+    try:
+        from modular_3d._utils.debug import log_warn
+        excluded_cids = {e.cid for e in ti.excluded}
+        mod_targets = [c for cid, c in scene.components.items()
+                       if isinstance(c, (SceneModule, Vertical3Module))
+                       and cid not in excluded_cids]
+        dropped = len(mod_targets) - len(ti.modules)
+        if dropped > 0:
+            n_mtg = len(getattr(design_result, 'member_to_group', {}) or {})
+            sec_fail = sum(1 for w in diag.warnings if '단면 룩업 실패' in w)
+            log_warn(
+                f"[운송] 모듈 {dropped}/{len(mod_targets)}개가 운송에서 누락됨 "
+                f"(단면룩업실패 경고 {sec_fail}건, design_result.member_to_group "
+                f"{n_mtg}개). model 과 design_result 의 부재 id 불일치 가능 — "
+                f"운송에 넘긴 모델이 설계결과와 같은 빌드인지 확인 필요.",
+                cat='transport')
+    except Exception:
+        pass
+
     return ti
 
 

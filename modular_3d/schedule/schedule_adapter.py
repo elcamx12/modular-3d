@@ -357,11 +357,12 @@ def _categorize_joints_by_rule(
         # 공정 카운트에서는 ① 을 제외해 1접합=1카운트로 맞춤.
         if rid == 'R03_panel_mod' and str(getattr(rec, 'kind', '')) == 'panel_module_vert':
             continue
-        # ── R09 모델링 인공물 제외 ──
-        # 'core_proj_to_line' 은 코어 축선 위 사영점을 코어 끝점 n1 과 6 DOF
-        # 강결로 묶는 "글루" 결합. z 평행 column 케이스는 n1.z 와 사영점 z 가
-        # 달라 분석 모델에는 수직 결합으로 박히지만 실제 시공 공정에는 없는
-        # 모델링 인공물. R09 시공 카운트에서 제외.
+        # ── R09 구버전 호환 — 'core_proj_to_line' 제외 ──
+        # [2026-06-03 코어 선 분할 도입] 이전엔 사영점을 코어 선 끝점 n1 에 6 DOF
+        # 강결로 묶는 "글루" 결합(실제 시공 공정에 없는 모델링 인공물)이라 카운트
+        # 제외했다. 현재 빌드는 코어 선을 사영점에서 분할하므로 이 kind 를 더 이상
+        # 생성하지 않고 실제 접합인 'core_edge' 로 대체한다. 옛 저장본 spec 로드
+        # 호환을 위해 가드만 유지(현재 빌드에선 항상 거짓).
         if rid == 'R09_core' and str(getattr(rec, 'kind', '')) == 'core_proj_to_line':
             continue
         m_id, mz = node_info.get(int(rec.master), (0, 0.0))
@@ -738,9 +739,6 @@ def build_scene_data(
         _n_comps = len(comps)
         _n_floors = len(floor_rule_counts)
         _n_total = sum(sum(d.values()) for d in floor_rule_counts.values()) if floor_rule_counts else 0
-        print(f"[schedule_adapter] scene={'있음' if scene is not None else '없음'} "
-              f"comps={_n_comps} floor_rule_counts층수={_n_floors} 총접합={_n_total} "
-              f"baseplate={baseplate_cnt}", flush=True)
     except Exception:
         pass
     summary["r02_per_floor"]        = r02_pf

@@ -339,31 +339,46 @@ def _add_columns(meshes, columns, color=COLOR_COLUMN, color_in=COLOR_COLUMN_IN,
 
 
 def _add_beams(meshes, beams, color=COLOR_FLOOR_BEAM, color_in=COLOR_FLOOR_BEAM_IN,
-               outer_anchor=False, center_xy=None, vert_anchor=0):
+               outer_anchor=False, center_xy=None, vert_anchor=0, col_sw=0.0):
     """보 메쉬. outer_anchor=True 면 외곽 고정·안쪽 성장(단면 설계 탭 전용):
       - 수평(right): 모듈/패널 중심 반대쪽(가장자리 바깥) 면 고정.
       - 수직(up): vert_anchor=+1(천장보)=위 면 / -1(바닥보)=아래 면 고정.
-    H형강 보(build_h_section)는 앵커 미적용(축 중심 유지)."""
+    H형강 보(build_h_section)는 앵커 미적용(축 중심 유지).
+
+    col_sw>0 & outer_anchor 면 보 양끝을 *기둥 안쪽 면* 까지 줄인다(시각화 전용).
+    기둥은 외곽 고정이라 두꺼워지면 안쪽 면이 안으로 들어오므로, 보 끝을 그만큼
+    당겨야 겹침/틈이 없다. 양끝을 각각 (col_sw - 공칭/2) 만큼 길이축 안쪽으로
+    이동(중심선 경간·물량·해석 수치는 불변)."""
+    shrink = (col_sw - _NOMINAL_OUTER_MM / 2.0) if (outer_anchor and col_sw > 0.0) else 0.0
     for beam in beams:
+        start = np.asarray(beam.start, float)
+        end = np.asarray(beam.end, float)
+        if shrink != 0.0:
+            along = end - start
+            L = float(np.linalg.norm(along))
+            if L > 1e-6:
+                u = along / L
+                s = max(min(shrink, L / 2.0 - 1.0), -L)   # 보가 사라지지 않게
+                start = start + u * s
+                end = end - u * s
         if getattr(beam, 'section_type', 'shs') == 'h':
             # H형강 — H=section_h(높이), B=section_w(폭), t1=section_t(웨브).
             meshes.append(build_h_section(
-                beam.start, beam.end, beam.section_h, beam.section_w, beam.section_t,
+                start, end, beam.section_h, beam.section_w, beam.section_t,
                 color=color))
         else:
             ar = au = 0
             if outer_anchor:
-                _, right, up, _ = _local_frame(beam.start, beam.end)
+                _, right, up, _ = _local_frame(start, end)
                 if vert_anchor:
                     au = vert_anchor * (1 if up[2] >= 0 else -1)
                 if center_xy is not None:
-                    mid = (np.asarray(beam.start, float)[:2]
-                           + np.asarray(beam.end, float)[:2]) * 0.5
+                    mid = (start[:2] + end[:2]) * 0.5
                     d = mid - np.asarray(center_xy, float)
                     dr = float(d[0] * right[0] + d[1] * right[1])
                     ar = (1 if dr > 1.0 else (-1 if dr < -1.0 else 0))
             meshes.append(build_hollow_box_section(
-                beam.start, beam.end, beam.section_w, beam.section_h, beam.section_t,
+                start, end, beam.section_w, beam.section_h, beam.section_t,
                 color_outer=color, color_inner=color_in,
                 anchor_right=ar, anchor_up=au,
                 nom_w=_NOMINAL_OUTER_MM, nom_h=_NOMINAL_OUTER_MM))
@@ -438,10 +453,13 @@ def build_component_class_meshes(comp, outer_anchor=False) -> dict:
     floor_beams += list(getattr(comp, 'beams', []) or [])   # 캔틸 슬래브 보 = 바닥보 색
 
     center_xy = None
+    col_sw = 0.0
     if outer_anchor and cols:
         bases = np.array([np.asarray(c.base, float)[:2] for c in cols])
         if len(bases):
             center_xy = bases.mean(axis=0)
+        # 보 길이를 기둥 안쪽 면에 맞추기 위한 대표 기둥 단면폭.
+        col_sw = max((float(getattr(c, 'section_w', 0.0)) for c in cols), default=0.0)
 
     out: dict = {}
     if cols:
@@ -451,12 +469,14 @@ def build_component_class_meshes(comp, outer_anchor=False) -> dict:
     if ceil_beams:
         em = []
         _add_beams(em, ceil_beams, color=COLOR_CEIL_BEAM, color_in=COLOR_CEIL_BEAM_IN,
-                   outer_anchor=outer_anchor, center_xy=center_xy, vert_anchor=1)
+                   outer_anchor=outer_anchor, center_xy=center_xy, vert_anchor=1,
+                   col_sw=col_sw)
         out['ceil'] = _merge_meshes(em)
     if floor_beams:
         fm = []
         _add_beams(fm, floor_beams,
-                   outer_anchor=outer_anchor, center_xy=center_xy, vert_anchor=-1)
+                   outer_anchor=outer_anchor, center_xy=center_xy, vert_anchor=-1,
+                   col_sw=col_sw)
         out['floor'] = _merge_meshes(fm)
     # [9-2] 비강재(슬래브·비내력벽) — 정의 탭처럼 형상 표시용. hover 대상 아님(name='').
     others = []
@@ -503,8 +523,8 @@ def build_floor_panel_mesh(panel, outer_anchor=False) -> MeshData:
 
 
 # ── [2026-06-02] 배치설계 '벽 채움면' 표시 토글 ──────────────
-# 구조벽 채움·내벽·모듈 외피 벽 채움은 모두 _build_wall_fill_mesh 로 그려진다.
-# 아래 전역 스위치를 끄면 메인 부재 빌드(모듈/구조벽/내벽)에서 채움면을 빼서
+# 벽패널 채움·내벽·모듈 외피 벽 채움은 모두 _build_wall_fill_mesh 로 그려진다.
+# 아래 전역 스위치를 끄면 메인 부재 빌드(모듈/벽패널/내벽)에서 채움면을 빼서
 # 프레임·슬래브·코어만 남긴다. (hover 용 build_component_class_meshes 는 제외 —
 # 배치설계 전용 토글이라 다른 탭의 형상 표시에는 영향을 주지 않는다.)
 _SHOW_WALL_FILL = True
@@ -614,15 +634,22 @@ def build_core_slab_mesh(cs) -> MeshData:
 
 
 def build_vertical3_module_mesh(vm) -> MeshData:
-    """수직 3층 모듈: 4 통기둥 + 층 슬래브 받침보 12 + 옥상 프레임 보 4 + 슬래브 3."""
+    """수직 3층 모듈: 4 통기둥 + 층 슬래브 받침보 12 + 옥상 프레임 보 4 + 슬래브 3 + 비내력벽 12."""
     meshes = []
     _add_columns(meshes, vm.columns)
     for fb in vm.bottom_beams:        # 3 stories × 4 beams
         _add_beams(meshes, fb)
     _add_beams(meshes, vm.top_beams,  # 4 옥상 프레임 = 천장보
                color=COLOR_CEIL_BEAM, color_in=COLOR_CEIL_BEAM_IN)
-    for slab in vm.slabs:
-        meshes.append(_build_slab_mesh(slab))
+    for i, slab in enumerate(vm.slabs):
+        meshes.append(_build_slab_mesh(
+            slab, _openings_for_face(vm, f'slab_{i}', f'slab_{i}')))
+    # 비내력 벽 12면 (층 4면 × 3) — 일반 모듈과 동일하게 면별 개구부 적용·토글 가드.
+    if _SHOW_WALL_FILL:
+        for i, wf in enumerate(getattr(vm, 'wall_fills', None) or []):
+            meshes.append(_build_wall_fill_mesh(
+                wf, partition=True,
+                openings=_openings_for_face(vm, f'wall_{i}', f'wall_{i}')))
     return _merge_meshes(meshes)
 
 

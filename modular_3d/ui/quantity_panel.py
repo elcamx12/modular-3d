@@ -28,6 +28,38 @@ from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont
 
 from modular_3d._utils.format import won as _won
+from modular_3d.ui.fonts import F_BODY, F_HEAD, ensure_fonts_loaded
+
+
+# ── 종합탭 톤 디자인 토큰 ─────────────────────────────────
+_PAGE_BG     = "#EDF2F7"
+_CARD_BG     = "#FFFFFF"
+_CARD_BORDER = "#DDE4ED"
+_HEAD_FG     = "#1F4E79"
+_BODY_FG     = "#1F2A37"
+
+# 패널 전체 스타일시트 — 구조해석 탭과 동일 톤(인접 탭 일관성).
+# - QLabel(캡션·묻는 글) → Paperlogy
+# - QTreeWidget/QTableWidget(값·표) → Freesentation, 흰 카드 톤
+# - QHeaderView::section(표 머리) → Paperlogy (구조해석과 동일)
+_QUANTITY_QSS = (
+    f"QuantityPanel {{ background: {_PAGE_BG}; }}"
+    "QLabel {"
+    f" font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 15px; font-weight: 700; color: {_HEAD_FG};"
+    " background: transparent; }"
+    "QTreeWidget, QTableWidget {"
+    f" font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+    f" color: {_BODY_FG};"
+    f" background: {_CARD_BG}; border: 1px solid {_CARD_BORDER};"
+    " border-radius: 8px; }"
+    "QHeaderView::section {"
+    f" font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+    f" font-size: 14px; font-weight: 700; color: {_HEAD_FG};"
+    f" background: {_PAGE_BG}; border: none;"
+    f" border-bottom: 1px solid {_CARD_BORDER}; padding: 6px 8px;"
+    " }"
+)
 
 
 class QuantityPanel(QWidget):
@@ -43,24 +75,45 @@ class QuantityPanel(QWidget):
 
     # ── UI 구성 ──────────────────────────────────────────────
     def _build_ui(self):
+        # [2026-06-02 디자인 통일] 종합/구조해석 탭 톤 적용.
+        ensure_fonts_loaded()
+        self.setStyleSheet(_QUANTITY_QSS)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(4, 4, 4, 4)
-        lay.setSpacing(4)
+        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(10)
+
+        # 패널 헤더 라벨(Paperlogy) — 다른 탭과 동일한 제목 톤.
+        _hdr = QLabel('물량 산출')
+        _hdr.setStyleSheet(
+            f"font-family:'{F_HEAD}','Malgun Gothic',sans-serif;"
+            f" font-size:20px; font-weight:800; color:{_HEAD_FG};"
+            " background:transparent; padding:2px;")
+        lay.addWidget(_hdr)
 
         # 1) 타입별 비용 트리
         lay.addWidget(QLabel("타입별 물량·비용 (행 클릭 → 3D 강조):"))
         self._tree = QTreeWidget()
+        # [2026-06-02] 정렬을 직접 그리는 전용 헤더(구조해석과 공유) — 스타일시트가
+        #   적용된 기본 헤더는 setTextAlignment 를 무시해 헤더가 늘 왼쪽으로 그려진다.
+        #   물량 열 헤더 "물량" 을 가운데 정렬해 셀 값 중심과 같은 세로선에 맞춘다.
+        from modular_3d.ui.analysis_panel import _AlignedHeader
+        self._tree.setHeader(_AlignedHeader(self._tree, font_px=14))
         self._tree.setColumnCount(3)
         self._tree.setHeaderLabels(["항목", "물량", "금액(원)"])
         self._tree.setIndentation(16)
         tf = QFont("Consolas")
-        tf.setPointSize(9)
+        tf.setPointSize(11)   # 구조해석 부재 트리와 동일 크기(가독성)
         self._tree.setFont(tf)
         hdr = self._tree.header()
         # [2026-06-01] 텍스트 안 짤리게 — 모든 컬럼 내용 폭에 맞춰 확장 + 가로 스크롤 허용.
         for c in range(3):
             hdr.setSectionResizeMode(c, QHeaderView.ResizeToContents)
         hdr.setStretchLastSection(False)
+        # 헤더 정렬: 항목=왼쪽, 물량=가운데(셀 값 중심과 정렬), 금액=오른쪽(통화).
+        if isinstance(hdr, _AlignedHeader):
+            hdr.set_column_alignment(0, Qt.AlignLeft)
+            hdr.set_column_alignment(1, Qt.AlignHCenter)
+            hdr.set_column_alignment(2, Qt.AlignHCenter)
         self._tree.setTextElideMode(Qt.ElideNone)
         # [2026-06-01] 가로 스크롤 대신 패널이 내용 폭에 맞춰 넓어지게(_fit_width).
         self._tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -199,8 +252,8 @@ class QuantityPanel(QWidget):
                     leaf = QTreeWidgetItem(
                         [f"{role_ko} {ln.section_name}", qty_of(ln), _won(ln.cost)])
                     leaf.setData(0, Qt.UserRole, None)
-                    for c in (1, 2):
-                        leaf.setTextAlignment(c, Qt.AlignRight | Qt.AlignVCenter)
+                    leaf.setTextAlignment(1, Qt.AlignHCenter | Qt.AlignVCenter)
+                    leaf.setTextAlignment(2, Qt.AlignHCenter | Qt.AlignVCenter)
                     type_item.addChild(leaf)
                 else:
                     # 단면 2종 이상 — 역할 노드 아래 단면별 leaf.
@@ -211,27 +264,33 @@ class QuantityPanel(QWidget):
                         leaf = QTreeWidgetItem(
                             [ln.section_name, qty_of(ln), _won(ln.cost)])
                         leaf.setData(0, Qt.UserRole, None)
-                        for c in (1, 2):
-                            leaf.setTextAlignment(c, Qt.AlignRight | Qt.AlignVCenter)
+                        leaf.setTextAlignment(1, Qt.AlignHCenter | Qt.AlignVCenter)
+                        leaf.setTextAlignment(2, Qt.AlignHCenter | Qt.AlignVCenter)
                         role_item.addChild(leaf)
 
             # 데크·콘크리트 줄 (있으면)
             if tq.rep.deck_area_m2 > 0:
                 deck = QTreeWidgetItem(["데크슬래브", f"{tq.rep.deck_area_m2:.2f}㎡",
                                         _won(tq.rep.deck_cost)])
-                for c in (1, 2):
-                    deck.setTextAlignment(c, Qt.AlignRight | Qt.AlignVCenter)
+                deck.setTextAlignment(1, Qt.AlignHCenter | Qt.AlignVCenter)
+                deck.setTextAlignment(2, Qt.AlignHCenter | Qt.AlignVCenter)
                 type_item.addChild(deck)
             if tq.rep.concrete_m3 > 0:
                 conc = QTreeWidgetItem(["콘크리트", f"{tq.rep.concrete_m3:.3f}㎥",
                                         _won(tq.rep.concrete_cost)])
-                for c in (1, 2):
-                    conc.setTextAlignment(c, Qt.AlignRight | Qt.AlignVCenter)
+                conc.setTextAlignment(1, Qt.AlignHCenter | Qt.AlignVCenter)
+                conc.setTextAlignment(2, Qt.AlignHCenter | Qt.AlignVCenter)
                 type_item.addChild(conc)
 
             self._tree.addTopLevelItem(type_item)
 
         self._tree.expandToDepth(0)  # 타입만 펼치고 역할은 접어 둠
+        # [2026-06-02] 물량 열과 금액 열 사이 간격 확보 — 물량 열(1)을 자연폭 + 여백
+        #   으로 고정한다. 넓어진 열 안에서도 헤더·값은 계속 가운데 정렬이라 중심은
+        #   유지되고, 두 열 사이만 벌어진다.
+        _COL_GAP = 28
+        self._tree.header().setSectionResizeMode(1, QHeaderView.Interactive)
+        self._tree.setColumnWidth(1, self._tree.sizeHintForColumn(1) + _COL_GAP)
 
     # ── 하단 본수표 (전체) ───────────────────────────────────
     def _fill_steel_table(self, report):
