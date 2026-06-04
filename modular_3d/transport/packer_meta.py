@@ -402,6 +402,7 @@ def pack_all_seeds_v2(
     random_count: int = N_RANDOM_SEEDS,
     apply_vnd: bool = True,
     vnd_max_iter: int = 100,
+    max_det_seeds: Optional[int] = None,
 ) -> Tuple[PackResult, dict]:
     """V2 메타 패커 — 비용 인식 자리 점수 + 부재 페어와이즈 충돌 + LB 가지치기.
 
@@ -437,11 +438,17 @@ def pack_all_seeds_v2(
     current_best = float("inf")
 
     # ── V2 결정론 시드 (그리디 4 × 가중치 7) ─────────────────
+    # [2026-06-04 성능] max_det_seeds 가 지정되면 그 개수만큼만 결정론 시드를
+    #   돈다. 모듈 전용 패킹(눕힘 1자세·바닥 1자리·적층 불가)은 정렬/가중치가
+    #   결과를 바꾸지 못해 모든 시드가 동일 → 1 개면 충분(335ms 낭비 제거).
     for strategy in GREEDY_STRATEGIES:
         if early_exit:
             break
         for weights in WEIGHT_SETS_V2:
             if early_exit:
+                break
+            if max_det_seeds is not None and seed_idx >= max_det_seeds:
+                early_exit = True
                 break
             seed_idx += 1
             res = pack_one_seed_v2(

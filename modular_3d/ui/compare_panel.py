@@ -15,7 +15,33 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 from typing import Any, Dict, List, Optional
+
+
+# [2026-06-05] 부재 타입 라벨에서 뒤쪽 인스턴스 번호(-방번호-순번)를 떼어
+#   *기준 타입 글자* 만 남긴다. 예: '모듈A-1-2' → '모듈A',
+#   '수직 3층 모듈A-2-3' → '수직 3층 모듈A', '벽패널A-1-1' → '벽패널A'.
+#   [함정] 타입명 자체엔 '-' 가 없고(공백만 있음) 뒤 번호만 '-숫자' 형태이므로
+#   끝에서 반복되는 '-숫자' 묶음만 제거한다.
+_TYPE_SUFFIX_RE = re.compile(r"(?:-\d+)+$")
+
+
+def _base_type_label(label: Optional[str]) -> Optional[str]:
+    """인스턴스 번호 접미사를 제거한 기준 타입 라벨."""
+    if not label:
+        return None
+    return _TYPE_SUFFIX_RE.sub("", str(label)).strip()
+
+
+def _count_base_types(labels) -> int:
+    """라벨들을 기준 타입 글자 기준으로 묶어 distinct 종류 수를 센다."""
+    seen = set()
+    for lb in labels:
+        base = _base_type_label(lb)
+        if base:
+            seen.add(base)
+    return len(seen)
 
 from PyQt5.QtCore import QRectF, Qt, pyqtSignal
 from PyQt5.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPixmap
@@ -92,10 +118,13 @@ class _CaseBox(QFrame):
 
         self.setObjectName("caseBox")
         # [2026-06-01 v5] 카드 세로 360 → 520 — 비교탭 세로의 약 절반.
+        # [2026-06-05] 520 → 480 — 비용표에 '간접비·이윤·부가세' 행(약 40px)을
+        #   추가하면서 세로가 넘쳐 스크롤이 생겼다. 미리보기 박스를 한 행 높이만큼
+        #   줄여 스크롤 없이 한 화면에 들어오게 한다.
         self.setStyleSheet("QFrame#caseBox { background: transparent;"
                             " border: none; }")
         self.setMinimumWidth(200)
-        self.setFixedHeight(520)
+        self.setFixedHeight(480)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         self._root = QVBoxLayout(self)
@@ -665,6 +694,10 @@ class ComparePanel(QWidget):
                 ("운송", "cost_transport"),
                 ("노무", "cost_labor"),
                 ("경비", "cost_equip"),
+                # [2026-06-05] 종합탭과 동일하게 간접비·이윤·부가세 행을 둔다.
+                #   이게 빠지면 자재+운송+노무+경비(직접비)와 합계(할증 후)가
+                #   안 맞아 표가 모순돼 보인다(누적 약 1.475배 차이).
+                ("간접비·이윤·부가세", "cost_indirect"),
                 ("합계", "cost_total"),
             ]),
             ("공기", [
@@ -709,15 +742,27 @@ class ComparePanel(QWidget):
         def headline(k):
             return lambda ev: ev.get("headline", {}).get(k)
         def members_modtypes(ev):
-            return len(ev.get("members", {}).get("modules_by_type", []) or [])
+            mods = ev.get("members", {}).get("modules_by_type", []) or []
+            return _count_base_types(m.get("name") for m in mods)
         def members_paneltypes(ev):
-            return len(ev.get("members", {}).get("panels_by_type", []) or [])
+            pnls = ev.get("members", {}).get("panels_by_type", []) or []
+            return _count_base_types(p.get("class_label") for p in pnls)
         def steel_t(ev):
             return ((ev.get("materials") or {}).get("steel_total") or {}).get("total_weight_ton")
         def slab_v(ev):
             return ((ev.get("materials") or {}).get("slab") or {}).get("total_volume_m3")
         def cost(k):
             return lambda ev: (ev.get("cost") or {}).get(k)
+        def cost_indirect(ev):
+            # [2026-06-05] 간접비·이윤·부가세 = 총공사비 − 직접공사비.
+            #   종합탭(evaluation_panel)과 같은 정의 — 직접비 항목들과 합계 사이를
+            #   메워 표가 맞아떨어지게 한다.
+            c = ev.get("cost") or {}
+            t = c.get("total_krw")
+            d = c.get("direct_krw")
+            if t is None or d is None:
+                return None
+            return float(t) - float(d)
         def sched_days(ev):
             s = ev.get("schedule") or {}
             return s.get("total_days") if s.get("available") else None
@@ -739,6 +784,7 @@ class ComparePanel(QWidget):
             ("cost_transport",  vals(lambda ev: _won(cost('transport_krw')(ev)))),
             ("cost_labor",      vals(lambda ev: _won(cost('labor_krw')(ev)))),
             ("cost_equip",      vals(lambda ev: _won(cost('equip_krw')(ev)))),
+            ("cost_indirect",   vals(lambda ev: _won(cost_indirect(ev)))),
             ("cost_total",      vals(lambda ev: _won(cost('total_krw')(ev)))),
             ("schedule_days",   vals(lambda ev: _fmt_int(sched_days(ev), '일'))),
         ]

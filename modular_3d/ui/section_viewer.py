@@ -20,7 +20,8 @@ import math
 from typing import Any, Dict, List, Optional, Tuple
 
 from PyQt5.QtCore import Qt, QPointF, QRectF
-from PyQt5.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPixmap
+from PyQt5.QtGui import (QBrush, QColor, QFont, QPainter, QPainterPath, QPen,
+                          QPixmap)
 from PyQt5.QtWidgets import (QDialog, QHBoxLayout, QLabel, QPushButton,
                               QVBoxLayout, QWidget)
 
@@ -152,36 +153,240 @@ def _find_exterior_edges(poly: List[Tuple[float, float]],
     return out
 
 
+def _polygon_axis_intersections(poly: List[Tuple[float, float]], axis: str,
+                                 value: float, eps: float = 1.0
+                                 ) -> List[Tuple[float, float]]:
+    """단면선이 폴리곤 *내부* 를 지나는 구간 [a_start, a_end] 들을 반환.
+
+    axis='x' → 단면 평면 y=value, 교차점의 x 좌표 구간.
+    axis='y' → 단면 평면 x=value, 교차점의 y 좌표 구간.
+
+    거실 색칠을 "단면선이 실제로 거실 안을 지나는 구간"으로 정확히 맞추기 위함.
+    (기존엔 거실 bbox 전체를 칠해 거실이 아닌 곳까지 빨강이 되던 문제를 해결.)
+    """
+    n = len(poly)
+    if n < 3:
+        return []
+    crossings: List[float] = []
+    for i in range(n):
+        x0, y0 = poly[i]
+        x1, y1 = poly[(i + 1) % n]
+        if axis == 'x':
+            c0, c1, a0, a1 = y0, y1, x0, x1   # value 와 비교=y, 결과축=x
+        else:
+            c0, c1, a0, a1 = x0, x1, y0, y1   # value 와 비교=x, 결과축=y
+        # 반열린 구간으로 꼭짓점 중복 카운트 방지
+        if (c0 <= value < c1) or (c1 <= value < c0):
+            t = (value - c0) / (c1 - c0)
+            crossings.append(a0 + t * (a1 - a0))
+    crossings.sort()
+    # 교차점을 짝으로 묶으면 내부 구간 (even-odd rule)
+    intervals: List[Tuple[float, float]] = []
+    for k in range(0, len(crossings) - 1, 2):
+        lo, hi = crossings[k], crossings[k + 1]
+        if hi - lo > eps:
+            intervals.append((lo, hi))
+    return intervals
+
+
+def _chain_segments_to_loops(segments: List[Any], tol: float = 1.5
+                             ) -> List[List[Tuple[float, float]]]:
+    """단면 슬라이스 선분들을 끝점 연결로 이어 닫힌 루프(폴리곤)로 묶는다.
+
+    부재 mesh 를 평면으로 자르면 잘린 단면 외곽이 (a,z) 선분들로 나온다. 이를
+    루프로 이어 *면* 으로 채우면 잘린 보/기둥/슬래브가 채워진 단면 형상으로 보인다.
+    """
+    segs: List[Tuple[Tuple[float, float], Tuple[float, float]]] = []
+    for srec in segments:
+        if len(srec) >= 2:
+            a = (float(srec[0][0]), float(srec[0][1]))
+            b = (float(srec[1][0]), float(srec[1][1]))
+            if abs(a[0] - b[0]) > 1e-6 or abs(a[1] - b[1]) > 1e-6:
+                segs.append((a, b))
+    n = len(segs)
+    used = [False] * n
+
+    def near(p, q):
+        return abs(p[0] - q[0]) <= tol and abs(p[1] - q[1]) <= tol
+
+    loops: List[List[Tuple[float, float]]] = []
+    for i in range(n):
+        if used[i]:
+            continue
+        used[i] = True
+        chain = [segs[i][0], segs[i][1]]
+        extended = True
+        while extended:
+            extended = False
+            if near(chain[-1], chain[0]):
+                break
+            tail = chain[-1]
+            for j in range(n):
+                if used[j]:
+                    continue
+                a, b = segs[j]
+                if near(tail, a):
+                    chain.append(b); used[j] = True; extended = True; break
+                if near(tail, b):
+                    chain.append(a); used[j] = True; extended = True; break
+        if len(chain) >= 3:
+            loops.append(chain)
+    return loops
+
+
+def _living_unit_bounds(scene: Any, poly: List[Tuple[float, float]],
+                         centroid: Tuple[float, float]
+                         ) -> Optional[Tuple[Tuple[float, float, float, float], set]]:
+    """거실이 포함된 1층 단위(모듈/패널 등)들의 합집합 XY-AABB + 멤버 id 집합.
+
+    사용자 정의의 "단위": 모듈만 있으면 거실이 든 모듈, 모듈+패널이면 둘을
+    하나로 본다. footprint 가 거실의 20% 이상인 1층 부재 중, 거실 무게중심을
+    품거나 거실 면적의 10% 이상을 덮는 것들을 단위로 모은다(기둥/보 등 가는
+    부재는 면적 기준에서 제외). 반환 ((ux0,ux1,uy0,uy1), member_ids) 또는 None.
+    """
+    comps = getattr(scene, 'components', None)
+    if not comps:
+        return None
+    iterable = comps.values() if hasattr(comps, 'values') else comps
+    rx0 = min(p[0] for p in poly); rx1 = max(p[0] for p in poly)
+    ry0 = min(p[1] for p in poly); ry1 = max(p[1] for p in poly)
+    r_area = max((rx1 - rx0) * (ry1 - ry0), 1.0)
+    cx, cy = centroid
+    members: List[Tuple[float, float, float, float]] = []
+    member_ids: set = set()
+    for comp in iterable:
+        try:
+            if int(getattr(comp, 'floor_index', 0) or 0) != 0:
+                continue
+            aabb = _component_aabb(comp)
+            if aabb is None:
+                continue
+            x0, x1, y0, y1, _, _ = aabb
+        except Exception:
+            continue
+        c_area = max((x1 - x0) * (y1 - y0), 1.0)
+        ox = max(0.0, min(x1, rx1) - max(x0, rx0))
+        oy = max(0.0, min(y1, ry1) - max(y0, ry0))
+        inter = ox * oy
+        contains_centroid = (x0 <= cx <= x1 and y0 <= cy <= y1)
+        big_enough = c_area >= 0.2 * r_area     # 모듈/패널 급만, 기둥·보 제외
+        if big_enough and (contains_centroid or inter >= 0.1 * r_area):
+            members.append((x0, x1, y0, y1))
+            member_ids.add(id(comp))
+    if not members:
+        return None
+    ux0 = min(m[0] for m in members); ux1 = max(m[1] for m in members)
+    uy0 = min(m[2] for m in members); uy1 = max(m[3] for m in members)
+    return (ux0, ux1, uy0, uy1), member_ids
+
+
+def _rect_exterior_lengths(rect: Tuple[float, float, float, float], scene: Any,
+                            member_ids: set, probe_dist: float = 300.0
+                            ) -> Tuple[float, float]:
+    """단위 사각형의 네 변 중 외부와 접한 변 길이를 방향별로 합산.
+
+    반환 (ext_len_x, ext_len_y):
+      ext_len_x = 외부와 접한 *가로(X평행)* 변(위/아래) 총 길이.
+      ext_len_y = 외부와 접한 *세로(Y평행)* 변(좌/우) 총 길이.
+    판정: 변의 25/50/75% 지점에서 바깥으로 probe_dist 나간 점이 단위 멤버가
+    아닌 다른 1층 부재 AABB 안에 없으면(=과반 표결) 그 변은 외부.
+    """
+    ux0, ux1, uy0, uy1 = rect
+    comps = getattr(scene, 'components', None)
+    others: List[Tuple[float, float, float, float]] = []
+    if comps:
+        iterable = comps.values() if hasattr(comps, 'values') else comps
+        for comp in iterable:
+            try:
+                if id(comp) in member_ids:
+                    continue
+                if int(getattr(comp, 'floor_index', 0) or 0) != 0:
+                    continue
+                aabb = _component_aabb(comp)
+                if aabb is None:
+                    continue
+                x0, x1, y0, y1, _, _ = aabb
+                others.append((x0, x1, y0, y1))
+            except Exception:
+                continue
+
+    def _exterior_point(px: float, py: float) -> bool:
+        for (x0, x1, y0, y1) in others:
+            if x0 - 10 <= px <= x1 + 10 and y0 - 10 <= py <= y1 + 10:
+                return False
+        return True
+
+    def _side_exterior(lo: float, hi: float, fixed: float,
+                       along: str, outward: float) -> bool:
+        votes = 0
+        for frac in (0.25, 0.5, 0.75):
+            a = lo + frac * (hi - lo)
+            if along == 'x':
+                px, py = a, fixed + outward * probe_dist
+            else:
+                px, py = fixed + outward * probe_dist, a
+            if _exterior_point(px, py):
+                votes += 1
+        return votes >= 2
+
+    w = ux1 - ux0   # 가로(X) 길이
+    d = uy1 - uy0   # 세로(Y) 길이
+    ext_len_x = 0.0
+    ext_len_y = 0.0
+    # 가로(X평행) 변 = 아래(y=uy0, 바깥 -y) / 위(y=uy1, 바깥 +y)
+    if _side_exterior(ux0, ux1, uy0, 'x', -1.0):
+        ext_len_x += w
+    if _side_exterior(ux0, ux1, uy1, 'x', +1.0):
+        ext_len_x += w
+    # 세로(Y평행) 변 = 좌(x=ux0, 바깥 -x) / 우(x=ux1, 바깥 +x)
+    if _side_exterior(uy0, uy1, ux0, 'y', -1.0):
+        ext_len_y += d
+    if _side_exterior(uy0, uy1, ux1, 'y', +1.0):
+        ext_len_y += d
+    return ext_len_x, ext_len_y
+
+
 def compute_section_line(room: Any, inset_mm: float = 2000.0,
                           scene: Any = None) -> Optional[Dict[str, Any]]:
-    """거실 polygon 에서 **외부와 가장 많이 닿은 면(외벽) 방향** 과 평행하게,
-    거실 **무게중심**을 지나는 단면선.
+    """거실이 포함된 *단위(모듈/패널 묶음)* 의 **외부와 가장 많이 접한 면 방향**
+    과 평행하게, 거실 **무게중심**을 지나는 단면선.
 
-    [2026-06-03] 사용자 요구로 로직 변경:
-      - 기준 방향: 외벽(외부 접촉) 변들을 가로(X평행)/세로(Y평행)로 나눠
-        *방향별 총 접촉 길이* 가 더 큰 쪽을 외벽 방향으로 채택. 즉 "가장 긴
-        단일 변"이 아니라 "외부와 가장 많이 닿은 면"이 기준.
-      - 절단 위치: 외벽에서 inset 이 아니라 거실 무게중심을 지난다.
-        (inset_mm 인자는 하위호환 위해 남겨두되 더 이상 사용하지 않음.)
-      - scene 이 없으면 외벽 검출 불가 → 가장 긴 변 방향으로 fallback.
+    [2026-06-04] 사용자 요구로 로직 변경:
+      - 기준 단위: 거실이 든 1층 모듈/패널들의 합집합(_living_unit_bounds). 그
+        사각형의 외부 접촉 변을 방향별(가로/세로)로 합산해 더 많이 접한 쪽을
+        외벽 방향으로 채택(_rect_exterior_lengths).
+      - 단위 검출/외벽 판정 실패 시 → 거실 폴리곤 외벽(_find_exterior_edges)
+        → 그것도 실패 시 가장 긴 변(_longest_edge) 순으로 fallback.
+      - 절단 위치: 거실 무게중심. (inset_mm 인자는 하위호환용·미사용.)
+      - 거실이 2개 이상이어도 find_living_room 이 1개만 반환 → 1개만 사용.
     """
     poly = list(getattr(room, 'polygon', []) or [])
     if not poly:
         return None
     cx, cy = _polygon_centroid(poly)
 
-    # ── 외벽 방향 결정 — 외부 접촉 변을 방향별로 합산해 큰 쪽 채택 ──
-    ext_len_x = 0.0   # 가로(X 평행) 외벽 총 접촉 길이
-    ext_len_y = 0.0   # 세로(Y 평행) 외벽 총 접촉 길이
+    # ── 외벽 방향 결정 — 1) 단위 외부면 → 2) 거실 폴리곤 외벽 → 3) 최장변 ──
+    ext_len_x = 0.0   # 가로(X 평행) 외부 접촉 총 길이
+    ext_len_y = 0.0   # 세로(Y 평행) 외부 접촉 총 길이
+    source = 'longest_edge'
     if scene is not None:
-        for (e0, e1, L) in _find_exterior_edges(poly, (cx, cy), scene):
-            if abs(e1[0] - e0[0]) >= abs(e1[1] - e0[1]):
-                ext_len_x += L
-            else:
-                ext_len_y += L
+        unit = _living_unit_bounds(scene, poly, (cx, cy))
+        if unit is not None:
+            rect, member_ids = unit
+            ext_len_x, ext_len_y = _rect_exterior_lengths(rect, scene, member_ids)
+            if ext_len_x > 0.0 or ext_len_y > 0.0:
+                source = 'unit'
+        if ext_len_x <= 0.0 and ext_len_y <= 0.0:
+            # 단위 외벽 검출 실패 → 거실 폴리곤 변 기준
+            for (e0, e1, L) in _find_exterior_edges(poly, (cx, cy), scene):
+                if abs(e1[0] - e0[0]) >= abs(e1[1] - e0[1]):
+                    ext_len_x += L
+                else:
+                    ext_len_y += L
+            if ext_len_x > 0.0 or ext_len_y > 0.0:
+                source = 'room_edge'
 
     if ext_len_x <= 0.0 and ext_len_y <= 0.0:
-        # 외벽 검출 실패 → 가장 긴 변 방향으로 fallback
         edge = _longest_edge(poly)
         if edge is None:
             return None
@@ -193,8 +398,8 @@ def compute_section_line(room: Any, inset_mm: float = 2000.0,
         dominant_len = max(ext_len_x, ext_len_y)
 
     # ── 절단선 — 외벽 방향과 평행, 무게중심을 지남 ──
-    # 외벽이 가로(X평행)면 단면 평면 y=상수 → 단면축 'x'(X-Z 단면), 값=무게중심 y.
-    # 외벽이 세로(Y평행)면 단면 평면 x=상수 → 단면축 'y'(Y-Z 단면), 값=무게중심 x.
+    # 외부면이 가로(X평행)면 단면 평면 y=상수 → 단면축 'x'(X-Z 단면), 값=무게중심 y.
+    # 외부면이 세로(Y평행)면 단면 평면 x=상수 → 단면축 'y'(Y-Z 단면), 값=무게중심 x.
     if horizontal:
         axis = 'x'
         value = float(cy)
@@ -204,11 +409,22 @@ def compute_section_line(room: Any, inset_mm: float = 2000.0,
         value = float(cx)
         room_extent = (min(p[1] for p in poly), max(p[1] for p in poly))
 
+    try:
+        print(f"[section] source={source} ext_x={ext_len_x:.0f} ext_y={ext_len_y:.0f} "
+              f"axis={axis} value={value:.0f} centroid=({cx:.0f},{cy:.0f})", flush=True)
+    except Exception:
+        pass
+
     return {
         'axis': axis,
         'value': value,
         'edge_length_mm': float(dominant_len),
         'room_extent': (float(room_extent[0]), float(room_extent[1])),
+        # [2026-06-04] 거실 폴리곤 — 색칠을 단면선∩거실 구간으로 정확히 그리기 위함
+        'room_poly': [(float(p[0]), float(p[1])) for p in poly],
+        # [2026-06-04] 거실이 속한 층 — 빨강을 그 층 높이에만 칠해 위/아래 층으로
+        # 번지지 않게(거실이 다른 층 모듈을 벗어나 보이던 문제).
+        'room_floor': int(getattr(room, 'floor_index', 0) or 0),
         'inset_mm': float(inset_mm),
     }
 
@@ -325,8 +541,12 @@ def slice_component_mesh(comp: Any, section: Dict[str, Any]
                 uniq.add((round(float(row[0]), 2),
                           round(float(row[1]), 2),
                           round(float(row[2]), 2)))
+            print(f"[mesh-color] {type(comp).__name__}: verts={len(v)} "
+                  f"unique_colors={len(uniq)} 샘플={list(uniq)[:6]}",
+                  flush=True)
         else:
-            pass
+            print(f"[mesh-color] {type(comp).__name__}: 색정보 없음 "
+                  f"(c={None if c is None else c.shape})", flush=True)
     except Exception:
         pass
     axis = section['axis']
@@ -561,6 +781,8 @@ class SectionViewerDialog(QDialog):
                                          len(uniq_seg_colors))
         type_summary = " · ".join(f"{t} {n}" for t, n in sorted(type_counts.items()))
         color_diag = " · ".join(f"{t}:색{n}종" for t, n in sorted(mesh_color_variety.items()))
+        print(f"[section_viewer] 단면축={section['axis']} 값={section['value']:.0f}mm "
+              f"tol={150}mm 잡힌부재={len(comps)} ({type_summary})", flush=True)
         # 각 타입이 어느 색 카테고리로 분류되는지 출력
         def _classify(tname: str) -> str:
             t = tname.lower()
@@ -572,6 +794,7 @@ class SectionViewerDialog(QDialog):
             if 'module' in t: return '모듈(베이지)'
             return '기타'
         class_map = {t: _classify(t) for t in type_counts}
+        print(f"[section_viewer] 색분류: {class_map}", flush=True)
 
         floors_str = ", ".join(f"{fi+1}F" for fi in sorted({c['floor_index'] for c in comps}))
         re = section.get('room_extent', (0.0, 0.0))
@@ -656,30 +879,42 @@ class SectionViewerDialog(QDialog):
         def ty(z: float) -> float:
             return oy + (z_max - z) * s
 
-        # ── 거실 범위 음영 — 부재 z 범위 안에만 깔기 (반투명 빨강) ──
-        re = section.get('room_extent')
-        if re is not None:
-            ra0, ra1 = float(re[0]), float(re[1])
-            ra0c = max(ra0, a_min)
-            ra1c = min(ra1, a_max)
-            if ra1c > ra0c:
-                # 반투명 빨강
-                p.setBrush(QBrush(QColor(220, 60, 60, 90)))
-                p.setPen(Qt.NoPen)
-                shade_y_top = ty(z_max)
-                shade_y_bot = ty(z_min)
-                p.drawRect(QRectF(tx(ra0c), shade_y_top,
-                                   (ra1c - ra0c) * sx,
-                                   shade_y_bot - shade_y_top))
-                # "거실" 텍스트 — 음영 영역 가운데에
-                p.setFont(QFont(F_HEAD, 18, QFont.Bold))
-                p.setPen(QPen(QColor(180, 30, 30), 1))
-                room_cx = (tx(ra0c) + tx(ra1c)) / 2.0
-                room_cy = (shade_y_top + shade_y_bot) / 2.0
-                # drawText 정렬 위해 텍스트 폭 측정
-                fm = p.fontMetrics()
-                tw = fm.horizontalAdvance("거실")
-                p.drawText(QPointF(room_cx - tw / 2.0, room_cy + 6), "거실")
+        # ── 거실 음영 — 단면선이 실제로 거실 내부를 지나는 구간만 반투명 빨강 ──
+        # (라이브 경로 render_section_pixmap 과 동일 정책: bbox 전체 칠하지 않음)
+        room_poly = section.get('room_poly')
+        sec_axis = section.get('axis', 'x')
+        living_intervals: List[Tuple[float, float]] = []
+        if room_poly:
+            for (lo, hi) in _polygon_axis_intersections(
+                    room_poly, sec_axis, float(section['value'])):
+                c0 = max(lo, a_min); c1 = min(hi, a_max)
+                if c1 > c0:
+                    living_intervals.append((c0, c1))
+        # 빨강은 거실이 속한 *층(room_floor)* 의 높이 범위에만 칠한다.
+        rf = section.get('room_floor', 0)
+        floor_comps = [c for c in comps if c.get('floor_index') == rf]
+        if floor_comps:
+            rz0 = min(c['z0'] for c in floor_comps)
+            rz1 = max(c['z1'] for c in floor_comps)
+        else:
+            rz0, rz1 = z_min, z_max
+        shade_y_top = ty(rz1)
+        shade_y_bot = ty(rz0)
+        if living_intervals:
+            p.setBrush(QBrush(QColor(220, 60, 60, 90)))
+            p.setPen(Qt.NoPen)
+            for (c0, c1) in living_intervals:
+                p.drawRect(QRectF(tx(c0), shade_y_top,
+                                   (c1 - c0) * sx, shade_y_bot - shade_y_top))
+            # "거실" 텍스트 — 가장 넓은 거실 구간 가운데
+            c0, c1 = max(living_intervals, key=lambda iv: iv[1] - iv[0])
+            p.setFont(QFont(F_HEAD, 18, QFont.Bold))
+            p.setPen(QPen(QColor(180, 30, 30), 1))
+            room_cx = (tx(c0) + tx(c1)) / 2.0
+            room_cy = (shade_y_top + shade_y_bot) / 2.0
+            fm = p.fontMetrics()
+            tw = fm.horizontalAdvance("거실")
+            p.drawText(QPointF(room_cx - tw / 2.0, room_cy + 6), "거실")
 
         # [2026-06-03] 사용자 요구 — 거실만 반투명 빨강, 그 외 부재는 *색 없이*
         # 외곽선(짙은 회색)만. 부재 채움색·mesh sub-part 색을 모두 제거하고
@@ -828,55 +1063,65 @@ def render_section_pixmap(scene: Any, max_size: int = 2000,
     def ty(z: float) -> float:
         return oy + (z_max - z) * s
 
-    # 거실 음영 (반투명 빨강)
-    re = section.get('room_extent')
-    if re is not None:
-        ra0, ra1 = float(re[0]), float(re[1])
-        ra0c = max(ra0, a_min)
-        ra1c = min(ra1, a_max)
-        if ra1c > ra0c:
-            p.setBrush(QBrush(QColor(220, 60, 60, 90)))
-            p.setPen(Qt.NoPen)
-            p.drawRect(QRectF(tx(ra0c), ty(z_max),
-                               (ra1c - ra0c) * s, (z_max - z_min) * s))
+    # ── 거실 음영 (먼저 깔고, 그 위에 골조를 그려 빨강이 부재를 침범 안 하게) ──
+    # 단면선이 실제로 거실 폴리곤 내부를 지나는 구간만, 거실이 속한 층 높이에만.
+    room_poly = section.get('room_poly')
+    living_intervals: List[Tuple[float, float]] = []
+    if room_poly:
+        for (lo, hi) in _polygon_axis_intersections(
+                room_poly, axis, float(section['value'])):
+            c0 = max(lo, a_min); c1 = min(hi, a_max)
+            if c1 > c0:
+                living_intervals.append((c0, c1))
+    rf = section.get('room_floor', 0)
+    floor_comps = [c for c in comps if c.get('floor_index') == rf]
+    if floor_comps:
+        rz0 = min(c['z0'] for c in floor_comps)
+        rz1 = max(c['z1'] for c in floor_comps)
+    else:
+        rz0, rz1 = z_min, z_max
+    if living_intervals:
+        p.setBrush(QBrush(QColor(230, 110, 110)))   # 불투명 — 골조를 위에 덮음
+        p.setPen(Qt.NoPen)
+        for (c0, c1) in living_intervals:
+            p.drawRect(QRectF(tx(c0), ty(rz1), (c1 - c0) * s, (rz1 - rz0) * s))
 
-    # [2026-06-03] 사용자 요구 — 거실만 반투명 빨강, 그 외 부재는 *색 없이*
-    # 외곽선(짙은 회색)만. 부재 채움색·mesh sub-part 색(기둥 빨강/보 파랑 등)을
-    # 모두 제거하고 단면 윤곽선만 단색으로 그린다.
-    _OUTLINE = QColor("#333333")
+    # ── 진짜 단면 [2026-06-04] — 평면에 잘린 부재의 *잘린 단면* 을 면으로 채움 ──
+    # [CoT] 투영이 아니라, 절단 평면이 실제로 자른 부재(보/기둥/슬래브/벽)의 절단
+    # 단면만 그린다. mesh∩평면 선분(slice)을 닫힌 루프로 이어 면으로 채운다.
+    # 개구부(창)는 even-odd 로 구멍 처리. 색 구분 없이 중립 회색(사용자 요구).
+    # 거실 음영 *위에* 그려야 빨강이 보/기둥/슬래브를 침범하지 않는다.
+    _FILL = QColor(150, 158, 168)
+    _EDGE = QColor(60, 66, 74)
     for c in comps:
-        segs = c.get('segments') or []
-        x0, x1 = tx(c['a0']), tx(c['a1'])
-        y_top, y_bot = ty(c['z1']), ty(c['z0'])
-        p.setBrush(Qt.NoBrush)
-        p.setPen(QPen(_OUTLINE, 1.2))
-        if segs and len(segs) >= 2:
-            # 진짜 2D 단면 — mesh 교차 선분 윤곽
-            for seg in segs:
-                a = seg[0]; b = seg[1]
-                p.drawLine(QPointF(tx(a[0]), ty(a[1])),
-                           QPointF(tx(b[0]), ty(b[1])))
-        else:
-            # mesh 교차 없음 → AABB 사각형 윤곽 fallback
-            p.drawRect(QRectF(x0, y_top, x1 - x0, y_bot - y_top))
+        loops = _chain_segments_to_loops(c.get('segments') or [])
+        if loops:
+            path = QPainterPath()
+            path.setFillRule(Qt.OddEvenFill)
+            for loop in loops:
+                path.moveTo(tx(loop[0][0]), ty(loop[0][1]))
+                for (pa, pz) in loop[1:]:
+                    path.lineTo(tx(pa), ty(pz))
+                path.closeSubpath()
+            p.setPen(QPen(_EDGE, 1.0))
+            p.setBrush(QBrush(_FILL))
+            p.drawPath(path)
 
-    # 거실 텍스트 — 픽스맵 크기에 비례한 큰 폰트 (카드에 축소 표시돼도 잘 보이게)
-    if re is not None:
-        ra0c = max(float(re[0]), a_min)
-        ra1c = min(float(re[1]), a_max)
-        if ra1c > ra0c:
-            font_px = max(40, int(min(cw, ch) * 0.07))
-            font = QFont(F_HEAD)
-            font.setPixelSize(font_px)
-            font.setBold(True)
-            p.setFont(font)
-            p.setPen(QPen(QColor(180, 30, 30), 1))
-            fm = p.fontMetrics()
-            tw = fm.horizontalAdvance("거실")
-            th = fm.ascent()
-            cx_room = (tx(ra0c) + tx(ra1c)) / 2.0
-            cy_room = (ty(z_max) + ty(z_min)) / 2.0
-            p.drawText(QPointF(cx_room - tw / 2.0, cy_room + th / 2.0), "거실")
+    # 거실 텍스트 — 가장 넓은 거실 구간 가운데에 (픽스맵 크기 비례 큰 폰트)
+    if living_intervals:
+        c0, c1 = max(living_intervals, key=lambda iv: iv[1] - iv[0])
+        font_px = max(40, int(min(cw, ch) * 0.07))
+        font = QFont(F_HEAD)
+        font.setPixelSize(font_px)
+        font.setBold(True)
+        p.setFont(font)
+        p.setPen(QPen(QColor(180, 30, 30), 1))
+        fm = p.fontMetrics()
+        tw = fm.horizontalAdvance("거실")
+        th = fm.ascent()
+        cx_room = (tx(c0) + tx(c1)) / 2.0
+        cy_room = (ty(rz1) + ty(rz0)) / 2.0
+        p.drawText(QPointF(cx_room - tw / 2.0, cy_room + th / 2.0), "거실")
 
     p.end()
     return pix

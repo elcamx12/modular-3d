@@ -155,8 +155,8 @@ class QuantityPanel(QWidget):
         mh.setSectionResizeMode(QHeaderView.ResizeToContents)
         mh.setStretchLastSection(True)
         self._matcost_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self._matcost_table.setRowCount(4)
-        self._matcost_table.setMaximumHeight(150)
+        self._matcost_table.setRowCount(5)   # 강재/데크/콘크리트/코어RC/합계 (2026-06-04)
+        self._matcost_table.setMaximumHeight(185)
         self._matcost_table.setTextElideMode(Qt.ElideNone)
         self._matcost_table.setWordWrap(False)
         self._matcost_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -335,6 +335,15 @@ class QuantityPanel(QWidget):
         _missing = [n for n, u in (
             ("강재", mc.steel_unit), ("데크슬래브", mc.deck_unit),
             ("콘크리트", mc.concrete_unit)) if not u]
+        # 코어 행 — 콘크리트+철근(+물량탭은 보강강재)을 한 행에 합산.
+        _core_qty = f"{mc.core_concrete_m3:.1f}㎥ + 철근 {mc.core_rebar_ton:.1f}t"
+        _core_name = "코어 RC(콘크리트+철근)"
+        if mc.core_steel_ton > 0:
+            _core_qty += f" + 강재 {mc.core_steel_ton:.1f}t"
+            _core_name = "코어(콘크리트+철근+강재)"
+        _core_unit_txt = (
+            f"콘크리트 {mc.concrete_unit:,.0f}+철근 {mc.core_rebar_unit:,.0f}"
+            if (mc.concrete_unit and mc.core_rebar_unit) else "미입력")
         rows = [
             ("강재(각형강관)", f"{mc.steel_ton:.4f} ton",
              (f"{mc.steel_unit:,.0f} 원/ton" if mc.steel_unit else "미입력"),
@@ -345,12 +354,13 @@ class QuantityPanel(QWidget):
             ("콘크리트(레미콘)", f"{mc.concrete_m3:.3f} ㎥",
              (f"{mc.concrete_unit:,.0f} 원/㎥" if mc.concrete_unit else "미입력"),
              _won(mc.concrete_cost)),
+            (_core_name, _core_qty, _core_unit_txt, _won(mc.core_cost)),
             ("합계", "", "", _won(mc.total_cost)),
         ]
         for r, (name, qty, unit, amt) in enumerate(rows):
             for c, txt in enumerate((name, qty, unit, amt)):
                 cell = QTableWidgetItem(txt)
-                if r == 3:
+                if r == 4:   # 합계 행 볼드
                     f = cell.font(); f.setBold(True); cell.setFont(f)
                 self._matcost_table.setItem(r, c, cell)
         # 단가 미입력이 있으면 합계 행에 경고 표시(주황+툴팁) — 합계 과소를 알림.
@@ -363,7 +373,7 @@ class QuantityPanel(QWidget):
             warn.setToolTip(
                 "단가가 '미입력'인 항목은 금액이 0 으로 계산되어 합계가 실제보다 "
                 "작습니다.\n카탈로그의 재료 단가표에 단가를 입력하면 합계에 반영됩니다.")
-            self._matcost_table.setItem(3, 0, warn)
+            self._matcost_table.setItem(4, 0, warn)
 
     # ── 트리 선택 → 시그널 ───────────────────────────────────
     def _on_tree_current_changed(self, current, _previous):

@@ -615,9 +615,12 @@ def _compute_material_cost_safe(report) -> Any:
         steel_h_unit = get_unit_price('강재_H형강')
         deck_unit = get_unit_price('데크슬래브')
         concrete_unit = get_unit_price('콘크리트_레미콘')
+        rebar_unit = get_unit_price('철근_이형철근_SD400')
+        # 평가 종합도 코어 RC 포함(물량 탭과 동일, 2026-06-04).
         return compute_material_cost(
             report, steel_unit, deck_unit, concrete_unit,
             steel_h_unit_per_ton=steel_h_unit,
+            rebar_unit_per_ton=rebar_unit, include_core=True,
         )
     except Exception:
         return None
@@ -761,19 +764,46 @@ def _build_schedule(schedule_payload: Optional[Dict[str, Any]]) -> Dict[str, Any
 
 
 # ── F. 종합 비용 ──────────────────────────────────────────
+# ── 현장 직접공사비 → 총공사비 요율 (2026-06-04) ──
+# [근거] 국가계약 원가계산 준용. 직접공사비(재료+운송+노무+장비) 위에
+#   간접노무비·경비 → 일반관리비 → 이윤 → 부가세를 차례로 적층한다.
+#   누적 배율 = 1.15 × 1.06 × 1.10 × 1.10 ≈ 1.475 배.
+#   ※ 모듈러 공장 제작비는 우리 산정 범위 밖이라 포함하지 않는다(현장분만).
+RATE_OVERHEAD = 0.15   # 간접노무비+경비 (직접공사비 대비)
+RATE_ADMIN = 0.06      # 일반관리비 ((직접+간접) 대비)
+RATE_PROFIT = 0.10     # 이윤 ((직접+간접+관리비) 대비)
+RATE_VAT = 0.10        # 부가가치세 (공급가액 대비)
+
+
 def _build_cost(materials: Dict[str, Any], transport: Dict[str, Any],
                 schedule: Dict[str, Any]) -> Dict[str, Any]:
     material_cost = float((materials or {}).get("total_material_cost_krw", 0.0) or 0.0)
     transport_cost = float((transport or {}).get("total_cost_krw", 0.0) or 0.0)
     labor_cost = float((schedule or {}).get("labor_sum_krw", 0.0) or 0.0)
     equip_cost = float((schedule or {}).get("equip_sum_krw", 0.0) or 0.0)
-    total = material_cost + transport_cost + labor_cost + equip_cost
+
+    # 직접공사비 → 간접비·관리비·이윤·부가세 적층 (현장분 총공사비).
+    direct = material_cost + transport_cost + labor_cost + equip_cost
+    overhead = direct * RATE_OVERHEAD
+    sub1 = direct + overhead
+    admin = sub1 * RATE_ADMIN
+    sub2 = sub1 + admin
+    profit = sub2 * RATE_PROFIT
+    supply = sub2 + profit          # 공급가액(부가세 전)
+    vat = supply * RATE_VAT
+    total = supply + vat            # 최종 총공사비(부가세 포함)
     return {
         "material_krw": round(material_cost),
         "transport_krw": round(transport_cost),
         "labor_krw": round(labor_cost),
         "equip_krw": round(equip_cost),
-        "total_krw": round(total),
+        "direct_krw": round(direct),       # 직접공사비 소계
+        "overhead_krw": round(overhead),   # 간접노무비+경비
+        "admin_krw": round(admin),         # 일반관리비
+        "profit_krw": round(profit),       # 이윤
+        "supply_krw": round(supply),       # 공급가액(부가세 전)
+        "vat_krw": round(vat),             # 부가세
+        "total_krw": round(total),         # 총공사비(부가세 포함)
         "policy_used_for_material": (materials or {}).get("current_policy"),
     }
 

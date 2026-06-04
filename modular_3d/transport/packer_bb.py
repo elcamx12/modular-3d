@@ -33,6 +33,17 @@ from .models import Module, Panel, SiteLimit, SpacingParams, Truck
 
 
 # ════════════════════════════════════════════════════════════════════
+# 상차 조합 상한 (사용자 결정 — 2026-06-04)
+#   층수가 늘수록 한 회차 패널 조합의 경우의 수가 지수적으로 폭발한다.
+#   아래 두 상한으로 enumerate 단계의 부분집합 폭발을 원천 차단한다.
+#   - MAX_TRIP_PANELS: 한 회차 최대 패널 수 (바닥/벽 합산)
+#   - MAX_FLOOR_PANELS_PER_TRIP: 한 회차 최대 바닥패널 수
+# ════════════════════════════════════════════════════════════════════
+MAX_TRIP_PANELS = 7
+MAX_FLOOR_PANELS_PER_TRIP = 5
+
+
+# ════════════════════════════════════════════════════════════════════
 # 디버그 트레이스 — 환경변수 BB_TRACE 가 *파일 경로* 면 그 파일에 기록.
 # Phase 5-K5 — 사용자가 운송 실행 후 파일 위치만 알려주면 분석 가능.
 # 출력 형식 — 숫자 위주 (사용자 가독성보단 자동 분석 친화).
@@ -415,6 +426,10 @@ def enumerate_trip_patterns(
         else:
             max_size = len(available)
         max_size = min(max_size, len(available))
+    # [2026-06-04 성능] 한 회차 패널 개수 하드 상한 (사용자 결정).
+    #   층수가 늘수록 enumerate 의 부분집합 폭발을 막는 핵심 컷.
+    #   max_size 가 None 으로 들어오든 명시값이든 무조건 이 상한 이하로 캡.
+    max_size = min(max_size, MAX_TRIP_PANELS)
 
     root_panel = panels[root_idx]
     root_w = float(root_panel.weight)
@@ -456,7 +471,11 @@ def enumerate_trip_patterns(
     results: List[FrozenSet[int]] = []
     seen: Set[FrozenSet[int]] = set()
 
-    def _dfs(current: List[int], current_w: float, start: int) -> None:
+    # [2026-06-04 성능] 바닥패널 개수 상한 — root 가 바닥패널이면 1 부터 시작.
+    root_is_floor = _is_floor_panel(root_panel)
+
+    def _dfs(current: List[int], current_w: float, start: int,
+             floor_cnt: int) -> None:
         # 현재까지 패턴 — root + current 의 인덱스
         pattern = frozenset([root_idx] + current)
         if pattern not in seen:
@@ -480,11 +499,16 @@ def enumerate_trip_patterns(
             new_w = current_w + float(panels[j].weight)
             if new_w > max_cap + 1e-3:
                 continue  # 무게 한도 초과 — 더 큰 부분집합 X
+            # [2026-06-04 성능] 바닥패널 개수 상한 — 초과 조합은 가지치기.
+            j_is_floor = _is_floor_panel(panels[j])
+            new_floor_cnt = floor_cnt + (1 if j_is_floor else 0)
+            if j_is_floor and new_floor_cnt > MAX_FLOOR_PANELS_PER_TRIP:
+                continue
             current.append(j)
-            _dfs(current, new_w, k + 1)
+            _dfs(current, new_w, k + 1, new_floor_cnt)
             current.pop()
 
-    _dfs([], root_w, 0)
+    _dfs([], root_w, 0, 1 if root_is_floor else 0)
 
     # 큰 부분집합 우선 정렬 (DFS 채택 후 회차 수 적은 분배 첫 탐색)
     results.sort(key=lambda s: -len(s))
@@ -1308,12 +1332,15 @@ def pack_panels_bb(
         return [], 0.0, {"nodes": 0, "bans": 0, "bound_cuts": 0, "memo_hits": 0}
 
     # 적층 호환 그래프 사전 계산
-    graph = compute_stack_graph(panels, trucks, sp)
+    from .packer import _Timer as _PT, _prof_log as _PL
+    with _PT(f"  2-a 적층 그래프(compute_stack_graph, 패널 {len(panels)}개)"):
+        graph = compute_stack_graph(panels, trucks, sp)
 
     # 초기 그리디 — upper_bound 시드
-    initial_cost, initial_solution = quick_greedy_panels(
-        panels, trucks, site, sp, graph, cost_mode, economics,
-    )
+    with _PT("  2-b 초기 그리디(quick_greedy_panels)"):
+        initial_cost, initial_solution = quick_greedy_panels(
+            panels, trucks, site, sp, graph, cost_mode, economics,
+        )
 
     # 트레이스 시작
     if _trace_enabled():
@@ -1379,7 +1406,13 @@ def pack_panels_bb(
 
     # 분기한정 시작
     remaining = frozenset(range(len(panels)))
-    pack_panels_bb_recurse([], remaining, ctx)
+    with _PT("  2-c 분기한정 탐색(pack_panels_bb_recurse)"):
+        pack_panels_bb_recurse([], remaining, ctx)
+    _PL(
+        f"  2-c 통계: 방문노드={ctx.nodes_visited} 금지={ctx.bans_added} "
+        f"한계컷={ctx.bound_cuts} 메모히트={ctx.memo_hits} "
+        f"메모크기={len(ctx.memo)}"
+    )
 
     stats = {
         "nodes": ctx.nodes_visited,

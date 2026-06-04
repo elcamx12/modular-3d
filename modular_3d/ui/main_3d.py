@@ -1148,7 +1148,7 @@ class MainWindow(QMainWindow):
             from modular_3d.analysis.quantity_by_component import (
                 build_quantity_by_component, UnitPrices)
             from modular_3d.analysis.quantity_takeoff import (
-                build_quantity_report, compute_material_cost)
+                build_quantity_report, compute_material_cost, aggregate_steel)
             from modular_3d.transport.adapter import (
                 build_transport_input, TransportOptions)
             from modular_3d.transport.loaded_3d_three import build_quantity_3d_html
@@ -1179,12 +1179,26 @@ class MainWindow(QMainWindow):
             qbc = build_quantity_by_component(self._scene, am, dr, types, up)
             # [2026-06-01] 하단 전체 본수표·자재비표는 *코어 강재 제외* dr 로 산출 →
             # 타입별 분해(코어 제외)와 합계 일치. 코어는 RC 라 강재 물량서 제외(사용자 확정).
+            # [2026-06-04] 단, 코어 RC(콘크리트+이형철근)는 별도 행으로 자재비에 포함
+            #   (include_core=True). 강재 본수표 일관성과 무관 — 코어 RC 는 강재가 아님.
             from modular_3d.analysis.quantity_by_component import (
                 design_result_without_core)
             dr_no_core = design_result_without_core(self._scene, am, dr)
             report = build_quantity_report(self._scene, am, dr_no_core)
+            # [2026-06-04] 코어 보강강재(트러스·러너) ton = 전체 강재 − 코어제외 강재.
+            #   강재 본수표는 코어 제외(타입별 분해 일치) 유지하되, 자재비 '코어' 행에
+            #   이 강재를 합쳐 종합(코어 강재를 강재 행에 포함)과 합계를 일치시킨다.
+            _full_steel = aggregate_steel(am, dr)
+            _full_ton = _full_steel[-1].total_weight_ton if _full_steel else 0.0
+            _nocore_ton = (report.steel_items[-1].total_weight_ton
+                           if report.steel_items else 0.0)
+            _core_steel_ton = max(0.0, _full_ton - _nocore_ton)
             mc = compute_material_cost(report, up.steel_shs, up.deck, up.concrete,
-                                       steel_h_unit_per_ton=up.steel_h)
+                                       steel_h_unit_per_ton=up.steel_h,
+                                       rebar_unit_per_ton=up.rebar,
+                                       include_core=True,
+                                       core_steel_ton=_core_steel_ton,
+                                       core_steel_unit_per_ton=up.steel_shs)
 
             # 우측 패널 갱신.
             if hasattr(self, '_quantity_panel'):
@@ -2021,6 +2035,15 @@ class MainWindow(QMainWindow):
             # [P5b] 물량 탭이 단일 출처로 쓰도록 컨트롤러에 전달.
             if hasattr(self._controller, 'set_section_design_result'):
                 self._controller.set_section_design_result(self._section_result)
+            # [2026-06-05 동기화] 적용 즉시 물량 캐시(_quantity_reports)도 새 단면
+            # 설계 결과로 재생성 — 종합·비교·케이스저장이 물량탭 화면과 같은 값을
+            # 읽도록 일치시킨다. (적용만 하고 캐시가 낡아 강재가 과대 저장되던 버그.)
+            if hasattr(self._controller, 'refresh_quantity_from_section_design'):
+                try:
+                    self._controller.refresh_quantity_from_section_design()
+                except Exception as e:
+                    dprint('ANALYSIS',
+                           f'[SECTION] 물량 캐시 동기화 실패: {type(e).__name__}: {e}')
             # [L1-1 WYSIWYG] 수렴 단면을 배치 컴포넌트 렌더 형상에 반영 — 3D 솔리드가
             # 설계 굵기를 따라가게(렌더 전용, 해석·물량 불변). 실패해도 설계 결과는 유효.
             try:

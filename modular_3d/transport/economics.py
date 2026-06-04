@@ -91,15 +91,17 @@ class EconomicsOptions:
     - cost_mode='fixed_per_trip': 트럭 종류별 1회 고정비(거리 무관, 회차당).
     """
     distance_km: float = 30.0             # 편도 거리 (운임은 항상 왕복=편도×2)
-    cost_mode: str = "freight_table"      # 'freight_table' | 'per_km' | 'fixed_per_trip'
+    # [2026-06-04] 기본 운임 방식 = 트레일러별 1회 고정비(사용자 확정).
+    cost_mode: str = "fixed_per_trip"     # 'freight_table' | 'per_km' | 'fixed_per_trip'
     # 트럭 종류별 km단가 (per_km 방식)
     lowbed_per_km_krw: float = 3500.0     # 저상/초저상 트레일러
     extendable_per_km_krw: float = 5000.0 # 광폭(확장형) 트레일러
     aframe_per_km_krw: float = 5000.0     # A-frame 트레일러
     # 트럭 종류별 1회 고정 운송비 (fixed_per_trip 방식)
-    lowbed_fixed_krw: float = 600000.0    # 저상/초저상
-    extendable_fixed_krw: float = 700000.0  # 광폭(확장형)
-    aframe_fixed_krw: float = 800000.0    # A-frame
+    # [2026-06-04] 사용자 확정 기본값: 저상 420만 / 광폭 440만 / A-frame 400만.
+    lowbed_fixed_krw: float = 4200000.0   # 저상/초저상
+    extendable_fixed_krw: float = 4400000.0  # 광폭(확장형)
+    aframe_fixed_krw: float = 4000000.0   # A-frame
     # (참고) freight_table 모드는 FREIGHT_RATE_TABLE + 거리·트럭종류로 자동 조회.
 
     # ── 패커 측 호환 헬퍼 (구 EcoOptions API) ──────────────────────

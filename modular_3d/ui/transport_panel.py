@@ -178,9 +178,9 @@ class TransportTab(QWidget):
         except Exception:
             self._trucks = []
         # 현장 운송 제한 — 프로젝트 설정에서 주입(apply_project_settings). 미주입 시
-        # 너그러운 기본값(40t/3500/4500). 도로 등급 카탈로그는 2026-05-26 폐지.
+        # 기본값(45t/3500/4500). [2026-06-04] GVW 기본 45t(사용자 확정).
         self._site_limit: SiteLimit = SiteLimit(
-            max_gvw_kg=40000.0, max_width_mm=3500.0, max_height_mm=4500.0)
+            max_gvw_kg=45000.0, max_width_mm=3500.0, max_height_mm=4500.0)
         # 프로젝트 설정 객체(운임 1회 고정비 등 읽기용). apply_project_settings 에서 주입.
         self._proj_settings = None
 
@@ -235,7 +235,7 @@ class TransportTab(QWidget):
             combo.setToolTip(tip)
 
         # 현장 운송 제한 — 프로젝트 설정 값으로 SiteLimit 구성 + 읽기전용 표시.
-        gvw = (getattr(settings, 'site_limit_gvw_kg', 40000.0)
+        gvw = (getattr(settings, 'site_limit_gvw_kg', 45000.0)
                if getattr(settings, 'site_limit_gvw_enabled', True) else None)
         sw = (getattr(settings, 'site_limit_width_mm', 3500.0)
               if getattr(settings, 'site_limit_width_enabled', True) else None)
@@ -626,13 +626,14 @@ class TransportTab(QWidget):
         ps = self._proj_settings
         return EconomicsOptions(
             distance_km=float(self._distance_spin.value()),
-            cost_mode=self._cost_mode_combo.currentData() or "freight_table",
+            cost_mode=self._cost_mode_combo.currentData() or "fixed_per_trip",
             lowbed_per_km_krw=float(self._lowbed_per_km_spin.value()),
             extendable_per_km_krw=float(self._extend_per_km_spin.value()),
             aframe_per_km_krw=float(self._aframe_per_km_spin.value()),
-            lowbed_fixed_krw=float(getattr(ps, 'lowbed_fixed_krw', 600000.0)),
-            extendable_fixed_krw=float(getattr(ps, 'extendable_fixed_krw', 700000.0)),
-            aframe_fixed_krw=float(getattr(ps, 'aframe_fixed_krw', 800000.0)),
+            # [2026-06-04] 폴백 기본값 = 사용자 확정값(저상420만/광폭440만/A-frame400만).
+            lowbed_fixed_krw=float(getattr(ps, 'lowbed_fixed_krw', 4200000.0)),
+            extendable_fixed_krw=float(getattr(ps, 'extendable_fixed_krw', 4400000.0)),
+            aframe_fixed_krw=float(getattr(ps, 'aframe_fixed_krw', 4000000.0)),
         )
 
     # ── 메인 실행 ─────────────────────────────────────────

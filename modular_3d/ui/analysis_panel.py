@@ -557,8 +557,9 @@ class AnalysisPanel(QWidget):
         self._slab_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         lay.addWidget(self._slab_table)
 
-        # 4-B) 자재비(재료비) 총액표 — 강재 + 데크슬래브 + 콘크리트
-        # [2026-05-24] 단가 DB(material_prices.json) × 물량. 코어·노무·경비 제외.
+        # 4-B) 자재비(재료비) 총액표 — 강재 + 데크슬래브 + 콘크리트 + 코어 RC
+        # [2026-05-24/06-04] 단가 DB(material_prices.json) × 물량. 노무·경비 제외.
+        # 코어 RC(콘크리트+이형철근)는 2026-06-04 부터 포함.
         lay.addWidget(QLabel("자재비 (재료비):"))
         self._matcost_table = QTableWidget()
         self._matcost_table.setColumnCount(4)
@@ -569,8 +570,8 @@ class AnalysisPanel(QWidget):
         mch.setSectionResizeMode(QHeaderView.ResizeToContents)
         mch.setStretchLastSection(True)
         self._matcost_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self._matcost_table.setRowCount(4)   # 강재 / 데크슬래브 / 콘크리트 / 합계
-        self._matcost_table.setMaximumHeight(150)
+        self._matcost_table.setRowCount(5)   # 강재 / 데크슬래브 / 콘크리트 / 코어RC / 합계
+        self._matcost_table.setMaximumHeight(185)
         self._matcost_table.setTextElideMode(Qt.ElideNone)
         self._matcost_table.setWordWrap(False)
         self._matcost_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -1351,9 +1352,13 @@ class AnalysisPanel(QWidget):
         _steel_h_unit = get_unit_price('강재_H형강')
         _deck_unit = get_unit_price('데크슬래브')
         _concrete_unit = get_unit_price('콘크리트_레미콘')
+        _rebar_unit = get_unit_price('철근_이형철근_SD400')
+        # 물량 탭은 코어 RC(콘크리트+이형철근) 포함해 표시(2026-06-04).
         matcost = compute_material_cost(rep, _steel_unit, _deck_unit,
                                         _concrete_unit,
-                                        steel_h_unit_per_ton=_steel_h_unit)
+                                        steel_h_unit_per_ton=_steel_h_unit,
+                                        rebar_unit_per_ton=_rebar_unit,
+                                        include_core=True)
 
         # 그룹 단면 표
         groups = rep.sections_by_group
@@ -1438,11 +1443,16 @@ class AnalysisPanel(QWidget):
         self._fit_panel_to_quantity()
 
     def _fill_material_cost_table(self, mc):
-        """자재비 총액표 — 강재/데크슬래브/콘크리트/합계 (2026-05-24).
+        """자재비 총액표 — 강재/데크슬래브/콘크리트/코어RC/합계 (2026-05-24, 06-04 코어).
 
         mc: MaterialCost. 단가 미입력(0) 이면 단가칸을 '미입력' 으로 표시.
+        코어 RC 행은 콘크리트+이형철근 합. 물량칸엔 부피·철근중량을 함께 표기.
         """
         from modular_3d._utils.format import won as _won
+        # 코어 RC 단가칸 — 콘크리트(레미콘)+철근(이형) 두 단가를 한 칸에 요약 표기.
+        _core_unit_txt = (
+            f"콘크리트 {mc.concrete_unit:,.0f}+철근 {mc.core_rebar_unit:,.0f}"
+            if (mc.concrete_unit and mc.core_rebar_unit) else "미입력")
         rows = [
             ("강재(각형강관)", f"{mc.steel_ton:.4f} ton",
              (f"{mc.steel_unit:,.0f} 원/ton" if mc.steel_unit else "미입력"),
@@ -1453,12 +1463,15 @@ class AnalysisPanel(QWidget):
             ("콘크리트(레미콘)", f"{mc.concrete_m3:.3f} ㎥",
              (f"{mc.concrete_unit:,.0f} 원/㎥" if mc.concrete_unit else "미입력"),
              _won(mc.concrete_cost)),
+            ("코어 RC(콘크리트+철근)",
+             f"{mc.core_concrete_m3:.3f} ㎥ / 철근 {mc.core_rebar_ton:.3f} ton",
+             _core_unit_txt, _won(mc.core_cost)),
             ("합계", "", "", _won(mc.total_cost)),
         ]
         for r, (name, qty, unit, amt) in enumerate(rows):
             for c, txt in enumerate((name, qty, unit, amt)):
                 cell = QTableWidgetItem(txt)
-                if r == 3:   # 합계 행 볼드
+                if r == 4:   # 합계 행 볼드
                     f = cell.font(); f.setBold(True); cell.setFont(f)
                 self._matcost_table.setItem(r, c, cell)
 

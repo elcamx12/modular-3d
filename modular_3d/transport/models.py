@@ -259,9 +259,13 @@ class Module:
     width: float                    # mm
     length: float                   # mm
     height: float                   # mm
-    column_section: Section         # 4 모서리 기둥
-    beam_section: Section           # 천장·바닥보 공통 단면 가정
+    column_section: Section         # 4 모서리 기둥 (대표 단면 — 시각화·표시용)
+    beam_section: Section           # 천장·바닥보 (대표 단면 — 시각화·표시용)
     extra_weight_kg: float = 0.0    # 슬래브 + 비내력벽 + Mid부재 합산
+    # [2026-06-04] 부재별 (단면×길이) 합으로 구한 *정확한* 프레임 강재 무게(kg).
+    #   기둥/보 단면이 한 모듈 안에서 혼재해도 부재마다 제 단면으로 합산한다.
+    #   None 이면 대표 단면 기반 근사식(하위호환)으로 계산.
+    frame_weight_kg: Optional[float] = None
     # Phase 1 — 종속 부재(중간보·중간기둥·캔틸레버) 형상 첨부
     attached_parts: Tuple["AttachedPart", ...] = field(default_factory=tuple)
     # Phase 3 — 부모 자체 부재(기둥·보·슬래브·채움) 의 실제 월드 AABB 데이터
@@ -275,6 +279,10 @@ class Module:
 
     @property
     def weight(self) -> float:
+        # 정확 프레임 무게가 주어지면(어댑터가 부재별 단면×길이 합산) 그대로 사용.
+        if self.frame_weight_kg is not None:
+            return self.frame_weight_kg + self.extra_weight_kg
+        # 폴백 — 대표 단면 기반 근사식(보·기둥 단일 단면 가정).
         col_total_m = (4 * self.height) / 1000.0
         # B-11 정정: 원본 `4*(w+l)*2` → `4*(w+l)`.
         # 4(w+l) = 천장 2(w+l) + 바닥 2(w+l), 즉 보 8개의 총 길이.
@@ -317,6 +325,11 @@ class Panel:
     attached_parts: Tuple["AttachedPart", ...] = field(default_factory=tuple)
     # Phase 3 — 부모 자체 부재(둘레보·슬래브 / 벽 기둥·런너·채움) 의 월드 AABB 데이터
     body_parts: Tuple["BodyPart", ...] = field(default_factory=tuple)
+    # [2026-06-04 층묶음 복제] 원본 컴포넌트의 층/그룹 식별자. 어댑터가 생성 시점에
+    #   comp.floor_index·comp.group_id 를 실어 보낸다. 운송 패커가 패널을 3층 묶음으로
+    #   분류해 기준 묶음만 계산하고 나머지 층을 복제하는 데 사용. -1 = 미주입(기존 동작).
+    floor_index: int = -1
+    group_id: int = -1
 
     def __post_init__(self) -> None:
         if self.kind not in _PANEL_KINDS:

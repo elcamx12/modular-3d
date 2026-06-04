@@ -81,11 +81,12 @@ class QuantityReport:
 class MaterialCost:
     """자재비(재료비) 산출 결과 — 물량 × 단가.
 
-    [정책 2026-05-24]
-    - 강재(각형강관) + 슬래브(데크 ㎡ + 콘크리트 ㎥) 만 비용 산정.
+    [정책 2026-05-24 / 2026-06-04 코어 추가]
+    - 강재(각형강관) + 슬래브(데크 ㎡ + 콘크리트 ㎥) 비용 산정.
     - 슬래브 철근은 데크플레이트 단가(㎡)에 배력근·보강근으로 이미 포함되므로
       별도 철근 비용을 잡지 않는다(이중 계산 방지).
-    - RC 코어 콘크리트·철근은 사용자 결정에 따라 자재비에서 제외한다.
+    - RC 코어 콘크리트·철근은 include_core=True 일 때 자재비에 합산한다.
+      (코어 콘크리트는 레미콘 단가 재사용, 코어 철근은 이형철근 단가 사용)
     - 단가가 없으면(None) 해당 항목 비용은 0 으로 두고 has_missing_price 표시.
     """
     steel_ton: float            # 강재 총중량(각형강관+H형강)
@@ -103,6 +104,18 @@ class MaterialCost:
     steel_shs_ton: float = 0.0
     steel_h_ton: float = 0.0
     steel_h_unit: float = 0.0   # 원/ton (H형강)
+    # RC 코어 (include_core=True 일 때만 채워짐).
+    core_concrete_m3: float = 0.0
+    core_rebar_ton: float = 0.0
+    core_concrete_cost: float = 0.0   # 원 (코어 콘크리트)
+    core_rebar_cost: float = 0.0      # 원 (코어 철근)
+    core_cost: float = 0.0            # 원 (코어 콘크리트+철근+보강강재 합)
+    core_rebar_unit: float = 0.0      # 원/ton (이형철근)
+    # 코어 보강강재(트러스·러너) — 물량탭에서 코어 행에 합쳐 종합과 합계 일치시킬 때만.
+    # 종합/구조해석탭은 코어 강재를 강재 행에 포함하므로 여기선 0.
+    core_steel_ton: float = 0.0
+    core_steel_cost: float = 0.0      # 원 (코어 보강강재)
+    core_steel_unit: float = 0.0      # 원/ton
 
 
 def compute_material_cost(
@@ -111,12 +124,21 @@ def compute_material_cost(
     deck_unit_per_m2: float | None,
     concrete_unit_per_m3: float | None,
     steel_h_unit_per_ton: float | None = None,
+    rebar_unit_per_ton: float | None = None,
+    include_core: bool = False,
+    core_steel_ton: float = 0.0,
+    core_steel_unit_per_ton: float | None = None,
 ) -> MaterialCost:
     """물량 보고서 + 단가 → 자재비.
 
     강재는 각형강관/H형강 강종별로 중량을 나눠 각자 단가를 곱한다(H형강 단가가
     각형강관과 다르기 때문). steel_h_unit_per_ton 미지정 시 각형강관 단가로 대체.
-    데크 면적은 슬래브 총면적(㎡), 콘크리트는 슬래브 총부피(㎥). 코어는 제외.
+    데크 면적은 슬래브 총면적(㎡), 콘크리트는 슬래브 총부피(㎥).
+
+    [코어 RC — 2026-06-04] include_core=True 면 report.core(콘크리트 ㎥ + 철근 ton)를
+    자재비에 합산한다. 코어 콘크리트는 슬래브와 같은 레미콘 단가(concrete_unit)를
+    재사용하고, 코어 철근은 이형철근 단가(rebar_unit_per_ton)를 쓴다.
+    include_core=False(기본) 면 코어를 제외해 기존 호출과 동일하게 동작한다.
     """
     shs_ton = sum(it.total_weight_ton for it in report.steel_items
                   if not it.is_total and getattr(it, 'section_type', 'shs') != 'h')
@@ -132,6 +154,7 @@ def compute_material_cost(
                else (steel_unit_per_ton or 0.0))
     du = float(deck_unit_per_m2 or 0.0)
     cu = float(concrete_unit_per_m3 or 0.0)
+    ru = float(rebar_unit_per_ton or 0.0)
 
     # 단가 누락 판정 — 해당 강종이 실제로 쓰일 때만 그 단가를 따진다.
     missing = (deck_unit_per_m2 is None or concrete_unit_per_m3 is None
@@ -144,12 +167,38 @@ def compute_material_cost(
     concrete_cost = concrete_m3 * cu
     total = steel_cost + deck_cost + concrete_cost
 
+    # ── RC 코어 합산 (include_core=True 일 때만) ──
+    # 코어 콘크리트=레미콘 단가 재사용, 코어 철근=이형철근 단가.
+    # report.core 가 None 이면(코어 없는 씬) 0 으로 두고 합산에 영향 없음.
+    core_c_m3 = core_r_ton = core_c_cost = core_r_cost = core_total = 0.0
+    core_s_ton = core_s_cost = 0.0
+    csu = float(core_steel_unit_per_ton if core_steel_unit_per_ton is not None
+                else (steel_unit_per_ton or 0.0))
+    if include_core and report.core is not None:
+        core_c_m3 = float(report.core.total_volume_m3)
+        core_r_ton = float(report.core.rebar_weight_ton)
+        core_c_cost = core_c_m3 * cu          # 콘크리트: 레미콘 단가 재사용
+        core_r_cost = core_r_ton * ru         # 철근: 이형철근 단가
+        # 코어 보강강재(트러스·러너) — 물량탭에서만 전달(종합 일치용). 각형강관 단가.
+        core_s_ton = float(core_steel_ton or 0.0)
+        core_s_cost = core_s_ton * csu
+        core_total = core_c_cost + core_r_cost + core_s_cost
+        total += core_total
+        # 코어 콘크리트가 있는데 레미콘/철근 단가가 없으면 누락 표시.
+        if (core_c_m3 > 0 and concrete_unit_per_m3 is None) \
+                or (core_r_ton > 0 and rebar_unit_per_ton is None):
+            missing = True
+
     return MaterialCost(
         steel_ton=steel_ton, steel_unit=su, steel_cost=steel_cost,
         deck_area_m2=deck_area, deck_unit=du, deck_cost=deck_cost,
         concrete_m3=concrete_m3, concrete_unit=cu, concrete_cost=concrete_cost,
         total_cost=total, has_missing_price=missing,
         steel_shs_ton=shs_ton, steel_h_ton=h_ton, steel_h_unit=hu,
+        core_concrete_m3=core_c_m3, core_rebar_ton=core_r_ton,
+        core_concrete_cost=core_c_cost, core_rebar_cost=core_r_cost,
+        core_cost=core_total, core_rebar_unit=ru,
+        core_steel_ton=core_s_ton, core_steel_cost=core_s_cost, core_steel_unit=csu,
     )
 
 

@@ -1,0 +1,204 @@
+===== evaluation/evaluation_adapter.py =====
+--- /dev/fd/63	2026-06-02 10:33:48.000000000 +0900
++++ /dev/fd/62	2026-06-02 10:33:48.000000000 +0900
+@@ -221,7 +221,86 @@
+     }
+ 
+ 
+-# ── B. 부재 구성 ──────────────────────────────────────────
++# ── B-1. 단면 설계 탭의 타입 목록을 그대로 사용 ────────────
++def _build_members_from_section_types(
++    section_types: List[Dict[str, Any]],
++    scene_components_by_id: Dict[int, Any],
++    comps: List[Component],
++) -> Dict[str, Any]:
++    """단면 설계 탭이 제공한 types 리스트를 부재 구성으로 그대로 변환.
++
++    [입력] types 항목 예:
++        {label, rep_comp_id, count, summary, ok, max_ratio, floor_counts}
++    [출력] 기존 _build_members 와 같은 키 구조 — 종합탭/비교탭이 그대로 표시.
++    """
++    modules_by_type: List[Dict[str, Any]] = []
++    panels_by_type:  List[Dict[str, Any]] = []
++
++    for t in section_types or []:
++        label = str(t.get("label", "?"))
++        cnt   = int(t.get("count", 0) or 0)
++        rep_id = t.get("rep_comp_id", -1)
++        rep = scene_components_by_id.get(int(rep_id)) if rep_id is not None else None
++        if rep is None:
++            # 대표 컴포넌트 못 찾으면 라벨만 띄움.
++            modules_by_type.append({
++                "name": label, "width_m": 0.0, "length_m": 0.0,
++                "count": cnt, "area_m2": 0.0,
++                "sections": str(t.get("summary", "") or "—"),
++            })
++            continue
++        xmin, ymin, _z0, xmax, ymax, _z1 = _aabb(rep)
++        a, b = sorted([round((xmax - xmin) / 1000.0, 2),
++                       round((ymax - ymin) / 1000.0, 2)])
++        if isinstance(rep, (Module, Vertical3Module)):
++            secs = _collect_module_sections(rep)
++            split = _collect_module_sections_split(rep)
++            modules_by_type.append({
++                "name": label,
++                "width_m": a,
++                "length_m": b,
++                "count": cnt,
++                "area_m2": round(a * b, 2),
++                "sections": ", ".join(secs) if secs else
++                            (str(t.get("summary", "") or "—")),
++                **split,
++            })
++        elif isinstance(rep, (FloorPanel, StructWall, InteriorWall)):
++            secs = _collect_panel_sections(rep)
++            cls_label = ("바닥패널" if isinstance(rep, FloorPanel)
++                         else "구조벽" if isinstance(rep, StructWall)
++                         else "내벽")
++            panels_by_type.append({
++                "class_label": label or cls_label,
++                "width_m": a,
++                "depth_m": b,
++                "count": cnt,
++                "sections": ", ".join(secs) if secs else
++                            (str(t.get("summary", "") or "—")),
++            })
++        # CoreSlab 등은 패널 목록에서 제외.
++
++    # 카운트(요약 카드)는 컴포넌트에서 직접 산출 — types 가 누락한 부분 대비.
++    panels = {
++        "floor_panel":   sum(1 for c in comps if isinstance(c, FloorPanel)),
++        "struct_wall":   sum(1 for c in comps if isinstance(c, StructWall)),
++        "interior_wall": sum(1 for c in comps if isinstance(c, InteriorWall)),
++    }
++    attached = {
++        "cantilever_beam": sum(1 for c in comps if isinstance(c, CantileverBeam)),
++        "cantilever_slab": sum(1 for c in comps if isinstance(c, CantileverSlab)),
++        "mid_beam":        sum(1 for c in comps if isinstance(c, MidBeam)),
++        "mid_column":      sum(1 for c in comps if isinstance(c, MidColumn)),
++    }
++    return {
++        "modules_by_type": modules_by_type,
++        "panels": panels,
++        "panels_by_type": panels_by_type,
++        "attached": attached,
++    }
++
++
++# ── B. 부재 구성 (단면 설계 결과가 없을 때 폴백) ───────────
+ def _build_members(comps: List[Component]) -> Dict[str, Any]:
+     """모듈·패널을 *외곽 치수 + 강재 시그니처* 두 단계로 그룹화.
+ 
+@@ -231,8 +310,9 @@
+       같은 외곽 안에서 강재가 다르면 'A-1타입', 'A-2타입' 변형 번호 부여.
+     - 변형이 1 개뿐이면 그냥 'A타입' (변형 번호 없음).
+     """
+-    # 1) 모듈을 (외곽, 강재 시그니처) 키로 카운트.
++    # 1) 모듈을 (외곽, 강재 시그니처) 키로 카운트. 분리 단면도 캐싱.
+     module_buckets: Dict[Tuple[int, int, Tuple[str, ...]], int] = {}
++    split_cache: Dict[Tuple[int, int, Tuple[str, ...]], Dict[str, str]] = {}
+     for c in comps:
+         if not isinstance(c, (Module, Vertical3Module)):
+             continue
+@@ -242,6 +322,8 @@
+         secs = tuple(_collect_module_sections(c))
+         key = (a_mm, b_mm, secs)
+         module_buckets[key] = module_buckets.get(key, 0) + 1
++        if key not in split_cache:
++            split_cache[key] = _collect_module_sections_split(c)
+ 
+     # 2) 외곽별로 변형 그룹핑 → 알파벳·변형 번호 부여.
+     outer_to_variants: Dict[Tuple[int, int],
+@@ -262,6 +344,11 @@
+         single = (len(variants) == 1)
+         for vi, (secs, n) in enumerate(variants, 1):
+             type_name = f"{alpha}타입" if single else f"{alpha}-{vi}타입"
++            split = split_cache.get((a_mm, b_mm, secs), {
++                "columns_section": "—",
++                "top_beams_section": "—",
++                "bottom_beams_section": "—",
++            })
+             modules_by_type.append({
+                 "name": type_name,
+                 "width_m": a_mm / 1000.0,
+@@ -269,21 +356,19 @@
+                 "count": int(n),
+                 "area_m2": round(a_mm * b_mm / 1.0e6, 2),
+                 "sections": ", ".join(secs) if secs else "—",
++                **split,
+             })
+ 
++    # [2026-06-01] 코어슬래브는 패널이 아님 — 카운트·타입 목록 모두 제외.
+     panels = {
+         "floor_panel": sum(1 for c in comps if isinstance(c, FloorPanel)),
+         "struct_wall": sum(1 for c in comps if isinstance(c, StructWall)),
+         "interior_wall": sum(1 for c in comps if isinstance(c, InteriorWall)),
+-        "core_slab": sum(1 for c in comps if isinstance(c, CoreSlab)),
+     }
+-    # [2026-05-31 옵션 B] 패널도 같은 방식 — (class, 외곽) 그룹 내부에서
+-    # 강재 시그니처 다르면 '바닥패널-1 / 바닥패널-2' 변형 번호.
+     _PANEL_CLASS_KO = {
+         FloorPanel: "바닥패널",
+         StructWall: "구조벽",
+         InteriorWall: "내벽",
+-        CoreSlab: "코어슬래브",
+     }
+     panel_buckets: Dict[Tuple[str, int, int, Tuple[str, ...]], int] = {}
+     for c in comps:
+@@ -412,6 +497,31 @@
+     return found
+ 
+ 
++def _collect_module_sections_split(c: Component) -> Dict[str, str]:
++    """모듈에서 *기둥 / 천장보 / 바닥보* 단면 라벨을 컬럼별로 분리.
++
++    [2026-06-01] 종합탭 부재 컬럼이 한 셀에 모두 합쳐져 잘림이 잦아, 별도
++    컬럼으로 분리. 모듈은 top_beams=천장보, bottom_beams=바닥보 컨벤션.
++    """
++    def grab(*attrs) -> str:
++        labels: List[str] = []
++        for attr in attrs:
++            seq = getattr(c, attr, None) or []
++            try:
++                for item in seq:
++                    lbl = _section_label(item)
++                    if lbl and lbl not in labels:
++                        labels.append(lbl)
++            except TypeError:
++                pass
++        return ", ".join(labels) if labels else "—"
++    return {
++        "columns_section": grab("columns"),
++        "top_beams_section": grab("top_beams"),
++        "bottom_beams_section": grab("bottom_beams", "edge_beams", "beams"),
++    }
++
++
+ def _collect_panel_sections(c: Component) -> List[str]:
+     """패널(바닥패널/벽패널/코어슬래브)의 단면 라벨 수집."""
+     found: List[str] = []
+@@ -677,6 +787,8 @@
+     transport_pack: Optional[Any] = None,
+     transport_eco: Optional[Any] = None,
+     schedule_payload: Optional[Dict[str, Any]] = None,
++    section_types: Optional[List[Dict[str, Any]]] = None,
++    scene_components_by_id: Optional[Dict[int, Any]] = None,
+ ) -> Dict[str, Any]:
+     """평가 화면이 받을 dict.
+ 
+@@ -693,7 +805,13 @@
+     """
+     comps = list(components or [])
+     headline = _build_headline(comps, project_settings)
+-    members = _build_members(comps)
++    # [2026-06-01] 단면 설계 탭의 타입 목록이 있으면 그걸 정답으로 사용,
++    # 없으면 배치된 컴포넌트 자동 분류 (기존 동작).
++    if section_types:
++        members = _build_members_from_section_types(
++            section_types, scene_components_by_id or {}, comps)
++    else:
++        members = _build_members(comps)
+     materials = _build_materials(quantity_reports, current_policy=current_policy)
+     transport = _build_transport(transport_pack, transport_eco, project_settings)
+     schedule = _build_schedule(schedule_payload)
+

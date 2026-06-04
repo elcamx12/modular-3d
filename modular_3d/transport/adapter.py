@@ -1084,8 +1084,16 @@ def convert_module(
     h = float(comp.dimensions["height"])
 
     # 4 기둥 / 8 보 mid 의 단면 룩업 — analysis_model.members[mid].kind 가 'column'/'beam'
+    # [2026-06-04] 단면이 혼재해도 *부재마다 제 단면×길이로* 강재 무게를 정확히
+    #   합산한다(과거: 가장 무거운 단면 1종으로 통일 → 과대 + 경고). 대표 단면
+    #   (col_pick/beam_pick)은 시각화·표시용으로만 남긴다.
+    # 부재 길이 조회 가능 여부 — 분석 모델은 get_member_length 제공. 길이를 못
+    #   구하면(테스트 stub 등) 정확 합산 대신 대표 단면 근사식으로 폴백한다.
+    _has_len = hasattr(model, "get_member_length")
     col_secs: List[SHSSection] = []
     beam_secs: List[SHSSection] = []
+    col_steel_kg = 0.0
+    beam_steel_kg = 0.0
     for mid in model.comp_to_members.get(cid, []):
         m = model.members.get(mid)
         if m is None:
@@ -1094,22 +1102,25 @@ def convert_module(
         sec = lookup_section_for_member(mid, design_result)
         if sec is None:
             continue
+        # 부재 실제 길이(mm→m) × 단면 단위중량(kg/m) = 그 부재의 강재 무게.
+        if _has_len:
+            len_m = float(model.get_member_length(mid)) / 1000.0
+            steel_kg = to_transport_section(sec).weight_per_m * len_m
+        else:
+            steel_kg = 0.0
         if kind == "column":
             col_secs.append(sec)
+            col_steel_kg += steel_kg
         elif kind == "beam":
             beam_secs.append(sec)
-    # 일관성 검사
-    col_set = {s.name for s in col_secs}
-    beam_set = {s.name for s in beam_secs}
-    if len(col_set) > 1:
-        diag.warnings.append(f"{label}: 모듈 기둥 단면 {len(col_set)}종 혼재 — 가장 무거운 단면 채택")
-    if len(beam_set) > 1:
-        diag.warnings.append(f"{label}: 모듈 보 단면 {len(beam_set)}종 혼재 — 가장 무거운 단면 채택")
+            beam_steel_kg += steel_kg
     col_pick = _pick_heaviest(col_secs)
     beam_pick = _pick_heaviest(beam_secs)
     if col_pick is None or beam_pick is None:
         diag.warnings.append(f"{label}: 기둥/보 단면 룩업 실패 — 운송 대상 제외")
         return None
+    # 길이를 구할 수 있을 때만 정확 프레임 무게 채택, 아니면 None(근사식 폴백).
+    frame_weight_kg = (col_steel_kg + beam_steel_kg) if _has_len else None
 
     # extra_weight
     area_m2 = (w / 1000.0) * (d / 1000.0)
@@ -1142,6 +1153,7 @@ def convert_module(
         extra_weight_kg=extra,
         attached_parts=attached,
         body_parts=body,
+        frame_weight_kg=frame_weight_kg,
     )
 
 
@@ -1164,8 +1176,13 @@ def convert_vertical3_lying(
     d = float(comp.dimensions["depth"])
     h = float(comp.dimensions["height"])
 
+    # [2026-06-04] 일반 모듈과 동일 — 부재별 단면×길이로 정확 강재 무게 합산
+    #   (3 층치 기둥·보 모두). 대표 단면은 시각화·표시용으로만 유지.
+    _has_len = hasattr(model, "get_member_length")
     col_secs: List[SHSSection] = []
     beam_secs: List[SHSSection] = []
+    col_steel_kg = 0.0
+    beam_steel_kg = 0.0
     for mid in model.comp_to_members.get(cid, []):
         m = model.members.get(mid)
         if m is None:
@@ -1174,15 +1191,23 @@ def convert_vertical3_lying(
         sec = lookup_section_for_member(mid, design_result)
         if sec is None:
             continue
+        if _has_len:
+            len_m = float(model.get_member_length(mid)) / 1000.0
+            steel_kg = to_transport_section(sec).weight_per_m * len_m
+        else:
+            steel_kg = 0.0
         if kind == "column":
             col_secs.append(sec)
+            col_steel_kg += steel_kg
         elif kind == "beam":
             beam_secs.append(sec)
+            beam_steel_kg += steel_kg
     col_pick = _pick_heaviest(col_secs)
     beam_pick = _pick_heaviest(beam_secs)
     if col_pick is None or beam_pick is None:
         diag.warnings.append(f"{label}: 수직3모듈 단면 룩업 실패 — 운송 대상 제외")
         return None
+    frame_weight_kg = (col_steel_kg + beam_steel_kg) if _has_len else None
 
     # 12 면 비내력벽
     face_classes = classify_vertical3_module(
@@ -1220,6 +1245,7 @@ def convert_vertical3_lying(
             extra_weight_kg=extra,
             attached_parts=attached,
             body_parts=body,
+            frame_weight_kg=frame_weight_kg,
         )
     else:
         body, attached = _z_normalize_parts(body_raw, attached)
@@ -1232,6 +1258,7 @@ def convert_vertical3_lying(
             extra_weight_kg=extra,
             attached_parts=attached,
             body_parts=body,
+            frame_weight_kg=frame_weight_kg,
         )
 
 
@@ -1326,6 +1353,8 @@ def convert_floor_panel_pure(
         extra_weight_kg=extra,
         attached_parts=attached,
         body_parts=body,
+        floor_index=getattr(fp, "floor_index", -1),
+        group_id=getattr(fp, "group_id", -1),
     )
 
 
@@ -1406,6 +1435,8 @@ def convert_floor_panel_dependent(
         wall_segments=tuple(segments),
         attached_parts=attached,
         body_parts=body,
+        floor_index=getattr(fp, "floor_index", -1),
+        group_id=getattr(fp, "group_id", -1),
     )
 
 
@@ -1471,6 +1502,8 @@ def convert_independent_wall_panel(
             wall_height=h,
             extra_weight_kg=extra,
             body_parts=body,
+            floor_index=getattr(wall, "floor_index", -1),
+            group_id=getattr(wall, "group_id", -1),
         )
     # 물량: 세워서 표시 — normal 매핑(높이축이 연직 Z) 그대로.
     # [함정] 외곽 박스 차원을 (w,d) 로 하드코딩하면 벽 방향(전후벽/좌우벽)에 따라
@@ -1486,6 +1519,8 @@ def convert_independent_wall_panel(
         wall_height=h,
         extra_weight_kg=extra,
         body_parts=body,
+        floor_index=getattr(wall, "floor_index", -1),
+        group_id=getattr(wall, "group_id", -1),
     )
 
 
@@ -1706,6 +1741,9 @@ def _normalize_dims_for_transport(
         wall_height=item.wall_height,
         extra_weight_kg=item.extra_weight_kg,
         wall_segments=new_segments,
+        # [함정] swap 재생성 시 층 식별자 누락하면 -1 로 리셋돼 묶음 복제가 깨진다.
+        floor_index=item.floor_index,
+        group_id=item.group_id,
     )
 
 

@@ -219,9 +219,17 @@ def test_cost_total_sum():
     assert c["transport_krw"] == 3_000_000
     assert c["labor_krw"] == 50_000_000
     assert c["equip_krw"] == 12_000_000
-    assert c["total_krw"] == (
+    # [2026-06-04] 직접공사비 소계 = 4항목 합.
+    assert c["direct_krw"] == (
         c["material_krw"] + c["transport_krw"] + c["labor_krw"] + c["equip_krw"]
     )
+    # 총공사비 = 직접비에 간접비·관리비·이윤·부가세 적층(≈1.475배).
+    direct = c["direct_krw"]
+    expected_total = ((direct * 1.15) * 1.06 * 1.10) * 1.10
+    # 반올림 오차 허용(자재비가 정수가 아닐 수 있음).
+    assert abs(c["total_krw"] - expected_total) <= 2
+    # 적층분(간접+관리+이윤+부가세)은 양수.
+    assert c["total_krw"] > c["direct_krw"]
 
 
 # ── 9. 부분 결과 — 운송만 None ────────────────────────────

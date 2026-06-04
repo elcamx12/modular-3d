@@ -38,17 +38,27 @@ def _trip(truck, trip_no=1):
                 used_length_mm=6000, usable_length_mm=11600)
 
 
-# ── 요금표 방식 (기본) ────────────────────────────────────
-def test_freight_table_default_mode():
+# ── 요금표 방식 (명시 지정) ───────────────────────────────
+def test_freight_table_mode():
     from modular_3d.transport.economics import freight_col, lookup_freight_rate
-    # 기본 cost_mode='freight_table'. 24t 저상 → '25톤' 열. 편도 30 → 왕복 60km.
-    opts = EconomicsOptions(distance_km=30.0)
+    # [2026-06-04] 기본 모드는 fixed_per_trip 으로 바뀜 → freight_table 은 명시 지정.
+    # 24t 저상 → '25톤' 열. 편도 30 → 왕복 60km.
+    opts = EconomicsOptions(distance_km=30.0, cost_mode="freight_table")
     cost = compute_trip_cost(_trip(TR_LOWBED), opts)
     assert cost.pricing_mode == "freight_table"
     assert cost.rate_label == "요금표"
     assert cost.distance_km == pytest.approx(60.0)
     expected = lookup_freight_rate(60.0, freight_col(TR_LOWBED))
     assert cost.cost_krw == pytest.approx(expected)
+
+
+# ── 기본 모드 = 1회 고정비(2026-06-04 사용자 확정) ─────────
+def test_fixed_per_trip_default_mode():
+    # 기본 EconomicsOptions → 저상 1회 420만원 고정.
+    opts = EconomicsOptions()
+    cost = compute_trip_cost(_trip(TR_LOWBED), opts)
+    assert cost.pricing_mode == "fixed_per_trip"
+    assert cost.cost_krw == pytest.approx(4_200_000.0)
 
 
 # ── 트레일러별 km단가 방식 ───────────────────────────────

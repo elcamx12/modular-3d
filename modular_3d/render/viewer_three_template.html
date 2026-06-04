@@ -79,7 +79,9 @@ function init() {
   // [M2-c 사용자 피드백 2026-05-28] vispy TurntableCamera 와 three.js 의
   // azimuth 컨벤션 차이로 위에서 본 기준 시야가 90도 어긋남. azim 을
   // -90° 보정해 vispy 와 동일한 시점으로 맞춤 (반시계 회전).
-  camera = new THREE.PerspectiveCamera(45, w / h, 10, 200000);
+  // [2026-06-05] 원경 절단면 200000→2000000 확대 — 18층 등 고층에서 멀리 빼도
+  //   건물이 잘리지 않도록. 줌아웃 한계(maxDistance) 확대와 짝을 맞춤.
+  camera = new THREE.PerspectiveCamera(45, w / h, 10, 2000000);
   const dist = 20000;
   const elev = 30 * Math.PI / 180;
   const azim_vispy_deg = -60;
@@ -115,7 +117,9 @@ function init() {
   controls.dampingFactor = 0.08;
   controls.screenSpacePanning = false;
   controls.minDistance = 100;
-  controls.maxDistance = 100000;
+  // [2026-06-05] 줌아웃 한계 100000→1000000 확대 — 18층 등 고층 건물을 한 화면에
+  //   담을 수 있도록 여유롭게. 원경 절단면(far=2000000) 안에 들어오는 범위.
+  controls.maxDistance = 1000000;
   controls.update();
 
   // 광원

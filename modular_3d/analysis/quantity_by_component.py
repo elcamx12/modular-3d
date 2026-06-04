@@ -105,6 +105,7 @@ class UnitPrices:
     steel_h: Optional[float] = None       # 원/ton
     deck: Optional[float] = None          # 원/㎡
     concrete: Optional[float] = None      # 원/㎥
+    rebar: Optional[float] = None         # 원/ton (RC 코어 이형철근)
 
     @classmethod
     def load(cls) -> "UnitPrices":
@@ -114,6 +115,7 @@ class UnitPrices:
             steel_h=get_unit_price('강재_H형강'),
             deck=get_unit_price('데크슬래브'),
             concrete=get_unit_price('콘크리트_레미콘'),
+            rebar=get_unit_price('철근_이형철근_SD400'),
         )
 
     def steel_unit_for(self, section_type: str) -> float:

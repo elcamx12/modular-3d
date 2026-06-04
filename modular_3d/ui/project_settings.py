@@ -64,16 +64,19 @@ class ProjectSettings:
     """
     # 운송
     distance_km: float = 30.0           # 편도 거리 (운임은 항상 왕복=편도×2)
-    cost_mode: str = "freight_table"    # 'freight_table' | 'per_km'
+    # [2026-06-04] 기본 운임 방식 = 트레일러별 1회 고정비(사용자 확정).
+    cost_mode: str = "fixed_per_trip"   # 'freight_table' | 'per_km' | 'fixed_per_trip'
     lowbed_per_km_krw: float = 3500.0   # 저상/초저상 km단가 (per_km 방식)
     extendable_per_km_krw: float = 5000.0  # 광폭(확장형) km단가
     aframe_per_km_krw: float = 5000.0   # A-frame km단가
     # 트레일러별 1회 고정 운송비 (cost_mode='fixed_per_trip' — 거리 무관, 회차당)
-    lowbed_fixed_krw: float = 600000.0
-    extendable_fixed_krw: float = 700000.0
-    aframe_fixed_krw: float = 800000.0
+    # [2026-06-04] 사용자 확정 기본값: 저상 420만 / 광폭 440만 / A-frame 400만.
+    lowbed_fixed_krw: float = 4200000.0
+    extendable_fixed_krw: float = 4400000.0
+    aframe_fixed_krw: float = 4000000.0
     # 현장 운송 제한 (도로 등급 대체 — 2026-05-26). *_enabled=False → 해당없음(프리패스).
-    site_limit_gvw_kg: float = 40000.0       # 차체+화물 총중량(GVW) 한도
+    # [2026-06-04] 기본 GVW 한도 45,000kg(사용자 확정).
+    site_limit_gvw_kg: float = 45000.0       # 차체+화물 총중량(GVW) 한도
     site_limit_gvw_enabled: bool = True
     site_limit_width_mm: float = 3500.0      # 화물 폭 한도
     site_limit_width_enabled: bool = True

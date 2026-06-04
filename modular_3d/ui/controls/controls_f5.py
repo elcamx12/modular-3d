@@ -424,6 +424,20 @@ class F5Mixin:
                 'merge_with_panel': getattr(comp, 'merge_with_panel', False),
                 'merged_fp_group': merged_fp_group,  # 0 이면 합체 없음
             }
+            # [함정] 비병합 구조벽은 최초 배치 때 천장 높이 유지를 위해
+            # create_multi_floor_group 내부에서 높이를 SECTION_W_MM(200)만큼
+            # 줄여 저장한다. 층수 변경 재생성에서 이미 줄어든 높이를 그대로
+            # 다시 넘기면 또 200이 깎여, 층수를 바꿀 때마다 벽패널이 200씩
+            # 낮아진다(3200→3000→2800…). 공칭(원본) 높이로 되돌려 넘겨
+            # 재생성 함수가 한 번만 줄이도록 한다. 병합 구조벽은 높이를 줄이지
+            # 않으므로 보정 대상이 아니다.
+            if (comp.comp_type == ComponentType.STRUCT_WALL
+                    and not info['merge_with_panel']
+                    and 'height' in info['dimensions']):
+                from modular_3d.analysis.constants import SECTION_W_MM as _SECTION_W
+                info['dimensions']['height'] = (
+                    float(info['dimensions']['height']) + float(_SECTION_W))
+
             if info['sub_index'] == 0:
                 body_seeds.append(info)
                 gid_to_body_type[info['group_id']] = info['comp_type']

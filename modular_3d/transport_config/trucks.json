@@ -1,14 +1,26 @@
 [
   {
-    "name": "테스트용",
+    "name": "광폭 슬라이드 트레일러 28톤 - 2",
+    "truck_type": "extendable",
+    "max_length": 18000.0,
+    "max_width": 3400.0,
+    "max_height": 4500.0,
+    "max_weight": 30000.0,
+    "vehicle_height_offset": 700.0,
+    "curb_weight_kg": 16000.0,
+    "active": true,
+    "note": "광폭 확장형. 운임은 광폭 km단가(per_km 방식) 또는 요금표로 산정."
+  },
+  {
+    "name": "저상 트레일러 24톤 (3축 Low - bed)",
     "truck_type": "lowbed",
-    "max_length": 9000.0,
+    "max_length": 12000.0,
     "max_width": 3000.0,
     "max_height": 4500.0,
-    "max_weight": 25000.0,
+    "max_weight": 30000.0,
     "vehicle_height_offset": 700.0,
-    "curb_weight_kg": 9000.0,
+    "curb_weight_kg": 14000.0,
     "active": true,
-    "note": "2축 소형. 차체중량은 추정 디폴트."
+    "note": "한국형 3축 저상 트레일러 기본형. 차체중량은 추정 디폴트로 사용자 편집 가능."
   }
 ]

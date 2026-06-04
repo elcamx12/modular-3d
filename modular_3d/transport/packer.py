@@ -38,8 +38,8 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
-from typing import List, Optional, Union
+from dataclasses import dataclass, field, replace
+from typing import Dict, List, Optional, Tuple, Union
 
 from .limits import can_carry
 from .models import (
@@ -48,6 +48,41 @@ from .models import (
 
 
 Item = Union[Module, Panel]
+
+
+# ── 상차 성능 프로파일러 ───────────────────────────────────────────
+# 환경변수 MODULAR_PACK_PROFILE=1 일 때만 각 단계 소요시간을 stderr 로 출력.
+# 평소(미설정)에는 아무 동작도 하지 않아 정상 패킹 성능에 영향이 없다.
+import os as _os
+import time as _time
+import sys as _sys
+
+_PROFILE_ON = bool(_os.environ.get("MODULAR_PACK_PROFILE"))
+
+
+def _prof_log(msg: str) -> None:
+    """프로파일 한 줄 출력 (환경변수 켜졌을 때만)."""
+    if _PROFILE_ON:
+        _sys.stderr.write(f"[PACK_PROF] {msg}\n")
+        _sys.stderr.flush()
+
+
+class _Timer:
+    """with 블록 소요시간 측정 — 종료 시 [PACK_PROF] 한 줄 출력."""
+
+    def __init__(self, label: str):
+        self.label = label
+        self.t0 = 0.0
+        self.dt = 0.0
+
+    def __enter__(self):
+        self.t0 = _time.perf_counter()
+        return self
+
+    def __exit__(self, *exc):
+        self.dt = _time.perf_counter() - self.t0
+        _prof_log(f"{self.label}: {self.dt * 1000:.1f} ms")
+        return False
 
 
 # ── Trip / PackResult ─────────────────────────────────────────────
@@ -884,6 +919,189 @@ def _build_trip_from_placements(
     return trip
 
 
+# ════════════════════════════════════════════════════════════════════
+# 층묶음 복제 패킹 — 18층 폭발 방지 (2026-06-04 사용자 결정)
+#   모듈러 건물은 같은 층이 반복되므로, 1~3층(기준 묶음)만 분기한정으로 한 번
+#   계산하고 나머지 완전 묶음은 그대로 복제한다. 각 묶음의 덜 찬 회차(자투리)와
+#   맨 위 잔여층 패널만 모아 한 번 더 분기한정으로 재배차한다.
+#   → 분기한정 호출이 층수와 무관하게 "기준 1회 + 자투리 1회"로 고정된다.
+# ════════════════════════════════════════════════════════════════════
+VERTICAL_GROUP_FLOORS = 3  # 한 복제 묶음 = 3개 층
+
+
+def classify_panels_into_groups(
+    panels: List[Panel],
+) -> Tuple[Dict[int, List[Panel]], List[Panel]]:
+    """패널을 3층 묶음으로 분류 → (complete_groups, leftover).
+
+    - 묶음 번호 g = floor_index // 3.
+    - 완전 묶음 = 세 층(g*3, g*3+1, g*3+2)이 모두 패널에 존재하는 g.
+    - 불완전(맨 위 잔여)·floor_index 미주입(-1) 패널은 leftover.
+    """
+    bucket: Dict[int, List[Panel]] = {}
+    present: set = set()
+    for p in panels:
+        fi = int(getattr(p, "floor_index", -1))
+        if fi >= 0:
+            present.add(fi)
+        g = fi // VERTICAL_GROUP_FLOORS if fi >= 0 else -1
+        bucket.setdefault(g, []).append(p)
+
+    complete: Dict[int, List[Panel]] = {}
+    leftover: List[Panel] = []
+    for g, plist in bucket.items():
+        base = g * VERTICAL_GROUP_FLOORS
+        if g >= 0 and all((base + k) in present for k in range(VERTICAL_GROUP_FLOORS)):
+            complete[g] = plist
+        else:
+            leftover.extend(plist)
+    return complete, leftover
+
+
+def _panel_group_key(p: Panel) -> tuple:
+    """묶음 간 동일 패널을 1:1 대응시키는 결정적 정렬 키.
+
+    치수가 층 간 동일하므로 (묶음내 층, 그룹, 이름) 으로 같은 위치끼리 묶인다.
+    """
+    return (
+        int(getattr(p, "floor_index", 0)) % VERTICAL_GROUP_FLOORS,
+        int(getattr(p, "group_id", 0)),
+        p.name,
+    )
+
+
+def _pack_panels_modular_replicated(
+    panels: List[Panel], trucks: List[Truck], site: SiteLimit,
+    spacing: SpacingParams, cost_mode: str, economics,
+    complete: Dict[int, List[Panel]], leftover: List[Panel],
+) -> List[Trip]:
+    """[층묶음 복제] 완성된 Trip 리스트를 직접 반환한다.
+
+    인덱스 좌표계 혼선을 피하려고 BB 결과를 즉시 Trip 으로 변환해 다룬다.
+    """
+    from .packer_bb import pack_panels_bb
+
+    base_g = min(complete)
+    base_panels = complete[base_g]
+
+    # ── 기준 묶음만 분기한정 1회 ──
+    base_result, _bc, _bs = pack_panels_bb(
+        base_panels, trucks, site, spacing, cost_mode, economics,
+    )
+    if not base_result:
+        # 기준 묶음조차 적재 실패(드묾) — 전체를 일반 경로로 fallback.
+        fb, _c, _s = pack_panels_bb(
+            panels, trucks, site, spacing, cost_mode, economics,
+        )
+        return [
+            _build_trip_from_placements(i + 1, tr, [], pl, spacing)
+            for i, (_pat, tr, pl) in enumerate(fb)
+        ]
+
+    # ── 회차별 무게 적재율 계산 → 최저 1개를 자투리로 분리 ──
+    # [사용자 결정] 자투리 판정은 *무게* 기반(적재 하중/적재가능 하중).
+    #   길이 적재율은 적층 누적으로 100% 를 넘는 부정확이 있어 부적합.
+    # base_rows[i] = (weight_utilization, truck, placements)
+    base_rows: List[Tuple[float, Truck, list]] = []
+    for (_pattern, truck, placements) in base_result:
+        t = _build_trip_from_placements(0, truck, [], placements, spacing)
+        base_rows.append((t.weight_utilization, truck, placements))
+    scrap_i = min(range(len(base_rows)), key=lambda i: (base_rows[i][0], i))
+    scrap_placements = base_rows[scrap_i][2]
+    keep_rows = [r for i, r in enumerate(base_rows) if i != scrap_i]
+    _prof_log(
+        f"  [복제진단] 기준묶음 패널 {len(base_panels)}개 → 회차 {len(base_rows)}개"
+        f"(패널수·무게적재율 {[(len(r[2]), round(r[0], 1)) for r in base_rows]}); "
+        f"자투리 회차 패널 {len(scrap_placements)}개, keep 회차 {len(keep_rows)}개"
+    )
+
+    base_sorted = sorted(base_panels, key=_panel_group_key)
+
+    # [CoT] 분기 처리: ① 각 완전 묶음 g 에 대해 base↔g 패널 매핑 →
+    #   ② keep 회차 복제(item 만 치환) → ③ 자투리 회차 패널은 묶음별로 모음.
+    final_trips: List[Trip] = []
+    extra_scrap: List[Panel] = list(leftover)        # 잔여층 + 방어 케이스 패널
+    scrap_bundles: List[List[Panel]] = []            # 각 완전묶음의 자투리 1벌(동일 규격)
+    trip_no = 1
+    for g in sorted(complete):
+        g_sorted = sorted(complete[g], key=_panel_group_key)
+        if len(g_sorted) != len(base_sorted):
+            # 방어 — 묶음 간 패널 수 불일치(설계상 동일해야 함) → 잔여로.
+            extra_scrap.extend(complete[g])
+            continue
+        mapping = {id(base_sorted[i]): g_sorted[i] for i in range(len(base_sorted))}
+        for (_util, truck, placements) in keep_rows:
+            new_pl = [replace(pl, item=mapping[id(pl.item)]) for pl in placements]
+            final_trips.append(
+                _build_trip_from_placements(trip_no, truck, [], new_pl, spacing)
+            )
+            trip_no += 1
+        scrap_bundles.append([mapping[id(pl.item)] for pl in scrap_placements])
+
+    # ── 자투리 + 잔여층 재배차 (분기한정 + 복제) ──
+    # [함정/핵심] 자투리 풀을 한 번에 분기한정하면 한 회차 조합이 C(풀,7) 로
+    #   폭발한다(18층 28패널 → 미종료). 그러나 자투리는 *같은 1벌이 K벌 반복*되는
+    #   복제 구조다. 그래서 "자투리 1벌이 한 트럭에 m벌 들어가는지"(무게·패널수
+    #   기준)만 보고, m벌짜리 작은 분기한정 1회를 풀어 K/m 회차로 복제한다.
+    #   → 분기한정 규모가 m벌(≤7패널)로 고정돼 폭발 불가 + 같은 규격엔 항상 같은
+    #     트럭(결정론) → 그리디의 트럭 불일치 결함 제거.
+    if scrap_bundles or extra_scrap:
+        from .packer_bb import pack_panels_bb, MAX_TRIP_PANELS
+
+        # 한 트럭에 실을 자투리 벌 수 m — 무게 한도와 회차 패널 상한(7) 중 작은 쪽.
+        m = 1
+        if scrap_bundles:
+            w1 = sum(float(p.weight) for p in scrap_bundles[0])
+            n1 = max(1, len(scrap_bundles[0]))
+            active = [t for t in trucks if getattr(t, "active", True)]
+            Wmax = max((_effective_cargo_limit(t, site) for t in active), default=0.0)
+            m_weight = int(Wmax // w1) if w1 > 0 else len(scrap_bundles)
+            m_panel = MAX_TRIP_PANELS // n1
+            m = max(1, min(m_weight, m_panel, len(scrap_bundles)))
+
+        full_count = len(scrap_bundles) // m if scrap_bundles else 0
+        _prof_log(
+            f"  [복제진단] 자투리 {len(scrap_bundles)}벌 → 트럭당 {m}벌, "
+            f"full {full_count}트럭 복제 + 나머지·잔여 1회 — 분기한정 복제"
+        )
+
+        # ① full 묶음(크기 m)은 모두 동일 규격 → 대표 1회만 분기한정 후 복제.
+        if full_count > 0:
+            ref_panels = [p for b in scrap_bundles[:m] for p in b]
+            ref_bb, _rc, _rs = pack_panels_bb(
+                ref_panels, trucks, site, spacing, cost_mode, economics,
+            )
+            ref_sorted = sorted(ref_panels, key=_panel_group_key)
+            for ci in range(full_count):
+                chunk_panels = [
+                    p for b in scrap_bundles[ci * m:(ci + 1) * m] for p in b
+                ]
+                chunk_sorted = sorted(chunk_panels, key=_panel_group_key)
+                cmap = {
+                    id(ref_sorted[j]): chunk_sorted[j] for j in range(len(ref_sorted))
+                }
+                for (_pat, truck, pls) in ref_bb:
+                    new_pls = [replace(pl, item=cmap[id(pl.item)]) for pl in pls]
+                    final_trips.append(
+                        _build_trip_from_placements(trip_no, truck, [], new_pls, spacing)
+                    )
+                    trip_no += 1
+
+        # ② 나머지 자투리 벌(K mod m) + 잔여층 → 작은 분기한정 1회.
+        rest = [p for b in scrap_bundles[full_count * m:] for p in b] + extra_scrap
+        if rest:
+            rest_bb, _ec, _es = pack_panels_bb(
+                rest, trucks, site, spacing, cost_mode, economics,
+            )
+            for (_pat, truck, pls) in rest_bb:
+                final_trips.append(
+                    _build_trip_from_placements(trip_no, truck, [], pls, spacing)
+                )
+                trip_no += 1
+
+    return final_trips
+
+
 def _pack_items_bb(
     modules: List[Module], panels: List[Panel], trucks: List[Truck],
     site: SiteLimit, spacing: SpacingParams, cost_mode: str, economics,
@@ -897,14 +1115,21 @@ def _pack_items_bb(
 
     # ── 1단계 — 모듈만 V2 호출 (패널 0개) ──
     # V2 의 모듈 빠른 경로 (캐시) 활용. 6m 합산 예외도 V2 가 처리.
+    _prof_log(f"입력: 모듈 {len(modules)}개 / 패널 {len(panels)}개 / 트럭 {len(trucks)}대")
+    _t_total = _time.perf_counter()
     module_trips: List[Trip] = []
     module_blocked: list = []
     if modules:
         from .packer_meta import pack_all_seeds_v2
-        m_pack, _ = pack_all_seeds_v2(
-            list(modules), trucks, site, spacing,
-            cost_mode=cost_mode, eco_options=economics, apply_vnd=False,
-        )
+        with _Timer(f"1단계 모듈 패킹(pack_all_seeds_v2, 모듈 {len(modules)}개)"):
+            # [2026-06-04 성능] 모듈은 자세·자리·적층이 단일이라 모든 시드가
+            #   동일 결과 → 결정론 시드 1 개만 돌려 시드 12회 낭비를 제거한다.
+            #   (트럭 선택은 _module_truck_cache 로 이미 타입당 1회만 계산.)
+            m_pack, _ = pack_all_seeds_v2(
+                list(modules), trucks, site, spacing,
+                cost_mode=cost_mode, eco_options=economics, apply_vnd=False,
+                max_det_seeds=1,
+            )
         module_trips = list(m_pack.trips)
         # [2026-06-03 버그수정] 모듈 패커가 못 실은 모듈(m_pack.blocked)을 버리지
         #   않고 결과 blocked 로 전달. 과거엔 blocked=[] 로 덮어써, 트럭 한도(중량/
@@ -919,34 +1144,51 @@ def _pack_items_bb(
                 compat = _module_compatible_trucks(trucks)
                 module_blocked.append((m, _diagnose_blocked(m, compat, site)))
 
-    # ── 2단계 — 패널만 BB ──
+    # ── 2단계 — 패널 BB ──
+    # [CoT] 분기: 완전한 3층 묶음이 2개 이상이면 "층묶음 복제" 경로(기준 묶음만
+    #   계산 후 복제 — 18층 폭발 방지). 1묶음 이하(3층 이하·잔여층뿐)면 기존 전체 BB.
     panel_trips: List[Trip] = []
     if panels:
-        bb_result, _bb_cost, bb_stats = pack_panels_bb(
-            panels, trucks, site, spacing, cost_mode, economics,
-        )
-        try:
-            import sys
-            sys.stderr.write(
-                f"[BB] nodes={bb_stats.get('nodes', 0)} "
-                f"bans={bb_stats.get('bans', 0)} "
-                f"bound_cuts={bb_stats.get('bound_cuts', 0)} "
-                f"memo_hits={bb_stats.get('memo_hits', 0)} "
-                f"initial={bb_stats.get('initial_cost', 0):.0f}원 "
-                f"final={bb_stats.get('final_cost', 0):.0f}원\n"
+        complete, leftover = classify_panels_into_groups(panels)
+        if len(complete) >= 2:
+            _prof_log(
+                f"패널 층묶음 복제 경로 — 완전묶음 {len(complete)}개"
+                f"(층 {sorted(complete)}), 잔여 패널 {len(leftover)}개"
             )
-        except Exception:
-            pass
-        # BB 결과 → Trip 변환 (Phase 5-I — BLF Placement 직접 사용)
-        # pack_one_seed_v2 호출 폐기. BLF 가 산출한 Placement 그대로 사용.
-        start_trip_no = len(module_trips) + 1
-        for offset, (pattern, truck, placements) in enumerate(bb_result):
-            trip_no = start_trip_no + offset
-            sub_panels = [panels[i] for i in pattern]
-            new_trip = _build_trip_from_placements(
-                trip_no, truck, sub_panels, placements, spacing,
-            )
-            panel_trips.append(new_trip)
+            with _Timer(
+                f"2단계 패널 BB(층묶음 복제, 묶음 {len(complete)}개, 패널 {len(panels)}개)"
+            ):
+                panel_trips = _pack_panels_modular_replicated(
+                    panels, trucks, site, spacing, cost_mode, economics,
+                    complete, leftover,
+                )
+        else:
+            with _Timer(f"2단계 패널 BB(pack_panels_bb, 패널 {len(panels)}개)"):
+                bb_result, _bb_cost, bb_stats = pack_panels_bb(
+                    panels, trucks, site, spacing, cost_mode, economics,
+                )
+            try:
+                import sys
+                sys.stderr.write(
+                    f"[BB] nodes={bb_stats.get('nodes', 0)} "
+                    f"bans={bb_stats.get('bans', 0)} "
+                    f"bound_cuts={bb_stats.get('bound_cuts', 0)} "
+                    f"memo_hits={bb_stats.get('memo_hits', 0)} "
+                    f"initial={bb_stats.get('initial_cost', 0):.0f}원 "
+                    f"final={bb_stats.get('final_cost', 0):.0f}원\n"
+                )
+            except Exception:
+                pass
+            # BB 결과 → Trip 변환 (Phase 5-I — BLF Placement 직접 사용)
+            # pack_one_seed_v2 호출 폐기. BLF 가 산출한 Placement 그대로 사용.
+            start_trip_no = len(module_trips) + 1
+            for offset, (pattern, truck, placements) in enumerate(bb_result):
+                trip_no = start_trip_no + offset
+                sub_panels = [panels[i] for i in pattern]
+                new_trip = _build_trip_from_placements(
+                    trip_no, truck, sub_panels, placements, spacing,
+                )
+                panel_trips.append(new_trip)
 
     # ── 합치기 ──
     all_trips = list(module_trips) + list(panel_trips)
@@ -970,7 +1212,10 @@ def _pack_items_bb(
                     f"{pm.truck_xyz[2]:.0f})"
                 )
 
-    balance_trips(result.trips, spacing)
+    with _Timer(f"3단계 무게중심 보정(balance_trips, 회차 {len(result.trips)}개)"):
+        balance_trips(result.trips, spacing)
+
+    _prof_log(f"합계 pack_items: {(_time.perf_counter() - _t_total) * 1000:.1f} ms")
 
     if _bb._trace_enabled():
         _bb._trace_write("=== PLACEMENTS_AFTER_BALANCE ===")

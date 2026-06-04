@@ -490,6 +490,7 @@ class EvaluationPanel(QWidget):
             ("운송비", "transport", False),
             ("노무비", "labor", False),
             ("경비",   "equip",     False),
+            ("간접비·이윤·부가세", "indirect", False),
             ("공사비 (총합)", "total", True),
         ):
             cell, val_lbl = self._mk_cost_cell(label, "—", emphasize)
@@ -860,6 +861,9 @@ class EvaluationPanel(QWidget):
         self._cost_cells["transport"].setText(_won(c.get("transport_krw", 0)))
         self._cost_cells["labor"].setText(_won(c.get("labor_krw", 0)))
         self._cost_cells["equip"].setText(_won(c.get("equip_krw", 0)))
+        # 간접비·이윤·부가세 = 총공사비 − 직접공사비 (요율 적층분 합).
+        _indirect = float(c.get("total_krw", 0) or 0) - float(c.get("direct_krw", 0) or 0)
+        self._cost_cells["indirect"].setText(_won(_indirect))
         self._cost_cells["total"].setText(_won(c.get("total_krw", 0)))
 
     # ── 보조 UI 빌더 ─────────────────────────────────────

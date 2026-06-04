@@ -1,0 +1,685 @@
+===== transport/loaded_3d_three.py =====
+--- /dev/fd/63	2026-06-02 10:33:52.000000000 +0900
++++ /dev/fd/62	2026-06-02 10:33:52.000000000 +0900
+@@ -332,30 +332,6 @@
+ ]
+ 
+ 
+-def _new_scene_data(
+-    inter_gap_m: float,
+-    intra_gap_m: float,
+-    n_groups: int,
+-    highlight_trip_no: Optional[int] = None,
+-    hide_truck: bool = False,
+-) -> Dict:
+-    """운송/물량 공유 — Three.js scene JSON 의 공통 헤더(회차 리스트는 빈 채 시작).
+-
+-    hide_truck=False 면 키 자체를 넣지 않는다(운송뷰는 키 부재 → JS falsy 로 동일).
+-    """
+-    data: Dict = {
+-        "trips": [],
+-        "inter_truck_gap_m": inter_gap_m,
+-        "intra_group_gap_m": intra_gap_m,
+-        "highlight_trip_no": highlight_trip_no,
+-        "n_groups": n_groups,
+-        "group_colors": _GROUP_COLORS,
+-    }
+-    if hide_truck:
+-        data["hide_truck"] = True
+-    return data
+-
+-
+ def serialize_pack_for_three(
+     trips: List[Trip],
+     sp: Optional[SpacingParams] = None,
+@@ -389,9 +365,14 @@
+     group_count_so_far: Dict[int, int] = {}
+     next_x_mm = 0.0
+ 
+-    data = _new_scene_data(
+-        INTER_TRUCK_GAP_M, INTRA_GROUP_GAP_M, n_groups, highlight_trip_no,
+-    )
++    data = {
++        "trips": [],
++        "inter_truck_gap_m": INTER_TRUCK_GAP_M,
++        "intra_group_gap_m": INTRA_GROUP_GAP_M,
++        "highlight_trip_no": highlight_trip_no,
++        "n_groups": n_groups,
++        "group_colors": _GROUP_COLORS,
++    }
+ 
+     for trip in trips:
+         gid = group_id_for_trip[trip.trip_no]
+@@ -464,25 +445,25 @@
+ <meta charset="utf-8">
+ <title>운송 적재 3D 도식</title>
+ <style>
+-  html, body { margin: 0; padding: 0; overflow: hidden; background: #ffffff;
++  html, body { margin: 0; padding: 0; overflow: hidden; background: #0d1117;
+                width: 100%; height: 100%; font-family: 'Segoe UI', sans-serif; }
+   #container { width: 100vw; height: 100vh; position: relative; }
+   #renderer-canvas { display: block; width: 100%; height: 100%; }
+-  .label { color: #1a1a1a; pointer-events: none; }
++  .label { color: #e6edf3; pointer-events: none; }
+   .label-trip {
+-    background: rgba(255, 255, 255, 0.92);
++    background: rgba(13, 17, 23, 0.88);
+     padding: 6px 10px;
+     border-radius: 6px;
+-    border: 1px solid #c8ccd0;
+-    color: #1a1a1a;
++    border: 1px solid #30363d;
++    color: #e6edf3;
+     text-align: center;
+     min-width: 100px;
+-    box-shadow: 0 2px 8px rgba(0,0,0,0.18);
++    box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+     font-size: 12px;
+   }
+   .label-trip.highlight {
+-    border-color: #e5484d;
+-    box-shadow: 0 0 12px rgba(229,72,77,0.5);
++    border-color: #f85149;
++    box-shadow: 0 0 12px rgba(248,81,73,0.6);
+   }
+   .label-trip.dimmed {
+     opacity: 0.6;
+@@ -492,9 +473,9 @@
+   .label-cargo.dimmed { opacity: 0.5; transition: opacity 0.25s ease-out; }
+   .label-cargo { transition: opacity 0.25s ease-out; }
+   .label-cargo {
+-    color: #2a2a2a;
++    color: #c9d1d9;
+     font-size: 10px;
+-    text-shadow: 0 1px 3px rgba(255,255,255,0.95);
++    text-shadow: 0 1px 3px rgba(0,0,0,0.95);
+   }
+   #toolbar {
+     position: absolute; top: 12px; left: 12px; z-index: 10;
+@@ -546,17 +527,20 @@
+ <script>
+ const PACK_DATA = __PACK_DATA__;
+ 
+-// 색상 팔레트 — [개편] 배치설계(vispy mesh_builder) 부재 색과 일치, 흰 배경 기준.
++// 색상 팔레트
+ const COLORS = {
+-  column:     0xcc3333,  // 기둥 (빨강)
+-  floor_beam: 0x2266cc,  // 바닥보/하부보 (파랑)
+-  ceil_beam:  0x5599dd,  // 천장보/상부보 (하늘)
+-  slab:       0xd2d2be,  // 슬래브 (베이지)
+-  wall:       0xd0d0d0,  // 구조벽 (회색)
+-  wall_nl:    0x7799aa,  // 비내력벽 (청회색)
+-  wall_seg:   0x7799aa,  // 벽 세그먼트 = 비내력벽 색
+-  core:       0xc0c0c0,  // 코어 (밝은 회색)
+-  // 트럭 캐빈 — 운송 고유(사용자 결정: 유지). 회차 그룹 강조색은 _GROUP_COLORS.
++  module:    0x4a90e2,
++  floor:     0x66bb6a,
++  dep_floor: 0xff9800,
++  wall:      0xab47bc,
++  wall_seg:  0x8d6e63,
++  // Phase 3 — 사실적 부재 색
++  steel:     0x808080,  // 기둥·보 (강재)
++  concrete:  0xc0c0c0,  // 슬래브 (콘크리트)
++  cant_beam: 0xff6e40,  // 캔틸레버 보 (강조)
++  cant_slab: 0xffab40,  // 캔틸레버 슬래브 (강조)
++  midbeam:   0x6e7681,  // 중간보 (약간 어두운 회색)
++  midcolumn: 0x6e7681,  // 중간기둥 (동일)
+   cab: { lowbed: 0x1976d2, extendable: 0x388e3c, aframe: 0xe64a19 },
+ };
+ 
+@@ -639,13 +623,15 @@
+ function init() {
+   const container = document.getElementById('container');
+   scene = new THREE.Scene();
+-  scene.background = new THREE.Color(0xffffff);
+-  // [개편] 거리 안개(fog) 제거 — 축소 시 어두워지는 효과 없앰(배치설계처럼 심플).
++  scene.background = new THREE.Color(0x0d1117);
++  scene.fog = new THREE.FogExp2(0x0d1117, 0.012);
+ 
+   camera = new THREE.PerspectiveCamera(45, 1, 0.1, 800);
+ 
+   renderer = new THREE.WebGLRenderer({ antialias: true });
+   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
++  renderer.shadowMap.enabled = true;
++  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+   renderer.domElement.id = 'renderer-canvas';
+   container.appendChild(renderer.domElement);
+ 
+@@ -654,8 +640,32 @@
+     'position:absolute;top:0;left:0;pointer-events:none;width:100%;height:100%;';
+   container.appendChild(labelRenderer.domElement);
+ 
+-  // [개편] 부재·트럭을 평면 단색(MeshBasicMaterial)으로 렌더하므로 광원이 불필요.
+-  //   배치설계 vispy 처럼 조명·그림자·바닥 면을 모두 제거 — 균일 단색 + 허공 면색.
++  // 광원 — modular_designer.html 동일 스타일
++  scene.add(new THREE.AmbientLight(0xffffff, 0.42));
++  const hemi = new THREE.HemisphereLight(0x8899aa, 0x223344, 0.55);
++  scene.add(hemi);
++  const dirMain = new THREE.DirectionalLight(0xffffff, 0.95);
++  dirMain.position.set(30, 50, 25);
++  dirMain.castShadow = true;
++  dirMain.shadow.mapSize.set(2048, 2048);
++  const sd = 80;
++  dirMain.shadow.camera.left = -sd; dirMain.shadow.camera.right = sd;
++  dirMain.shadow.camera.top = sd; dirMain.shadow.camera.bottom = -sd;
++  dirMain.shadow.camera.near = 0.5; dirMain.shadow.camera.far = 200;
++  scene.add(dirMain);
++  const dirFill = new THREE.DirectionalLight(0x8899cc, 0.32);
++  dirFill.position.set(-20, 15, -15);
++  scene.add(dirFill);
++
++  // 바닥 plane (그림자 받는 면 — 그리드는 사용자 요청대로 없음)
++  const groundSize = 300;
++  const gnd = new THREE.Mesh(
++    new THREE.PlaneGeometry(groundSize, groundSize),
++    new THREE.MeshLambertMaterial({ color: 0x111318 })
++  );
++  gnd.rotation.x = -Math.PI / 2;
++  gnd.receiveShadow = true;
++  scene.add(gnd);
+ 
+   // OrbitControls — vispy 비슷한 조작 (왼클릭 회전, 우클릭 이동, 휠 줌)
+   controls = new THREE.OrbitControls(camera, renderer.domElement);
+@@ -750,9 +760,6 @@
+   const veh_h = trip.vehicle_height_offset_m;
+   const inner_h = trip.truck_height_m - veh_h;
+ 
+-  // [물량탭] hide_truck 이면 트럭/적재공간(①~⑤) 전부 건너뛰고 화물(⑥)만 그린다.
+-  const hideTruck = PACK_DATA && PACK_DATA.hide_truck;
+-  if (!hideTruck) {
+   // ① 적재함 외곽선 (LineSegments)
+   const bedGeo = new THREE.BoxGeometry(tl, inner_h, tw);
+   const bedEdges = new THREE.EdgesGeometry(bedGeo);
+@@ -767,9 +774,11 @@
+   const floorTh = 0.08;
+   const bedFloor = new THREE.Mesh(
+     new THREE.BoxGeometry(tl, floorTh, tw),
+-    new THREE.MeshBasicMaterial({ color: 0x4a5568 })
++    new THREE.MeshStandardMaterial({ color: 0x4a5568, roughness: 0.85 })
+   );
+   bedFloor.position.set(xo + tl/2, veh_h - floorTh/2, tw/2);
++  bedFloor.receiveShadow = true;
++  bedFloor.castShadow = true;
+   bedFloor.userData.baseOpacity = 1.0;
+   bedFloor.userData.role = 'truck';
+   g.add(bedFloor);
+@@ -780,9 +789,11 @@
+   const cabX0 = xo - cabLen - 0.2;
+   const cab = new THREE.Mesh(
+     new THREE.BoxGeometry(cabLen, cabH, tw),
+-    new THREE.MeshBasicMaterial({ color: cabColor })
++    new THREE.MeshStandardMaterial({ color: cabColor, roughness: 0.65, metalness: 0.1 })
+   );
+   cab.position.set(cabX0 + cabLen/2, veh_h + cabH/2, tw/2);
++  cab.castShadow = true;
++  cab.receiveShadow = true;
+   cab.userData.baseOpacity = 1.0;
+   cab.userData.role = 'truck';
+   g.add(cab);
+@@ -790,7 +801,7 @@
+   const wsGeo = new THREE.BoxGeometry(0.05, cabH * 0.55, tw * 0.85);
+   const ws = new THREE.Mesh(
+     wsGeo,
+-    new THREE.MeshBasicMaterial({ color: 0x0a0e14 })
++    new THREE.MeshStandardMaterial({ color: 0x0a0e14, roughness: 0.2, metalness: 0.4 })
+   );
+   ws.position.set(cabX0 + 0.02, veh_h + cabH * 0.6, tw / 2);
+   g.add(ws);
+@@ -805,13 +816,14 @@
+     xo + tl - 0.5 - 0.6,
+   ];
+   const wheelGeo = new THREE.CylinderGeometry(wheelR, wheelR, wheelTh, 24);
+-  const wheelMat = new THREE.MeshBasicMaterial({ color: 0x1a1a1a });
++  const wheelMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.95 });
+   // CylinderGeometry 는 기본 y축 정렬 → x축 회전 시 z축 정렬됨 → 폭 방향 일치
+   for (const wx of wheelXs) {
+     for (const zPos of [-0.05, tw + 0.05]) {
+       const w = new THREE.Mesh(wheelGeo, wheelMat.clone());
+       w.rotation.x = Math.PI / 2;
+       w.position.set(wx + wheelTh / 2, wheelR, zPos);
++      w.castShadow = true;
+       w.userData.baseOpacity = 1.0;
+       w.userData.role = 'truck';
+       g.add(w);
+@@ -826,15 +838,15 @@
+       const zPos = side === 'left' ? frameTh / 2 : tw - frameTh / 2;
+       const frame = new THREE.Mesh(
+         new THREE.BoxGeometry(tl * 0.4, frameH, frameTh),
+-        new THREE.MeshBasicMaterial({
+-          color: 0xe64a19, transparent: true, opacity: 0.55,
++        new THREE.MeshStandardMaterial({
++          color: 0xe64a19, roughness: 0.7, transparent: true, opacity: 0.55,
+         })
+       );
+       frame.position.set(xo + tl * 0.5, veh_h + frameH / 2, zPos);
++      frame.castShadow = true;
+       g.add(frame);
+     }
+   }
+-  }  // end if(!hideTruck)
+ 
+   // ⑥ 화물 — placements
+   for (const p of trip.placements || []) {
+@@ -850,12 +862,6 @@
+ // 뒤(=다음 트럭이 있을 자리). 클릭 시 그 회차 정보로 동적 갱신.
+ // ─────────────────────────────────────────────────────────────
+ function renderGroupLabelHtml(tripsInGroup, focusedTrip) {
+-  // [물량탭] trip 에 quantity_label_html 이 있으면 그것을 우선 사용(타입명+단면목록).
+-  //   focusedTrip 이든 그룹 디폴트든 동일 라벨(타입당 1개).
+-  const qtyTrip = focusedTrip || (tripsInGroup && tripsInGroup[0]);
+-  if (qtyTrip && qtyTrip.quantity_label_html) {
+-    return qtyTrip.quantity_label_html;
+-  }
+   // focusedTrip 가 주어지면 그 회차 정보, 아니면 그룹 요약
+   if (focusedTrip) {
+     const t = focusedTrip;
+@@ -928,18 +934,10 @@
+     //  - Z = *그룹 깊이 끝 + 한 트럭 폭만큼 더 뒤* (다음 트럭이 있을 자리)
+     const minZ = Math.min(...tripsInGroup.map(t => t.y_offset_m || 0));
+     const labelX = first.x_offset_m + first.truck_length_m / 2;
+-    let labelY, labelZ;
+-    if (PACK_DATA && PACK_DATA.hide_truck) {
+-      // [물량탭] 트럭 없음 — 화물 묶음(-Z 범위 0~-tw)의 *맨 뒤 너머*에 라벨을 둬
+-      //   컴포넌트에 가려지지 않게 한다(운송의 '뒤로 밀기'와 동일 컨셉).
+-      labelY = first.truck_height_m / 2;       // 화물 높이 중앙
+-      labelZ = -first.truck_width_m - 1.5;     // 화물 폭 맨 뒤 + 1.5m 여유
+-    } else {
+-      labelY = first.vehicle_height_offset_m +
+-               (first.truck_height_m - first.vehicle_height_offset_m) / 2;
+-      // 사용자 결정: 그룹 끝 + *두 칸* 뒤 (다음 다음 트럭 자리 정도)
+-      labelZ = minZ - 2 * (first.truck_width_m + 1.5);
+-    }
++    const labelY = first.vehicle_height_offset_m +
++                   (first.truck_height_m - first.vehicle_height_offset_m) / 2;
++    // 사용자 결정: 그룹 끝 + *두 칸* 뒤 (다음 다음 트럭 자리 정도)
++    const labelZ = minZ - 2 * (first.truck_width_m + 1.5);
+     lblObj.position.set(labelX, labelY, labelZ);
+     scene.add(lblObj);
+     groupLabelDivs[gid] = lblDiv;
+@@ -1007,15 +1005,18 @@
+   const flangeVec = new THREE.Vector3().crossVectors(webVec, lenVec).normalize();
+   const basis = new THREE.Matrix4().makeBasis(flangeVec, webVec, lenVec);
+ 
+-  // [개편] 평면 단색 — 조명·광택 무시(배치설계 vispy shading=None 과 동일 느낌).
+-  const mat = new THREE.MeshBasicMaterial({
++  const mat = new THREE.MeshStandardMaterial({
+     color: color,
++    roughness: opts.roughness !== undefined ? opts.roughness : 0.7,
++    metalness: opts.metalness !== undefined ? opts.metalness : 0.0,
+     transparent: true,
+     opacity: opts.opacity !== undefined ? opts.opacity : 0.95,
+   });
+   const mesh = new THREE.Mesh(geom, mat);
+   mesh.setRotationFromMatrix(basis);
+   mesh.position.set(cx, cy, cz);
++  mesh.castShadow = true;
++  mesh.receiveShadow = true;
+   mesh.userData.baseOpacity = mat.opacity;
+   mesh.userData.role = opts.role || 'cargo';
+   if (opts.label) mesh.userData.label = opts.label;
+@@ -1054,14 +1055,17 @@
+   const cx = trip.x_offset_m + x_m + L_m / 2;
+   const cy = z_m + H_m / 2;
+   const cz = y_m + W_m / 2;
+-  // [개편] 평면 단색 — 조명·광택 무시(배치설계 vispy shading=None 과 동일 느낌).
+-  const mat = new THREE.MeshBasicMaterial({
++  const mat = new THREE.MeshStandardMaterial({
+     color: color,
++    roughness: opts.roughness !== undefined ? opts.roughness : 0.7,
++    metalness: opts.metalness !== undefined ? opts.metalness : 0.0,
+     transparent: true,
+     opacity: opts.opacity !== undefined ? opts.opacity : 0.95,
+   });
+   const mesh = new THREE.Mesh(new THREE.BoxGeometry(L_m, H_m, W_m), mat);
+   mesh.position.set(cx, cy, cz);
++  mesh.castShadow = true;
++  mesh.receiveShadow = true;
+   mesh.userData.baseOpacity = mat.opacity;
+   mesh.userData.role = opts.role || 'cargo';
+   if (opts.label) mesh.userData.label = opts.label;
+@@ -1085,10 +1089,9 @@
+   const sk = source || 'own';
+   const k = part.kind;
+   const sub = part.subkind || '';
+-  // [개편] 흰 배경 — 금속 반사 낮추고 불투명 처리해 부재 색을 선명하게.
+-  let opts = { roughness: 0.6, metalness: 0.15, opacity: 1.0 };
++  let color, label, opts = { roughness: 0.5, metalness: 0.6, opacity: 0.95 };
+ 
+-  // 라벨용 부재 종류 한글
++  // 라벨 — 부재 종류 + subkind
+   let kindKo = k;
+   if (k === 'column') kindKo = '기둥';
+   else if (k === 'beam') {
+@@ -1100,32 +1103,37 @@
+   } else if (k === 'slab') kindKo = '슬래브';
+   else if (k === 'wall_fill') kindKo = '채움';
+ 
+-  // [개편] 색은 *부재 종류* 로만 결정 — 배치설계와 일치. 캔틸레버·중간 부재도
+-  //   같은 종류 색으로 통일(사용자 결정). 상부보=천장보(하늘), 그 외 보=바닥보(파랑).
+-  let color;
+-  if (k === 'column') {
+-    color = COLORS.column;
+-  } else if (k === 'beam') {
+-    color = (sub === 'top') ? COLORS.ceil_beam : COLORS.floor_beam;
+-  } else if (k === 'slab') {
+-    color = COLORS.slab; opts.roughness = 0.85;
+-  } else if (k === 'wall_fill') {
+-    color = (parent.kind === 'wall') ? COLORS.wall : COLORS.wall_nl;
+-    opts.roughness = 0.8;
+-  } else if (k === 'core_wall') {
+-    color = COLORS.core;
++  // 색상 — source_kind 별
++  if (sk === 'cantilever_beam') {
++    color = COLORS.cant_beam;
++    label = `${parent.name} 캔틸보`;
++  } else if (sk === 'cantilever_slab') {
++    color = (k === 'slab') ? COLORS.cant_slab : COLORS.cant_beam;
++    label = `${parent.name} 캔틸${kindKo}`;
++    if (k === 'slab') { opts.roughness = 0.85; opts.opacity = 0.92; }
++  } else if (sk === 'midbeam') {
++    color = COLORS.midbeam;
++    label = `${parent.name} 중간보`;
++  } else if (sk === 'midcolumn') {
++    color = COLORS.midcolumn;
++    label = `${parent.name} 중간기둥`;
+   } else {
+-    color = 0x999999;
++    // own — 부모 자체 부재
++    if (k === 'column' || k === 'beam') {
++      color = COLORS.steel;
++    } else if (k === 'slab') {
++      color = (parent.kind === 'module') ? COLORS.concrete : COLORS.floor;
++      opts.roughness = 0.85; opts.opacity = 0.9;
++    } else if (k === 'wall_fill') {
++      color = (parent.kind === 'wall') ? COLORS.wall : 0xa0a0a0;
++      opts.roughness = 0.8; opts.opacity = 0.82;
++    } else if (k === 'core_wall') {
++      color = 0x888888; opts.roughness = 0.8; opts.opacity = 0.92;
++    } else {
++      color = 0x999999;
++    }
++    label = `${parent.name} ${kindKo}`;
+   }
+-
+-  // 라벨 — 색은 통일하되 캔틸/중간 식별 텍스트는 유지.
+-  let label;
+-  if (sk === 'cantilever_beam') label = `${parent.name} 캔틸보`;
+-  else if (sk === 'cantilever_slab') label = `${parent.name} 캔틸${kindKo}`;
+-  else if (sk === 'midbeam') label = `${parent.name} 중간보`;
+-  else if (sk === 'midcolumn') label = `${parent.name} 중간기둥`;
+-  else label = `${parent.name} ${kindKo}`;
+-
+   opts.label = label;
+   return { color, opts };
+ }
+@@ -1177,11 +1185,13 @@
+     const wsz = ws.y_m + ws.dy_m / 2;  // Z = 폭
+     const wsMesh = new THREE.Mesh(
+       new THREE.BoxGeometry(ws.dx_m, ws.dz_m, ws.dy_m),
+-      new THREE.MeshBasicMaterial({
+-        color: COLORS.wall_seg,
++      new THREE.MeshStandardMaterial({
++        color: COLORS.wall_seg, roughness: 0.85,
+       })
+     );
+     wsMesh.position.set(wsx, wsy, wsz);
++    wsMesh.castShadow = true;
++    wsMesh.receiveShadow = true;
+     wsMesh.userData.label = `wall side=${ws.side}`;
+     wsMesh.userData.baseOpacity = 0.92;
+     wsMesh.userData.role = 'cargo';
+@@ -1201,8 +1211,31 @@
+ // 모든 회차 동시 표시 + 강조 변경만으로 어디가 선택인지 명확. 카메라 안 움직임.
+ // ─────────────────────────────────────────────────────────────
+ // 사용자 결정 — 강조 시 나머지 회차가 너무 어두웠음. 0.18→0.55, 0.30→0.65 로 완화.
+-// [개편] 강조 시 다른 차량을 반투명(dim) 처리하던 _setGroupDimmed / DIMMED_OPACITY
+-//   기능 제거 — 강조는 빨간 outline 으로만, 모든 차량은 항상 선명하게 유지한다.
++const DIMMED_OPACITY_CARGO = 0.55;
++const DIMMED_OPACITY_TRUCK = 0.65;
++
++function _setGroupDimmed(g, dimmed) {
++  // group 내 모든 Mesh + LineSegments 의 opacity 조정 + 화물 라벨 dim.
++  // (회차 라벨은 그룹 단위로 별도 관리 — groupLabelDivs)
++  g.traverse(obj => {
++    if (obj.isMesh && obj.material) {
++      const base = obj.userData.baseOpacity;
++      if (base === undefined) return;
++      obj.material.transparent = true;
++      obj.material.opacity = dimmed ? (
++        obj.userData.role === 'cargo' ? DIMMED_OPACITY_CARGO : DIMMED_OPACITY_TRUCK
++      ) : base;
++    } else if (obj.isLineSegments && obj.material) {
++      obj.material.transparent = true;
++      obj.material.opacity = dimmed ? 0.5 : 1.0;
++    }
++  });
++  // 화물 라벨
++  for (const cl of g.userData.cargoLabels || []) {
++    if (dimmed) cl.classList.add('dimmed');
++    else cl.classList.remove('dimmed');
++  }
++}
+ 
+ function highlightTrip(tripNo) {
+   // 기존 outline 제거
+@@ -1213,7 +1246,8 @@
+   highlightOutlines = {};
+ 
+   if (tripNo === null || tripNo === undefined) {
+-    // 강조 해제 — 그룹 라벨만 디폴트 복원 (dim 기능 제거됨).
++    // 강조 해제 — 모든 trips 정상 + 모든 그룹 라벨 디폴트 복원
++    for (const tno in truckGroups) _setGroupDimmed(truckGroups[tno], false);
+     for (const gidStr in groupLabelDivs) {
+       const lbl = groupLabelDivs[gidStr];
+       lbl.classList.remove('highlight');
+@@ -1229,8 +1263,11 @@
+   if (!clickedTrip) return;
+   const clickedGid = clickedTrip.group_id;
+ 
+-  // ① [개편] 다른 차량 반투명(dim) 제거 — 강조는 아래 ③ 빨간 outline 으로만 표시.
+-  //   mesh/라벨 opacity 를 건드리지 않아 강조해도 모든 차량이 항상 선명하게 보인다.
++  // ① 트럭 강조 — 클릭한 trip 의 트럭 그룹만 정상 opacity, 그 외는 반투명
++  for (const tno in truckGroups) {
++    const isSelected = (Number(tno) === tripNo);
++    _setGroupDimmed(truckGroups[tno], !isSelected);
++  }
+ 
+   // ② 라벨 — *클릭한 trip 의 그룹 라벨만* highlight + 그 회차 정보로 갱신
+   //   다른 그룹의 라벨은 dimmed
+@@ -1246,7 +1283,7 @@
+       );
+     } else {
+       lbl.classList.remove('highlight');
+-      lbl.classList.remove('dimmed');  // [개편] 다른 그룹 라벨도 흐리지 않음
++      lbl.classList.add('dimmed');
+       // 다른 그룹은 디폴트 (그룹 요약) 로 복원
+       const tripsInGroup = groupTripsCache[gidStr] || [];
+       lbl.innerHTML = renderGroupLabelHtml(tripsInGroup, null);
+@@ -1269,9 +1306,7 @@
+     new THREE.LineBasicMaterial({ color: 0xf85149, transparent: false })
+   );
+   // truckGroup 의 position.z (y_offset_m) 가 자식에 적용되므로 outline 도 그룹 안에 넣어야
+-  // [물량탭] hide_truck 이면 화물이 -Z(뒤) 범위(-tw~0)에 배치되므로 outline 도 -tw/2 로.
+-  const hlZ = (PACK_DATA && PACK_DATA.hide_truck) ? (-tw / 2) : (tw / 2);
+-  hlLine.position.set(xo + tl / 2, veh_h + inner_h / 2, hlZ);
++  hlLine.position.set(xo + tl / 2, veh_h + inner_h / 2, tw / 2);
+   g.add(hlLine);
+   highlightOutlines[tripNo] = hlLine;
+ }
+@@ -1400,17 +1435,6 @@
+ """
+ 
+ 
+-def _render_three_html(data: Dict) -> str:
+-    """scene JSON dict → 템플릿 임베드 + three.js 라이브러리 인라인. 운송/물량 공유.
+-
+-    [함정] 운송·물량 두 빌더가 공유하므로, 임베드 토큰/인라인 방식 변경은
+-    여기 한 곳만 고치면 양쪽에 반영된다.
+-    """
+-    pack_json = json.dumps(data, ensure_ascii=False)
+-    from modular_3d.render.three_assets import inline_three_libs
+-    return inline_three_libs(_HTML_TEMPLATE.replace("__PACK_DATA__", pack_json))
+-
+-
+ def build_loaded_3d_three_html(
+     trips: List[Trip],
+     sp: Optional[SpacingParams] = None,
+@@ -1419,155 +1443,12 @@
+ ) -> str:
+     """Three.js HTML 문서 생성 — PackResult.trips 데이터를 인라인 임베드."""
+     data = serialize_pack_for_three(trips, sp, highlight_trip_no, trip_costs)
+-    return _render_three_html(data)
+-
+-
+-# ════════════════════════════════════════════════════════════════════
+-# 물량탭 전용 — 트럭 없이 타입별 인스턴스 평면 배치
+-# ════════════════════════════════════════════════════════════════════
+-# [설계 — 물량탭 개편 Phase 2]
+-# - 운송 serialize_pack_for_three 와 *분리*(운송 회귀 차단). 부재 렌더(_serialize_placement)
+-#   와 HTML 템플릿은 공유하되, hide_truck 플래그로 트럭/적재공간 렌더만 끈다.
+-# - 타입(단면설계 타입) 1개 = 가짜 Trip 1개(trip_no=타입 인덱스). 그 타입의 모든
+-#   인스턴스 = 이 Trip 의 placements N개. → 기존 highlightTrip(trip_no) 이 "타입 강조".
+-# - 같은 타입 인스턴스는 -Y(폭 방향) 1.5m 간격 누적. 다른 타입은 +X 로 외곽 끝과 끝 3m.
+-# - vehicle_height_offset=0 인 가짜 Truck → 화물이 바닥(z=0)에 놓임.
+-QTY_INTRA_TYPE_GAP_M: float = 1.5   # 같은 타입 인스턴스 사이 (-Y)
+-QTY_INTER_TYPE_GAP_M: float = 3.0   # 다른 타입 사이 (+X, 외곽 끝과 끝)
+-
+-
+-def _qty_fake_truck(items_in_type: List, gap_y_mm: float) -> Truck:
+-    """타입 1개를 담는 가짜 Truck — 트럭은 렌더 안 하지만 좌표 기준원점에 필요.
+-
+-    max_* 는 그 타입 인스턴스를 모두 담을 만큼 크게(렌더는 hide_truck 으로 끔).
+-    vehicle_height_offset=0 → 화물 바닥(z=0) 배치.
+-    """
+-    max_len = 1.0
+-    width_sum = 0.0
+-    max_h = 1.0
+-    for it in items_in_type:
+-        L = float(getattr(it, "length", 0.0) or 0.0)
+-        W = float(getattr(it, "width", 0.0) or 0.0)
+-        h = float(getattr(it, "height", getattr(it, "thickness", 0.0)) or 0.0)
+-        max_len = max(max_len, L)
+-        width_sum += W + gap_y_mm
+-        max_h = max(max_h, h)
+-    return Truck(
+-        name="(물량)", truck_type="lowbed",
+-        max_length=max(max_len, 1.0),
+-        max_width=max(width_sum, 1.0),
+-        max_height=max(max_h, 1.0),
+-        max_weight=1e12,
+-        vehicle_height_offset=0.0,
+-    )
+-
+-
+-def _qty_label_html(type_label: str, section_lines: List[Tuple[str, str]]) -> str:
+-    """물량탭 3D 라벨 — 타입명 + 부재별 단면 목록(응력비 제외)."""
+-    lines_html = ""
+-    for role_ko, sec_name in section_lines:
+-        lines_html += (
+-            f'<div style="color:#8b949e;font-size:11px;">'
+-            f'{role_ko} {sec_name}</div>'
+-        )
+-    return (
+-        f'<div style="font-weight:600;font-size:13px;">{type_label}</div>'
+-        f'{lines_html}'
+-    )
+-
+-
+-def serialize_quantity_for_three(
+-    items_by_type: List[dict],
+-) -> Dict:
+-    """타입별 어댑터 item 리스트 → 물량탭 Three.js scene JSON.
+-
+-    items_by_type: [{ 'label': str, 'items': [TModule/TPanel,...],
+-                      'section_lines': [(role_ko, sec_name),...] }, ...]
+-      - 타입 순서대로 +X 분리, 같은 타입 items 는 -Y 누적.
+-
+-    반환 dict 는 serialize_pack_for_three 와 같은 스키마 + hide_truck=True +
+-    각 trip 에 quantity_label_html. trip_no = 타입 인덱스(0-based+1).
+-    """
+-    data = _new_scene_data(
+-        QTY_INTER_TYPE_GAP_M, QTY_INTRA_TYPE_GAP_M, len(items_by_type),
+-        highlight_trip_no=None, hide_truck=True,
+-    )
+-
+-    gap_y_mm = QTY_INTRA_TYPE_GAP_M * 1000.0
+-    gap_x_mm = QTY_INTER_TYPE_GAP_M * 1000.0
+-    next_x_mm = 0.0
+-
+-    for ti_idx, type_entry in enumerate(items_by_type):
+-        items = type_entry.get("items", []) or []
+-        if not items:
+-            continue
+-        label = type_entry.get("label", "?")
+-        section_lines = type_entry.get("section_lines", []) or []
+-
+-        truck = _qty_fake_truck(items, gap_y_mm)
+-        # 이 타입의 외곽 길이(가장 긴 item.length) — 다음 타입 +X 간격에 사용.
+-        type_len_mm = max(
+-            (float(getattr(it, "length", 0.0) or 0.0) for it in items),
+-            default=0.0,
+-        )
+-
+-        # placements — 같은 타입 인스턴스를 -Y(폭 방향 뒤) 로 누적.
+-        # [방향 — 2026-06-01] 화물은 -Y(뒤)에 배치(원래 의도). 강조 outline 도 같은
+-        #   -Y 범위에 맞춰 그린다(highlightTrip 에서 hide_truck 시 화물 쪽으로 보정).
+-        placements_json: List[Dict] = []
+-        y_cursor_mm = 0.0
+-        for it in items:
+-            W = float(getattr(it, "width", 0.0) or 0.0)
+-            center_y_mm = -y_cursor_mm - W / 2.0   # -Y 누적(뒤로)
+-            # _serialize_placement 가 center_y = (max_width/2 + truck_xyz[1]) 로 계산 →
+-            # truck_xyz[1] = center_y_mm - max_width/2.
+-            ty = center_y_mm - truck.max_width / 2.0
+-            p = Placement(
+-                item=it, slot=PlacementSlot.FLOOR, posture=Posture.LYING,
+-                truck_xyz=(0.0, ty, 0.0),
+-            )
+-            placements_json.append(_serialize_placement(p, truck))
+-            y_cursor_mm += W + gap_y_mm
+-
+-        trip_data = {
+-            "trip_no": ti_idx + 1,
+-            "truck_name": label,
+-            "truck_type": "lowbed",
+-            "x_offset_m": next_x_mm / 1000.0,
+-            "y_offset_m": 0.0,
+-            "group_id": ti_idx,
+-            "group_size_in_group": 1,
+-            "group_total": 1,
+-            "truck_length_m": truck.max_length / 1000.0,
+-            "truck_width_m": truck.max_width / 1000.0,
+-            "truck_height_m": truck.max_height / 1000.0,
+-            "vehicle_height_offset_m": 0.0,
+-            "cargo_weight_kg": sum(
+-                float(getattr(it, "weight", 0.0) or 0.0) for it in items),
+-            "utilization": 0.0,
+-            "cost_krw": None,
+-            "placements": placements_json,
+-            "quantity_label_html": _qty_label_html(label, section_lines),
+-            "instance_count": len(items),
+-        }
+-        data["trips"].append(trip_data)
+-        next_x_mm += type_len_mm + gap_x_mm
+-
+-    return data
+-
+-
+-def build_quantity_3d_html(items_by_type: List[dict]) -> str:
+-    """물량탭 Three.js HTML — 트럭 없이 타입별 평면 배치."""
+-    data = serialize_quantity_for_three(items_by_type)
+-    return _render_three_html(data)
++    pack_json = json.dumps(data, ensure_ascii=False)
++    return _HTML_TEMPLATE.replace("__PACK_DATA__", pack_json)
+ 
+ 
+ __all__ = [
+     "INTER_TRUCK_GAP_M",
+     "serialize_pack_for_three",
+     "build_loaded_3d_three_html",
+-    "serialize_quantity_for_three",
+-    "build_quantity_3d_html",
+-    "QTY_INTRA_TYPE_GAP_M",
+-    "QTY_INTER_TYPE_GAP_M",
+ ]
+

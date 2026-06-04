@@ -307,6 +307,35 @@ class F6Mixin:
             return None
         return {p: dr for p in ALL_POLICIES}, result.am
 
+    def refresh_quantity_from_section_design(self):
+        """[2026-06-05 동기화 버그수정] 단면설계 '적용' 직후 물량 리포트 캐시를
+        즉시 재생성한다.
+
+        [배경] 기존엔 단면설계 적용(_converge_and_color)이 _section_design_result
+        만 갱신하고, 종합·비교·케이스저장이 읽는 캐시 _quantity_reports 는
+        갱신하지 않았다. 물량탭 *화면* 은 매 진입마다 _section_design_result 로
+        라이브 렌더되어 옳았지만, 저장은 별개 캐시(_quantity_reports)를 읽어
+        처음 만들어진 기본값(전부 한 단면)에 머물러 강재가 과대 저장됐다.
+        [함정] 물량탭 재진입은 케이스 콤보가 안 바뀌면 캐시를 다시 만들지
+        않으므로(setCurrentIndex no-op), '적용' 시점에 직접 재생성해야 한다.
+        단일출처(_quantity_from_section_design)로 빌드해 화면=저장을 일치시킨다.
+        """
+        sd = self._quantity_from_section_design()
+        if sd is None:
+            return
+        from modular_3d.analysis.section_design import ALL_POLICIES
+        from modular_3d.analysis.quantity_takeoff import build_all_reports
+        design_results, sam = sd
+        reports = build_all_reports(self._scene, sam, design_results)
+        m2g = {p: design_results[p].member_to_group for p in ALL_POLICIES}
+        if hasattr(self._analysis_panel, 'populate_quantity_full'):
+            self._analysis_panel.populate_quantity_full(reports, m2g)
+        self.set_quantity_reports(reports)
+        self._design_results = design_results
+        if hasattr(self._analysis_panel, 'populate_transport'):
+            policy = getattr(self._analysis_panel, '_current_policy', '3종')
+            self._analysis_panel.populate_transport(design_results, policy)
+
     def _run_quantity_takeoff(self, am, dl_results):
         """초기 진입 — D+L 결과로 단면 산정 + 물량 집계 → 패널·뷰어 주입.
 
