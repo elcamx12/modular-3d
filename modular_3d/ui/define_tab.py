@@ -301,7 +301,7 @@ class DefineTab(QWidget):
         # 정의 탭에서 열어 필요한 모듈만 남기고 다시 정의로 저장하기 위함.
         b_file = QPushButton("건물 파일에서 불러오기")
         b_file.setToolTip(
-            "배치 설계·접합부 설계 탭에서 저장한 건물 파일을 작업공간으로 엽니다. "
+            "평면 설계·접합부 설계 탭에서 저장한 건물 파일을 작업공간으로 엽니다. "
             "필요 없는 부재를 지우고 남긴 한 부재를 정의로 저장할 수 있습니다.")
         b_file.clicked.connect(self._on_lib_load_from_file)
         v.addWidget(b_file)

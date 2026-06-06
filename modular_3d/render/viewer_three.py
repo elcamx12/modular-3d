@@ -253,8 +253,15 @@ class ViewerThree:
             f'window.setSectionZ({float(z)}, '
             f'{"true" if enabled else "false"});')
 
-    # [2026-06-03] set_section_y / capture_section_front 제거 — 배치설계 탭의
-    # Y축 단면 슬라이더(사용자 요구로 삭제)에서만 쓰이던 메서드. 거실 단면과 무관.
+    def set_section_y(self, y: float, enabled: bool) -> None:
+        """[2026-06-05] y축 단면 절단 — enabled 면 y(폭) 작은 쪽을 잘라 평면을 본다.
+
+        z축 단면(set_section_z)과 동일 방식. JS window.setSectionY 호출.
+        (capture_section_front 은 미사용으로 복원하지 않음.)
+        """
+        self._run_js(
+            f'window.setSectionY({float(y)}, '
+            f'{"true" if enabled else "false"});')
 
     def is_ops_view_active(self) -> bool:
         return False

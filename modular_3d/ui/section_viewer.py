@@ -743,7 +743,7 @@ class SectionViewerDialog(QDialog):
         if room is None:
             self._info.setText(
                 "거실(room_type='living')로 지정된 실이 없습니다. "
-                "배치설계 탭에서 실 지정 후 '거실'을 선택하세요."
+                "평면설계 탭에서 실 지정 후 '거실'을 선택하세요."
             )
             self._draw_empty("거실 미지정")
             return

@@ -432,7 +432,7 @@ class EvaluationPanel(QWidget):
         layout_inner.setContentsMargins(8, 8, 8, 8)
         self._layout_img = _AutoScalePixmapLabel()
         self._layout_img.setStyleSheet("background: #fff;")
-        self._layout_img.setText("배치설계 탭에서 모듈을 배치하세요.")
+        self._layout_img.setText("평면설계 탭에서 모듈을 배치하세요.")
         layout_inner.addWidget(self._layout_img)
         mid_col.addWidget(self._build_titled_section("2D 평면도", self._layout_card),
                           stretch=5)
@@ -577,7 +577,7 @@ class EvaluationPanel(QWidget):
     # 자기 크기 변화에 맞춰 KeepAspectRatio 로 자동 리스케일.
     def set_layout_pixmap(self, pixmap: Optional[QPixmap]) -> None:
         if pixmap is None or pixmap.isNull():
-            self._layout_img.setText("배치설계 탭에서 모듈을 배치하세요.")
+            self._layout_img.setText("평면설계 탭에서 모듈을 배치하세요.")
             self._layout_img.setRawPixmap(None)
             return
         self._layout_img.setRawPixmap(pixmap)

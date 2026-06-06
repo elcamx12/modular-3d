@@ -72,6 +72,11 @@ _EMPTY_COLOR = "#a0a8b5"
 
 _CASE_COLORS = ["#7BB3F0", "#3A78D6", "#BBD7F8"]  # A/B/C 막대 색
 
+# [2026-06-06] 물량·비용·공기 값 순위 색 — 흰 배경에서 잘 보이는 톤.
+_RANK_MAX = "#1E8E3E"  # 초록 — 가장 큰 값
+_RANK_MID = "#E8820C"  # 주황 — 중간 값
+_RANK_MIN = "#D32F2F"  # 빨강 — 가장 작은 값
+
 _SLOT_COUNT = 3
 
 
@@ -124,7 +129,7 @@ class _CaseBox(QFrame):
         self.setStyleSheet("QFrame#caseBox { background: transparent;"
                             " border: none; }")
         self.setMinimumWidth(200)
-        self.setFixedHeight(480)
+        self.setFixedHeight(640)  # [2026-06-05] A/B/C 이미지 카드를 아래로 더 키움(520→640)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         self._root = QVBoxLayout(self)
@@ -346,6 +351,42 @@ class _CaseBox(QFrame):
             self.load_file(path)
 
 
+# ── 값 라벨 스타일 / 순위 색 ────────────────────────────────
+def _val_style(color: str, total: bool) -> str:
+    """비교 표의 A/B/C 값 라벨 공통 스타일(색만 바뀜)."""
+    family = F_HEAD if total else F_BODY
+    weight = "800" if total else "500"
+    return (
+        f"font-family: '{family}', 'Malgun Gothic', sans-serif;"
+        f" color: {color}; font-size: 24px; font-weight: {weight};"
+        " background: transparent; padding: 6px 16px;"
+        f" border-bottom: 1px dashed {_ROW_BORDER};"
+    )
+
+
+def _rank_colors(nums: List[Optional[float]]) -> List[Optional[str]]:
+    """A/B/C 숫자값을 크기 순위로 색 매핑.
+
+    최대=초록·최소=빨강·중간=주황. 같은 값은 같은 색(최대로 같으면 둘 다 초록 등).
+    비교 가능한 값이 2개 미만이면 색칠 안 함(None).
+    """
+    present = [x for x in nums if isinstance(x, (int, float))]
+    if len(present) < 2:
+        return [None, None, None]
+    mx, mn = max(present), min(present)
+    out: List[Optional[str]] = []
+    for x in nums:
+        if not isinstance(x, (int, float)):
+            out.append(None)
+        elif x == mx:
+            out.append(_RANK_MAX)
+        elif x == mn:
+            out.append(_RANK_MIN)
+        else:
+            out.append(_RANK_MID)
+    return out
+
+
 # ── 비교 표 한 행 ──────────────────────────────────────────
 class _RowBuilder:
     """카테고리 / 항목 / A,B,C 값을 한 행씩 표에 추가."""
@@ -357,8 +398,8 @@ class _RowBuilder:
         lbl = QLabel(name)
         lbl.setStyleSheet(
             f"font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
-            f" color: {_BODY_FG}; font-size: 22px; font-weight: 800;"
-            " background: transparent; padding: 10px 18px 10px 0;"
+            f" color: {_BODY_FG}; font-size: 28px; font-weight: 800;"  # [2026-06-05] 글자 키움
+            " background: transparent; padding: 5px 18px 5px 0;"  # [2026-06-05] 간격 축소
         )
         lbl.setAlignment(Qt.AlignRight | Qt.AlignTop)
         self.grid.addWidget(lbl, self.row, 0, item_count, 1)
@@ -368,22 +409,14 @@ class _RowBuilder:
         item = QLabel(item_label)
         item.setStyleSheet(
             f"font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
-            f" color: {_BODY_FG}; font-size: 17px; background: transparent;"
-            f" padding: 11px 16px 11px 0; border-bottom: 1px dashed {_ROW_BORDER};"
+            f" color: {_BODY_FG}; font-size: 24px; background: transparent;"  # [2026-06-05] 글자 키움
+            f" padding: 6px 16px 6px 0; border-bottom: 1px dashed {_ROW_BORDER};"  # [2026-06-05] 간격 축소
         )
         item.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.grid.addWidget(item, self.row, 1)
         for col, val in enumerate((a_val, b_val, c_val), start=2):
             v = QLabel(val)
-            color = _TOTAL_FG if total else _BODY_FG
-            family = F_HEAD if total else F_BODY
-            weight = "800" if total else "500"
-            v.setStyleSheet(
-                f"font-family: '{family}', 'Malgun Gothic', sans-serif;"
-                f" color: {color}; font-size: 17px; font-weight: {weight};"
-                " background: transparent; padding: 11px 16px;"
-                f" border-bottom: 1px dashed {_ROW_BORDER};"
-            )
+            v.setStyleSheet(_val_style(_TOTAL_FG if total else _BODY_FG, total))
             v.setAlignment(Qt.AlignCenter | Qt.AlignVCenter)
             self.grid.addWidget(v, self.row, col)
         self.row += 1
@@ -459,76 +492,54 @@ class _SideBarChart(QFrame):
                 if v_max <= 0:
                     v_max = 1.0
 
-            row_h = H / 3.0
-            # [폰트 키움] 막대 라벨/값/% 폰트 +2pt.
-            f_lbl = QFont(F_HEAD); f_lbl.setBold(True); f_lbl.setPointSize(13)
-            f_val = QFont(F_BODY); f_val.setPointSize(11)
-            f_pct = QFont(F_HEAD); f_pct.setBold(True); f_pct.setPointSize(14)
-
-            # [2026-06-01 v3] 폭 더 키움:
-            # - pct_w 78 → 96 → "100%" 잘림 없음
-            # - label_w 36 → 44 (A/B/C 라벨)
-            # - bar_pad 14 → 22 → 라벨/트랙 시각적 분리
-            label_w = 44.0
-            pct_w   = 96.0
-            bar_pad = 22.0
-            bar_x0  = label_w + bar_pad
-            bar_x1  = W - pct_w - bar_pad
-            bar_w   = max(40.0, bar_x1 - bar_x0)
+            # [2026-06-05] A/B/C 를 세로 막대로 '가로로 나란히' 배치(컬럼 차트).
+            col_w = W / 3.0
+            f_lbl = QFont(F_HEAD); f_lbl.setBold(True); f_lbl.setPointSize(15)
+            f_val = QFont(F_BODY); f_val.setPointSize(12)
+            label_h = 30.0      # 하단 A/B/C 라벨 영역
+            val_h = 24.0        # 막대 위 값 텍스트 높이
+            top = val_h + 8.0
+            base_y = H - label_h               # 막대가 서는 바닥선
+            bar_area_h = max(20.0, base_y - top)
+            bar_w = min(col_w * 0.46, 84.0)
 
             best_idx = max(range(3),
                            key=lambda k: (self._values[k] or 0))
 
             for i, (case, val) in enumerate(zip(("A", "B", "C"), self._values)):
-                y_center = row_h * (i + 0.5)
-                if isinstance(val, (int, float)) and val > 0:
+                cx = col_w * (i + 0.5)
+                bar_x = cx - bar_w / 2.0
+                has = isinstance(val, (int, float)) and val > 0
+                # 트랙(연한 전체 높이)
+                p.setPen(Qt.NoPen)
+                p.setBrush(QBrush(QColor("#EEF2F7")))
+                p.drawRoundedRect(QRectF(bar_x, top, bar_w, bar_area_h), 7.0, 7.0)
+                if has:
+                    ratio = min(1.0, float(val) / float(v_max))
+                    fill_h = max(2.0, bar_area_h * ratio)
+                    fill_y = base_y - fill_h
+                    p.setBrush(QBrush(QColor(_CASE_COLORS[i])))
+                    p.drawRoundedRect(QRectF(bar_x, fill_y, bar_w, fill_h), 7.0, 7.0)
+                    # 값 텍스트 — 막대 바로 위(최댓값 케이스는 진하게)
                     try:
-                        val_text = self._fmt(val)
+                        val_text = self._fmt(float(val))
                     except Exception:
                         val_text = f"{val}"
-                else:
-                    val_text = ""
-                # A/B/C 좌측 라벨 — 막대 쪽으로 살짝 우측 이동 (그래프/막대 위치 유지)
-                label_shift = 16.0
+                    p.setFont(f_val)
+                    color = _CASE_COLORS[i] if i == best_idx else _SUB_FG
+                    p.setPen(QPen(QColor(color)))
+                    label_y = max(0.0, fill_y - val_h - 2)
+                    p.drawText(
+                        QRectF(cx - col_w/2.0, label_y, col_w, val_h),
+                        int(Qt.AlignHCenter | Qt.AlignBottom), val_text,
+                    )
+                # 하단 A/B/C 라벨
                 p.setFont(f_lbl)
                 p.setPen(QPen(QColor(_BODY_FG)))
                 p.drawText(
-                    QRectF(label_shift, float(y_center - row_h/2), label_w, row_h),
-                    int(Qt.AlignLeft | Qt.AlignVCenter), case,
+                    QRectF(cx - col_w/2.0, base_y + 2, col_w, label_h),
+                    int(Qt.AlignHCenter | Qt.AlignVCenter), case,
                 )
-                # 막대 트랙 + 채움
-                track_h = 10.0
-                track_y = y_center - track_h/2 + 10
-                p.setPen(Qt.NoPen)
-                p.setBrush(QBrush(QColor("#EEF2F7")))
-                p.drawRoundedRect(QRectF(bar_x0, track_y, bar_w, track_h), 5.0, 5.0)
-                if isinstance(val, (int, float)) and val > 0:
-                    ratio = min(1.0, float(val) / float(v_max))
-                    fill_w = bar_w * ratio
-                    p.setBrush(QBrush(QColor(_CASE_COLORS[i])))
-                    p.drawRoundedRect(QRectF(bar_x0, track_y, fill_w, track_h), 5.0, 5.0)
-                # 절대값 라벨 (막대 위)
-                if val_text:
-                    p.setFont(f_val)
-                    p.setPen(QPen(QColor(_SUB_FG)))
-                    p.drawText(
-                        QRectF(bar_x0, track_y - 22, bar_w, 18),
-                        int(Qt.AlignLeft | Qt.AlignVCenter), val_text,
-                    )
-                # 우측 % 표시 — absolute_pct 면 값 자체, 아니면 최댓값 대비.
-                if isinstance(val, (int, float)) and val > 0:
-                    if self._absolute_pct:
-                        pct = float(val)        # 값 자체가 이미 0~100 % 단위
-                    else:
-                        pct = (val / v_max) * 100.0
-                    pct_text = f"{pct:.0f}%"
-                    p.setFont(f_pct)
-                    color = _CASE_COLORS[i] if i == best_idx else _SUB_FG
-                    p.setPen(QPen(QColor(color)))
-                    p.drawText(
-                        QRectF(bar_x1 + 4, track_y - 8, pct_w - 4, 24),
-                        int(Qt.AlignRight | Qt.AlignVCenter), pct_text,
-                    )
         finally:
             p.end()
 
@@ -558,6 +569,17 @@ class ComparePanel(QWidget):
         )
         tb_lay.addWidget(title)
         tb_lay.addStretch(1)
+        # [2026-06-05] 비교 그래프를 버튼 팝업으로 — 누르면 차트 3개가 크게 가로로.
+        self._btn_graphs = QPushButton("비교그래프")
+        self._btn_graphs.setCursor(Qt.PointingHandCursor)
+        self._btn_graphs.setStyleSheet(
+            "QPushButton { padding: 6px 12px; border: 1px solid #1F3864;"
+            " border-radius: 6px; background: #1F3864; color: #fff;"
+            " font-weight: 700; font-size: 12px; }"
+            "QPushButton:hover { background: #2E4F8F; }"
+        )
+        self._btn_graphs.clicked.connect(self._show_graph_dialog)
+        tb_lay.addWidget(self._btn_graphs)
         self._btn_clear_all = QPushButton("전체 비우기")
         self._btn_clear_all.setCursor(Qt.PointingHandCursor)
         self._btn_clear_all.setStyleSheet(
@@ -580,8 +602,10 @@ class ComparePanel(QWidget):
 
         # [비율 재측정] 메인 1160 : 사이드바 410 ≈ 2.83 : 1.
         # stretch 정수로는 17 : 6 ≈ 2.83. 단순화해 11 : 4 (2.75) 사용.
-        body_lay.addWidget(self._build_main_table(), stretch=11)
-        body_lay.addWidget(self._build_sidebar(), stretch=4)
+        # [2026-06-05] 차트 사이드바 제거 → 표가 전체 폭. 차트는 '비교그래프'
+        #   버튼 팝업으로만 표시(가로로 나란히, 크게).
+        body_lay.addWidget(self._build_main_table(), stretch=1)
+        self._build_graph_dialog()   # self._chart_* 생성(팝업 내부, 가로 배열)
 
         # 초기 차트 갱신
         self._refresh_charts()
@@ -675,10 +699,12 @@ class ComparePanel(QWidget):
         self._value_labels: Dict[str, List[QLabel]] = {}
         # 카테고리: (이름, [항목 키 리스트])
         # 항목 키는 _value_labels 의 키.
+        # [2026-06-05] 비교탭 정리(표시만): ① '1층 footprint' 행 제거,
+        #   ② '슬래브 부피' 행 제거, ③ 비용은 '총비용' 한 줄로 축약(자재/운송/노무/경비
+        #   개별 행 숨김). 값 추출(updates)·계산은 그대로 두고 표시 행만 줄임.
         sections = [
             ("면적", [
                 ("연면적", "area_total"),
-                ("1층 footprint", "area_footprint"),
                 ("유효면적/전체면적", "eff_ratio"),
             ]),
             ("부재 종류 수", [
@@ -687,18 +713,9 @@ class ComparePanel(QWidget):
             ]),
             ("물량", [
                 ("강재 총중량", "steel_ton"),
-                ("슬래브 부피", "slab_m3"),
             ]),
             ("비용", [
-                ("자재", "cost_material"),
-                ("운송", "cost_transport"),
-                ("노무", "cost_labor"),
-                ("경비", "cost_equip"),
-                # [2026-06-05] 종합탭과 동일하게 간접비·이윤·부가세 행을 둔다.
-                #   이게 빠지면 자재+운송+노무+경비(직접비)와 합계(할증 후)가
-                #   안 맞아 표가 모순돼 보인다(누적 약 1.475배 차이).
-                ("간접비·이윤·부가세", "cost_indirect"),
-                ("합계", "cost_total"),
+                ("총비용", "cost_total"),
             ]),
             ("공기", [
                 ("총 공기", "schedule_days"),
@@ -793,26 +810,71 @@ class ComparePanel(QWidget):
             for lbl, s in zip(lbls, value_strs):
                 lbl.setText(s)
 
+        # [2026-06-06] 물량·비용·공기 — A/B/C 값 크기 순위로 색칠.
+        #   최대=초록·중간=주황·최소=빨강, 같은 값은 같은 색(비교 가능 값 2개 미만이면 기본색).
+        def _nums(extractor):
+            out: List[Optional[float]] = []
+            for ev in evs:
+                try:
+                    out.append(extractor(ev) if ev else None)
+                except Exception:
+                    out.append(None)
+            return out
+        rank_targets = [
+            ("steel_ton",     _nums(steel_t),            False),  # 물량(강재 총중량)
+            ("cost_total",    _nums(cost('total_krw')),  True),   # 비용(총비용)
+            ("schedule_days", _nums(sched_days),         False),  # 공기(총 공기)
+        ]
+        for key, nums, is_total in rank_targets:
+            colors = _rank_colors(nums)
+            lbls = self._value_labels.get(key, [])
+            default = _TOTAL_FG if is_total else _BODY_FG
+            for lbl, c in zip(lbls, colors):
+                lbl.setStyleSheet(_val_style(c or default, is_total))
+
     # ── 우측 사이드바 차트 ───────────────────────────────
-    def _build_sidebar(self) -> QWidget:
-        """이미지 측정: 카드 3개가 세로를 균등 분배. addStretch 없음."""
-        host = QWidget()
-        v = QVBoxLayout(host)
-        v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(14)
+    def _build_graph_dialog(self) -> None:
+        """[2026-06-05] 비교 그래프 팝업 — '비교그래프' 버튼으로 띄운다.
+
+        차트 3개(공기/비용/유효면적)를 **가로로 나란히**, 사이드바보다 **크게** 표시.
+        (예전엔 우측 사이드바에 세로로 항상 표시했으나, 버튼 팝업 방식으로 변경.)
+        차트 위젯(_chart_*)은 그대로라 _refresh_charts 는 수정 불필요.
+        """
+        from PyQt5.QtWidgets import QDialog
+        dlg = QDialog(self)
+        dlg.setWindowTitle("비교 그래프")
+        dlg.setStyleSheet(f"QDialog {{ background: {_PAGE_BG}; }}")
+        dlg.resize(1200, 540)
+        lay = QHBoxLayout(dlg)
+        lay.setContentsMargins(22, 22, 22, 22)
+        lay.setSpacing(18)
         self._chart_days = _SideBarChart(
             "공기", lambda v: f"{int(round(v)):,}일")
         self._chart_cost = _SideBarChart(
             "비용", lambda v: f"{int(round(v/1e6)):,}M원" if v >= 1e6 else f"{int(round(v)):,}원")
-        # [2026-06-01] 평면효율은 값 자체가 0~100% 단위 — absolute_pct=True 로
-        # 막대 길이도 100 기준, 우측 % 표시도 케이스의 실제 평면효율 값.
-        self._chart_eff  = _SideBarChart(
+        # [2026-06-01] 평면효율은 값 자체가 0~100% 단위 — absolute_pct=True.
+        self._chart_eff = _SideBarChart(
             "유효면적/전체면적", lambda v: f"{v:.1f}%", absolute_pct=True)
-        # 균등 stretch — 세로 빈 공간 없이 카드 3 개가 사이드바 채움.
-        v.addWidget(self._chart_days, stretch=1)
-        v.addWidget(self._chart_cost, stretch=1)
-        v.addWidget(self._chart_eff,  stretch=1)
-        return host
+        # 가로 균등 stretch — 팝업 폭을 채워 차트가 크게 보인다.
+        lay.addWidget(self._chart_days, stretch=1)
+        lay.addWidget(self._chart_cost, stretch=1)
+        lay.addWidget(self._chart_eff, stretch=1)
+        self._graph_dialog = dlg
+
+    def _show_graph_dialog(self) -> None:
+        """'비교그래프' 버튼 — 최신 값으로 갱신 후 팝업을 화면 가득 크게 띄운다."""
+        self._refresh_charts()
+        dlg = self._graph_dialog
+        scr = self.screen().availableGeometry() if self.screen() else None
+        if scr is not None:
+            w = int(scr.width() * 0.88)
+            h = int(scr.height() * 0.86)
+            dlg.resize(w, h)
+            dlg.move(scr.x() + (scr.width() - w) // 2,
+                     scr.y() + (scr.height() - h) // 2)
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
     # ── 슬롯 → 차트 + 표 갱신 ───────────────────────────
     def _refresh_charts(self) -> None:

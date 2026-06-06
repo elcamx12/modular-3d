@@ -106,8 +106,8 @@ class MainWindow(QMainWindow):
             ensure_fonts_loaded()
         except Exception:
             pass
-        self.setWindowTitle('모듈러 설계 프로그램 [재실행확인-거실단면V32]')
-        self.resize(1600, 950)
+        self.setWindowTitle('모듈러 설계 프로그램')
+        self.resize(1600, 900)
 
         # ── 모델 ─────────────────────────────────────────
         self._scene = Scene()
@@ -296,7 +296,7 @@ class MainWindow(QMainWindow):
         from .compare_panel import ComparePanel
         self._tab_compare = ComparePanel()
         self._tabs.addTab(self._define_tab, '모듈 정의')
-        self._tabs.addTab(self._tab_design, '배치 설계')
+        self._tabs.addTab(self._tab_design, '평면 설계')
         self._tabs.addTab(self._tab_joint_edit, '접합부 설계')
         self._tabs.addTab(self._tab_analysis, '구조해석')
         self._tabs.addTab(self._tab_section, '단면 설계')
@@ -548,10 +548,10 @@ class MainWindow(QMainWindow):
         self._design_left_lay.addWidget(self._design_left_split, stretch=1)
         # [2026-05-30 B3] 3D 뷰 바로 아래 z축 단면(수평 평면 절단) 슬라이더.
         self._design_left_lay.addWidget(self._build_section_slider())
+        # [2026-06-05] y축 단면(수직 평면 절단) 슬라이더 — z축 단면과 동일 방식.
+        self._design_left_lay.addWidget(self._build_section_y_slider())
         # [2026-06-02] 벽 채움면 / 실 표기 표시 토글 (체크박스 2개). (내 작업)
         self._design_left_lay.addWidget(self._build_wall_room_toggles())
-        # [2026-06-03] Y축 단면 슬라이더 제거(사용자 요구) — 거실 단면과 무관한
-        # 3D 뷰 시각화 전용 기능이라 삭제. Z축 단면 슬라이더는 유지.
         self._design_right_pane = QWidget()
         # [디자인 통일] 좌측 3D 카드와 동일 스타일·여백 → 위/아래 레벨 정렬.
         self._design_right_pane.setObjectName("designCardPane")
@@ -699,10 +699,71 @@ class MainWindow(QMainWindow):
         if three is not None and hasattr(three, 'set_section_z'):
             three.set_section_z(z, enabled)
 
-    # [2026-06-03] Y축 단면 슬라이더/핸들러(_build_section_y_slider,
-    # _update_section_y_range, _on_section_y_toggled, _on_section_y_changed)
-    # 제거 — 사용자 요구. 거실 단면(비교 탭)과 무관한 3D 뷰 시각화 전용이었음.
-    # Z축 단면(_build_section_slider 등)은 유지.
+    def _build_section_y_slider(self) -> QWidget:
+        """[2026-06-05] 3D 화면 y축 단면(수직 평면 절단) 컨트롤 — 체크박스 + 슬라이더.
+
+        체크 ON 이면 슬라이더 위치(y, mm) 보다 작은 쪽을 잘라 평면을 본다.
+        z축 단면(_build_section_slider)과 완전히 동일한 방식(three.js 클리핑).
+        """
+        box = QWidget()
+        lay = QHBoxLayout(box)
+        lay.setContentsMargins(6, 2, 6, 2)
+        self._section_y_check = QCheckBox('Y축 단면')
+        self._section_y_check.setToolTip(
+            '체크 시 슬라이더 위치(y)보다 작은 쪽을 잘라 평면을 봅니다.')
+        lay.addWidget(self._section_y_check)
+        self._section_y_slider = QSlider(Qt.Horizontal)
+        # 범위는 단면을 켤 때 건물 y 최소~최대로 동적 갱신(_update_section_y_range).
+        self._section_y_slider.setRange(-10000, 10000)
+        self._section_y_slider.setValue(-10000)
+        self._section_y_slider.setSingleStep(100)
+        lay.addWidget(self._section_y_slider, stretch=1)
+        self._section_y_label = QLabel('y = -10000 mm')
+        self._section_y_label.setFixedWidth(120)
+        lay.addWidget(self._section_y_label)
+        self._section_y_check.toggled.connect(self._on_section_y_toggled)
+        self._section_y_slider.valueChanged.connect(self._on_section_y_changed)
+        box.setMaximumHeight(34)
+        return box
+
+    def _update_section_y_range(self):
+        """y축 단면 슬라이더 범위를 건물 y 최소~최대로 갱신(z축 갱신과 동일 패턴)."""
+        from modular_3d.render.mesh_builder import build_component_mesh
+        y_min = None
+        y_max = None
+        for comp in self._scene.components.values():
+            try:
+                v, _f, _c = build_component_mesh(comp)
+            except Exception:
+                continue
+            if v is not None and len(v):
+                vy0 = float(v[:, 1].min())
+                vy1 = float(v[:, 1].max())
+                y_min = vy0 if y_min is None else min(y_min, vy0)
+                y_max = vy1 if y_max is None else max(y_max, vy1)
+        if y_min is None:
+            y_min, y_max = -10000, 10000
+        y_min = int(round(y_min))
+        y_max = max(int(round(y_max)), y_min + 100)
+        self._section_y_slider.blockSignals(True)
+        self._section_y_slider.setRange(y_min, y_max)
+        self._section_y_slider.setValue(y_min)   # 켜는 순간엔 전체가 보이는 위치
+        self._section_y_slider.blockSignals(False)
+
+    def _on_section_y_toggled(self, checked: bool):
+        """y축 단면 체크 토글 — 켜질 때 슬라이더 범위를 현재 건물 폭에 맞춘다."""
+        if checked:
+            self._update_section_y_range()
+        self._on_section_y_changed()
+
+    def _on_section_y_changed(self, *_):
+        """y축 단면 체크/슬라이더 변경 → three.js 클리핑 평면 갱신."""
+        y = float(self._section_y_slider.value())
+        enabled = self._section_y_check.isChecked()
+        self._section_y_label.setText(f'y = {int(y)} mm')
+        three = getattr(self._viewer, 'three', None)
+        if three is not None and hasattr(three, 'set_section_y'):
+            three.set_section_y(y, enabled)
 
     def _build_joint_edit_tab(self) -> QWidget:
         """접합부 조정 탭: 중앙(3D 와이어프레임) + 우 접합부 UI placeholder.
@@ -754,7 +815,7 @@ class MainWindow(QMainWindow):
         # [2026-06-02] 중앙 3D 최소폭을 작게 둬 우측 패널(_force_pane_width 고정폭)이
         #   우선되게 — 부재 표 전 컬럼(L·N·V·M)이 한눈에 보이고 3D 가 좁아짐.
         #   단, 0 collapse 방지로 최소 480 은 확보(3D 가 너무 작아지지 않게).
-        center.setMinimumWidth(480)
+        center.setMinimumWidth(200)  # [2026-06-05] 3D 중앙만 축소(패널은 원복 — 빽빽 방지)
         cv = QVBoxLayout(center)
         cv.setContentsMargins(0, 0, 0, 0)
         cv.setSpacing(0)

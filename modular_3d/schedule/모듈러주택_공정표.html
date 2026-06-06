@@ -1235,7 +1235,7 @@
   <div style="margin-top:16px; padding-top:14px; border-top:1px solid #EEE;">
   <div style="font-weight:700; color:#2E4057; font-size:12px; margin-bottom:6px;">
   사용 타입별 구성
-  <span class="note-text" style="margin-left:8px;">배치설계 부재(모듈·바닥패널·벽패널)를 자동 추출 — 중량만 사용자가 보정</span>
+  <span class="note-text" style="margin-left:8px;">평면설계 부재(모듈·바닥패널·벽패널)를 자동 추출 — 중량만 사용자가 보정</span>
   </div>
   <table class="mod-table">
   <thead>
@@ -1393,6 +1393,7 @@
   <!-- 패널 종류별 층당 개수 (자동 집계) -->
   <input type="hidden" id="i_층당바닥패널" value="0">
   <input type="hidden" id="i_층당벽패널" value="0">
+  <input type="hidden" id="i_층당종속패널" value="0"><!-- 종속패널(L자, sub_index≥1) 층당 개수 — 마감 가중 1.5배용 -->
   <input type="hidden" id="i_층당캔틸슬래브" value="0">
   <!-- 패널 양중 계수 — 모듈+패널 모드에서만 표시. 종류별 분리(바닥/벽/캔틸레버 슬래브) -->
   <div class="input-group" id="g_패널양중계수" style="display:none;">
@@ -2459,30 +2460,30 @@ function buildTasks(v) {
   s[s.length - 1].work = 지붕_방수일;
   const _방수시트Task = s[s.length - 1]; // [2026-05-29] 부대공사 병행용 — 방수시트 끝 + 1 부터 부대공사 시작 가능
 
-  // 현장마감·건축마감: 모듈+패널수 비례 — 천안두정 40세대(=40모듈) 30일 기준 = 0.75일/부재
-  // [2026-05-29] 배치설계에서 모듈만/패널만/혼합 모두 가능 → 부재 수 합(모듈+패널) 비례.
-  // 패널 1개 = 모듈 1개로 동등 카운트 (사용자 결정).
-  const _마감_총패널 = (v.층당패널수 || 0) * v.세대층;
-  const _마감_총부재 = v.총모듈 + _마감_총패널;
-  const 마감일 = Math.max(1, Math.round(30 * _마감_총부재 / 40));
+  // [2026-06-06] 마감 공기·비용 = OTKCRK 부재수 실적 방식으로 복원(사용자 결정).
+  //   ▸ OTK 천안두정 40모듈 30일(= 0.75일/부재) — 모듈만 기준 실측값.
+  //   ▸ 패널 가중: 독립패널 = 모듈 2배, 종속패널(L자=부모 모듈에 붙은 sub_index≥1) = 모듈 1.5배.
+  //   ▸ 카운트: 바닥패널+벽패널 합산 그대로(각 1부재), 그중 종속패널만 1.5·나머지 2배 가중.
+  const _마감_총패널 = (v.층당패널수 || 0) * v.세대층;          // 바닥+벽 합산 × 층수
+  const _마감_총종속 = Math.min(_마감_총패널, (v.층당종속패널 || 0) * v.세대층); // L자(종속)패널
+  const _마감_총독립 = Math.max(0, _마감_총패널 - _마감_총종속);  // 나머지 독립패널
+  const _마감_가중부재 = (v.총모듈 || 0) + _마감_총독립 * 2 + _마감_총종속 * 1.5; // 모듈1·독립2·종속1.5
+  const _마감_총부재 = (v.총모듈 || 0) + _마감_총패널;            // 표시용 실 부재수(가중 전)
+  const 마감일 = Math.max(1, Math.round(30 * _마감_가중부재 / 40)); // OTK 0.75일/부재 × 가중부재
+  v.마감일 = 마감일;
+  v.마감가중부재 = _마감_가중부재;                                // renderEconomics 비고 표시용
   // [2026-05-30] 층당 분할 — ceil 사용해 총 작업량 손실 방지.
   const _층당마감 = Math.max(1, Math.ceil(마감일 / Math.max(1, v.세대층)));
 
-  // ── 현장마감: "2층 안전 거리" 룰 — f층 마감 시작 = (f+2)층 시공 시작 시점 ──
-  // 위에 2개 층이 더 진행 중이어야 자재 낙하·진동 영향이 줄어듦 (실무 안전 거리).
-  // f+2 가 없는 최상층 2개는 그 층 시공 완료 + 1 (fallback).
+  // ── 현장마감 [2026-06-06 해석 A]: 각 층 마감 = "그 층" 모듈 시공 완료 직후 ──
+  //   (기존 "2층 안전거리(f+2)" 룰 제거 — 사용자 결정.)
+  //   → 마지막 층 현장마감은 마지막 층 모듈 시공이 끝난 뒤 시작된다.
   const _현장마감Bars = [];
   let _현장_start = Infinity, _현장_end = -Infinity;
   for (let f = 0; f < v.세대층; f++) {
-  let _trigger_float;
-  if (f + 2 < v.세대층) {
-  // f+2층 시공 시작 시점 (=f+2층 첫 양중 시작)
-  _trigger_float = floorStart[f + 2];
-  } else {
-  // 최상층 2개: 그 층 시공 완료 + 1
-  const fl = _floors[f];
-  _trigger_float = floorStart[f] + Math.max(fl.L_floor_cal, fl.jEndN_rel);
-  }
+  const fl = _floors[f] || { L_floor_cal: 0, jEndN_rel: 0 };
+  // f층 모듈 시공 완료 = 그 층 양중·접합 종료
+  const _trigger_float = (floorStart[f] || 0) + Math.max(fl.L_floor_cal || 0, fl.jEndN_rel || 0);
   const _s = Math.ceil(_trigger_float + 1e-6);
   const _e = _s + _층당마감 - 1;
   _현장마감Bars.push({ start: _s, total: _층당마감, type: 'critical', floor: f,
@@ -2502,21 +2503,16 @@ function buildTasks(v) {
   s[s.length - 1].finishBars = _현장마감Bars;
   const _현장마감Task = s[s.length - 1];
 
-  // ── 건축마감: "2층 안전 거리" 룰 — f층 마감 시작 = (f+2)층 코어 시작 시점 ──
-  // 위에 2개 층 코어가 더 진행 중이어야 자재·콘크리트 영향 줄어듦.
-  // f+2 가 없는 최상층 2개는 그 층 코어 완료 + 1 (fallback).
+  // ── 건축마감 [2026-06-06 해석 A]: 각 층 마감 = "그 층" 코어 골조 완료 직후 ──
+  //   (기존 "2층 안전거리(f+2)" 룰 제거 — 사용자 결정.)
+  //   → 마지막 층 건축마감은 마지막 층 코어 골조가 끝난 뒤 시작된다.
   const _건축마감Bars = [];
   let _건축_start = Infinity, _건축_end = -Infinity;
   const _코어층수 = (_coreBars && _coreBars.length) ? _coreBars.length : v.세대층;
   for (let f = 0; f < _코어층수; f++) {
   const cb = _coreBars[f];
   if (!cb) continue;
-  let _s;
-  if (f + 2 < _코어층수 && _coreBars[f + 2]) {
-  _s = _coreBars[f + 2].start; // (f+2)층 코어 시작 시점
-  } else {
-  _s = cb.start + cb.total; // 최상층 2개: 그 층 코어 종료 다음날
-  }
+  const _s = Math.ceil(cb.start + cb.total + 1e-6); // f층 코어 완료 직후(정수일)
   const _e = _s + _층당마감 - 1;
   _건축마감Bars.push({ start: _s, total: _층당마감, type: 'critical', floor: f,
   name: `${f+1}층 건축마감 (${_층당마감}일)` });
@@ -2628,6 +2624,10 @@ function importScene(json, fname) {
   c.comp_type === 'floor_panel' || c.comp_type === 'struct_wall'
   ).length;
   const 층당패널수_calc = 계산_바닥패널 + 계산_벽패널;
+  // [2026-06-06] 종속패널(부모 모듈에 붙은 L자/ㄱ자 패널 = sub_index≥1) 집계 — 마감 가중 1.5배용
+  const 계산_종속패널 = comps.filter(c =>fIdx(c) === 0 &&
+  (c.comp_type === 'floor_panel' || c.comp_type === 'struct_wall') &&
+  (+c.sub_index || 0) >= 1).length;
 
   // ── summary 우선, 없으면 계산값 ──
   const 층수 = sum.floors_above_ground || 계산_층수 || 0;
@@ -2712,6 +2712,7 @@ function importScene(json, fname) {
   $('i_층당패널수').value = String(층당패널수_calc);
   $('i_층당바닥패널').value = String(계산_바닥패널);
   $('i_층당벽패널').value = String(계산_벽패널);
+  $('i_층당종속패널').value = String(계산_종속패널);
   $('i_층당캔틸슬래브').value = String(계산_캔틸슬래브);
   // 접합부 설계 결과(메인 프로그램에서 카테고리별로 보내면 우선 사용)
   // 신규 summary 키 — 친구가 schedule_adapter 수정해서 채워주는 값
@@ -2989,6 +2990,8 @@ function calc() {
   층당패널수: Math.max(0, +$('i_층당패널수').value || 0), // 층당 패널 총 개수
   층당바닥패널: Math.max(0, +$('i_층당바닥패널').value || 0),
   층당벽패널: Math.max(0, +$('i_층당벽패널').value || 0),
+  층당종속패널: Math.max(0, +$('i_층당종속패널').value || 0), // 종속패널(L자) 층당 개수
+
   층당캔틸슬래브: Math.max(0, +$('i_층당캔틸슬래브').value || 0),
   바닥패널양중계수: Math.min(1, Math.max(0.1, +$('i_바닥패널양중계수').value || 0.7)),
   벽패널양중계수: Math.min(1, Math.max(0.1, +$('i_벽패널양중계수').value || 0.6)),
@@ -3356,6 +3359,14 @@ function renderEconomics(v, tasks) {
   equipDetail: [{ 장비: '굴착기 0.6㎥', 대수: 1, 시간: '8hr/일',
   작업일: Math.round(토공작업일 * 10) / 10, 운전원: '건설기계운전사 1명' }] });
   equipSum += 토공경비;
+  // [2026-06-05] 덤프트럭 운반 경비 추가 — 건설기계경비산출표 2025 15ton(0602-0150):
+  //   시간당 손료 20,276원, 주연료 15.9ℓ/hr, 운전원 1명. 사용일 = 토공작업일(사용일 비례).
+  const 덤프일대 = 8 * (20276 + 15.9 * 유가) + WAGE_2026.건설기계운전사;
+  const 덤프경비 = 덤프일대 * 토공작업일;
+  rows.push({ name: '토공 운반(덤프 15t)', labor: 0, equip: 덤프경비, crew: [],
+  equipDetail: [{ 장비: '덤프트럭 15t', 대수: 1, 시간: '8hr/일',
+  작업일: Math.round(토공작업일 * 10) / 10, 운전원: '건설기계운전사 1명' }] });
+  equipSum += 덤프경비;
   // 골조 노무비 (켄텍 man-day × 물량 × 시중노임)
   let 코어노무 = 0;
   for (const k of ['기초','1층','코어']) {
@@ -3394,12 +3405,20 @@ function renderEconomics(v, tasks) {
   fixedCrew('판넬조립공', 6, dur('지붕 패널'), WAGE_2026.판넬조립공)); // OTKCRK 6명
   add노무('방수시트', 2 * dur('방수시트') * WAGE_2026.방수공,
   fixedCrew('방수공', 2, dur('방수시트'), WAGE_2026.방수공)); // OTKCRK 2명
-  // 마감: 마감 직종(미장·도배·타일·도장) 평균 일당 × 인원(추정 6) × 작업일 / 부대: 조경공·보통인부
-  const 마감일당 = (WAGE_2026.미장공 + WAGE_2026.도배공 + WAGE_2026.타일공 + WAGE_2026.도장공) / 4;
-  add노무('현장마감(외부접합·외장)', 6 * dur('현장마감') * 마감일당,
-  fixedCrew('마감공(미장·도배·타일·도장 평균)', 6, dur('현장마감'), 마감일당, true));
-  add노무('건축마감(공용부위)', 6 * dur('건축마감') * 마감일당,
-  fixedCrew('마감공(미장·도배·타일·도장 평균)', 6, dur('건축마감'), 마감일당, true));
+  // [2026-06-06] 마감 노무비 = OTK 현장조립 6명(A팀, 표4-39) × 마감작업일 × 시중노임(2026).
+  //   "6명"을 현장마감/건축마감 직종으로 추정 분배(사용자 결정). 작업일(dur)에 패널가중이 이미 반영됨.
+  //   ▸ 현장마감(외부접합·외장) 6명: 판넬조립공2·특별인부1·방수공1·도장공1·보통인부1.
+  //   ▸ 건축마감(공용부위)   6명: 미장공2·도배공1·타일공1·도장공1·보통인부1.
+  const _현장마감크루 = [['판넬조립공',2],['특별인부',1],['방수공',1],['도장공',1],['보통인부',1]];
+  const _건축마감크루 = [['미장공',2],['도배공',1],['타일공',1],['도장공',1],['보통인부',1]];
+  const _마감비용 = (크루, days) =>크루.reduce((s, kv) =>s + kv[1] * days * (WAGE_2026[kv[0]] || 0), 0);
+  const _마감크루내역 = (크루, days) =>크루.map(kv =>({
+  직종: kv[0], 인원: kv[1], 작업일: days, manday: Math.round(kv[1] * days * 10) / 10,
+  일당: WAGE_2026[kv[0]] || 0, 소계: Math.round(kv[1] * days * (WAGE_2026[kv[0]] || 0)), 추정: true }));
+  add노무('현장마감(외부접합·외장)', _마감비용(_현장마감크루, dur('현장마감')),
+  _마감크루내역(_현장마감크루, dur('현장마감')));
+  add노무('건축마감(공용부위)', _마감비용(_건축마감크루, dur('건축마감')),
+  _마감크루내역(_건축마감크루, dur('건축마감')));
   add노무('부대공사(토목·조경)', 4 * dur('부대공사') * (WAGE_2026.조경공 + WAGE_2026.보통인부) / 2,
   fixedCrew('조경공·보통인부 평균', 4, dur('부대공사'), (WAGE_2026.조경공 + WAGE_2026.보통인부) / 2, true));
   // 경비: 이동식 크레인 — 코어용(1대 고정) + 모듈 양중용(모듈크레인수). 각 작업일 × 8hr × (손료+연료×유가) + 운전원

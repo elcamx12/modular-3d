@@ -236,7 +236,7 @@ class JointEditPanel(QWidget):
         self._btn_save = QPushButton('변경 내용 저장')
         self._btn_save.setToolTip(
             '현재 디자인과 접합 변경을 건물 파일(기존 저장과 같은 양식)로 '
-            '저장합니다. 저장한 파일은 배치 설계·모듈 정의 탭에서 불러올 수 있습니다.')
+            '저장합니다. 저장한 파일은 평면 설계·모듈 정의 탭에서 불러올 수 있습니다.')
         # 주요 동작 — 종합탭 액센트(진파랑) 채움.
         self._btn_save.setStyleSheet(
             "QPushButton {"

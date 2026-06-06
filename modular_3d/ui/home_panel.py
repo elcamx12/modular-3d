@@ -169,7 +169,7 @@ class HomePanel(QWidget):
         )
         # 서브타이틀 — Paperlogy (안내성 문구), 15→18
         subtitle = QLabel("Modular Housing Design Suite — "
-                          "배치설계부터 공정·비용 분석까지")
+                          "평면설계부터 공정·비용 분석까지")
         subtitle.setStyleSheet(
             f"font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
             f" color: {_SUB_FG}; font-size: 18px; background: transparent;"
@@ -202,7 +202,7 @@ class HomePanel(QWidget):
         grid = QGridLayout()
         grid.setSpacing(14)
         steps = [
-            ("배치 설계",  "층별 모듈·코어·패널을 평면에 배치",
+            ("평면 설계",  "층별 모듈·코어·패널을 평면에 배치",
              "2D 평면도 · 컴포넌트 트리"),
             ("접합부 설계", "모듈-모듈·모듈-코어 연결 부재 결정",
              "캔틸레버보·중간기둥 자동 배치"),
