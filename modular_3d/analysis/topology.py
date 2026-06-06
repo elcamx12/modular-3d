@@ -414,8 +414,12 @@ def _extract_mid_beam(comp: MidBeam) -> _LocalExtract:
     pos = comp.position
 
     to_world = make_local_to_world(ax, ay, rot, pos)
-    p1 = to_world(0, half_s, 0)
-    p2 = to_world(w, half_s, 0)
+    # [2026-06-07] 해석 와이어프레임은 양끝을 축방향으로 half_s(100mm)씩 연장한다.
+    #   중간보 width w 는 기둥 '안쪽 면' 사이 거리라, 끝점이 기둥 중심선에서
+    #   half_s 만큼 모자라 떠 버린다(주구조 미연결 → 불안정 메커니즘 → singular).
+    #   양끝을 기둥 중심선까지 늘려 노드 병합으로 자연 연결시킨다.
+    p1 = to_world(-half_s, half_s, 0)
+    p2 = to_world(w + half_s, half_s, 0)
     k1, k2 = _round_key(p1), _round_key(p2)
     return _LocalExtract(
         coords={k1: p1, k2: p2},
@@ -1620,6 +1624,50 @@ def _split_hosts_for_mid_endpoints(model: 'AnalysisModel') -> None:
             if nlst is not None and end_nid not in nlst:
                 nlst.append(end_nid)
         n_split += 1
+
+    # [2026-06-07] 마무리 — 아직 떠있는 mid 끝점을 같은 좌표(≤MERGE_TOL) 주구조
+    #   노드에 흡수해 연결한다. _extract_mid_beam 이 끝을 기둥 중심선까지 연장해도,
+    #   build 가 컴포넌트별로 노드를 독립 생성하고 위 host 사영은 코너(t≈0)를
+    #   제외하므로 같은 좌표라도 별개 노드로 남는다. 키(1mm 반올림)는 0.5 경계에서
+    #   갈릴 수 있어 키 대신 '실제 거리'로 병합한다(부동소수점 안전).
+    MERGE_TOL = 2.0
+    _roles2 = {}
+    for _m in model.members.values():
+        _roles2.setdefault(_m.n1, set()).add(_m.role)
+        _roles2.setdefault(_m.n2, set()).add(_m.role)
+    _struct = [(nid, model.nodes[nid].coord) for nid in list(model.nodes)
+               if (_roles2.get(nid, set()) - {'mid_beam', 'mid_column'})]
+    if _struct:
+        _sarr = np.array([c for _, c in _struct])
+        _sids = [nid for nid, _ in _struct]
+        _midends = set()
+        for _m in model.members.values():
+            if _m.role in ('mid_beam', 'mid_column'):
+                _midends.add(_m.n1)
+                _midends.add(_m.n2)
+        for _e in list(_midends):
+            if _e not in model.nodes:
+                continue
+            # 이미 주구조와 연결된 끝은 건너뜀
+            if _roles2.get(_e, set()) - {'mid_beam', 'mid_column'}:
+                continue
+            _ec = model.nodes[_e].coord
+            _d = np.linalg.norm(_sarr - _ec, axis=1)
+            _j = int(np.argmin(_d))
+            if float(_d[_j]) <= MERGE_TOL:
+                _tgt = _sids[_j]
+                if _tgt == _e:
+                    continue
+                for _mm in model.members.values():
+                    if _mm.n1 == _e:
+                        _mm.n1 = _tgt
+                    if _mm.n2 == _e:
+                        _mm.n2 = _tgt
+                for _nlst in model.comp_to_nodes.values():
+                    if _e in _nlst:
+                        _nlst[:] = [_tgt if x == _e else x for x in _nlst]
+                model.nodes.pop(_e, None)
+                n_split += 1
 
     if n_split > 0:
         pass

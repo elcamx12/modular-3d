@@ -305,6 +305,7 @@ window.applyPaintState = function(state) {
     opp: state.op_preview_poly, ipp: state.import_preview_polys,
     op: state.openings, rd: state.room_draw, fsp: state.f5_snap_point,
     ms: state.measure, csd: state.core_slab_draw,
+    ov: state.overlaps,
   });
   if (contentKey === _lastContentKey) {
     return;  // 콘텐츠 동일 — 카메라만 갱신, scene 재생성 스킵
@@ -333,6 +334,8 @@ window.applyPaintState = function(state) {
   // M3-c-2 구현 — 미리보기·스냅 마커
   _drawPreviews(state);
   _drawMarkers(state);
+  // 부재 겹침 경고 — 같은 종류·같은 층의 평면 침범 영역을 빨강으로(맨 위).
+  _drawOverlaps(state.overlaps);
 };
 
 // ─────────────────────────────────────────────────────────
@@ -821,6 +824,21 @@ function _addDot(x, y, rgb, pixelRadius, z, renderOrder) {
   mesh.position.set(x, y, z);
   mesh.renderOrder = renderOrder || (RO_PV + 5);
   return mesh;
+}
+
+function _drawOverlaps(overlaps) {
+  // 겹침 교집합 사각형을 반투명 빨강 채움 + 빨강 외곽으로. Z·renderOrder 를
+  // 크게 줘 부재·라벨 위에 보이게 한다(반투명이라 아래 부재도 비침).
+  if (!overlaps || !overlaps.length) return;
+  const rgb = [0.92, 0.13, 0.13];
+  const Z = 5.0;
+  for (const o of overlaps) {
+    const pts = [[o[0], o[1]], [o[2], o[1]], [o[2], o[3]], [o[0], o[3]]];
+    const f = _addPolygonFill(pts, rgb, 0.45, Z, 300);
+    if (f) groups.highlights.add(f);
+    const e = _addPolylineLoop(pts, rgb, Z + 0.01, 301, true);
+    if (e) groups.highlights.add(e);
+  }
 }
 
 function _drawPreviews(state) {

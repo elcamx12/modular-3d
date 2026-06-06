@@ -884,6 +884,11 @@ def _build_diaphragms_and_core(om: OpsModel) -> None:
             dia_slaves[best_master].add(nid)
 
     n_dia = 0
+    # [2026-06-07] 한 노드가 여러 rigidDiaphragm 의 해석 슬레이브로 중복 등록되면
+    #   같은 자유도에 다중 구속(MP)이 걸려 강성행렬이 특이(singular)해진다. 바닥패널이
+    #   모듈·인접 패널과 노드를 공유하는 배치(여러 패널이 같은 층 같은 노드를 슬레이브로
+    #   요청)에서 발생. 노드는 처음 차지한 다이어프램에만 해석 슬레이브로 넣는다.
+    used_ops_slaves: set = set()
     for d in am_local.diaphragms:
         master = int(d.master_node_id)
         d_slaves_full = list(dia_slaves.get(master, set(d.slave_node_ids)))
@@ -905,13 +910,17 @@ def _build_diaphragms_and_core(om: OpsModel) -> None:
                 pass
             continue
         fixed_set = set(om.fixed_nodes)
-        ops_slaves = [s for s in viz_slaves if s not in fixed_set]
+        # 이미 다른 다이어프램이 차지한 노드는 제외(중복 MP → 특이행렬 방지).
+        ops_slaves = [s for s in viz_slaves
+                      if s not in fixed_set and s not in used_ops_slaves]
 
         if len(ops_slaves) >= 2:
             # 정상 다이어프램: rigidDiaphragm + master 면외 fix.
             try:
                 ops.rigidDiaphragm(3, master, *ops_slaves)
                 ops.fix(master, 0, 0, 1, 1, 1, 0)
+                used_ops_slaves.update(ops_slaves)
+                used_ops_slaves.add(master)
             except Exception as e:
                 om.registration_failures.append(
                     (master, f'rigidDiaphragm slaves={len(ops_slaves)}: {e}'))

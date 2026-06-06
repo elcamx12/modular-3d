@@ -649,6 +649,34 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
                 f'5: +20({delta_exact + _S20:+.0f})]'
             )
 
+        # ── 부재 겹침 경고 — 같은 종류·같은 층에서 평면(xy)이 실제 침범하는 쌍의
+        #    교집합 영역. 위아래 적층(같은 xy·다른 층)은 정상이라 floor_index 로
+        #    그룹을 나눠 제외한다. 20mm 갭·맞닿음·수치오차는 _OVERLAP_MARGIN 으로
+        #    무시하고 '실제로 파고든' 침범만 빨갛게 표시(거친 bbox 기준).
+        # 같은 group_id(한 모듈/한 부재의 내부 격자 — 중간보·중간기둥 등)는
+        # 정상적으로 bbox 가 겹치므로 제외. 서로 다른 그룹(또는 독립 부재 group 0)
+        # 간 침범만 '의도치 않은 중복 배치'로 본다.
+        from collections import defaultdict as _dd
+        _OVERLAP_MARGIN = 1.0   # mm
+        _ov_groups = _dd(list)
+        for _c in components:
+            _ov_groups[(_c['comp_type'], _c['floor_index'])].append(
+                (int(_c['group_id']), _c['bbox']))
+        overlaps = []
+        for _items in _ov_groups.values():
+            _n = len(_items)
+            for _i in range(_n):
+                _ga, _a = _items[_i]
+                for _j in range(_i + 1, _n):
+                    _gb, _b = _items[_j]
+                    if _ga == _gb and _ga != 0:
+                        continue   # 같은 모듈/그룹 내부 — 정상
+                    _ox0 = max(_a[0], _b[0]); _oy0 = max(_a[1], _b[1])
+                    _ox1 = min(_a[2], _b[2]); _oy1 = min(_a[3], _b[3])
+                    if (_ox1 - _ox0 > _OVERLAP_MARGIN
+                            and _oy1 - _oy0 > _OVERLAP_MARGIN):
+                        overlaps.append([_ox0, _oy0, _ox1, _oy1])
+
         return {
             'viewport': viewport,
             'layer': int(self._layer),
@@ -661,6 +689,7 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
             'hover_bbox': hover_bbox,
             'target_edge_info': target_edge_info,
             'components': components,
+            'overlaps': overlaps,
             'rooms': rooms,
             'direction': self._direction,
             'reference_edge': (list(self._reference_edge)
