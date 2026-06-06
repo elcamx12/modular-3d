@@ -36,8 +36,14 @@ SNAP_TRIGGER_MM: float = 100.0
 
 # 갭 값 (mm)
 # 갭 정책 — 카탈로그에서 가져옴.
-from modular_3d.카탈로그.geometry import MODULE_JOINT_GAP_MM as _GAP
+from modular_3d.카탈로그.geometry import (
+    MODULE_JOINT_GAP_MM as _GAP,
+    CORE_JOINT_GAP_MM as _CORE_GAP,
+)
 DEFAULT_GAP: float = float(_GAP)
+# 코어 ↔ 타 부재 갭 — R09 결합 거리 임계(_CORE_LATERAL_MAX)와 같은 카탈로그
+# 상수를 참조. 두 곳이 어긋나면 코어 결합이 끊긴다.
+CORE_GAP: float = float(_CORE_GAP)
 NO_GAP: float = 0.0
 
 
@@ -65,9 +71,10 @@ def gap_between(type_a: ComponentType, type_b: ComponentType) -> float:
     # CORE ↔ CORE: 한 코어 시스템(ㄷ·ㅁ 조립) 으로 봐서 갭 0
     if type_a == ComponentType.CORE and type_b == ComponentType.CORE:
         return NO_GAP
-    # CORE ↔ 타 부재: 시공 순서 분리 (RC 코어 선시공 + 모듈 후시공) → 갭 20
+    # CORE ↔ 타 부재: 시공 순서 분리 (RC 코어 선시공 + 모듈 후시공) → 코어 갭(100).
+    # R09 결합 거리 임계와 같은 상수(CORE_JOINT_GAP_MM)를 쓴다.
     if type_a == ComponentType.CORE or type_b == ComponentType.CORE:
-        return DEFAULT_GAP
+        return CORE_GAP
     # 종속 부재 (캔틸레버·벽패널·중간보·중간기둥) — 부모와 갭 0.
     # 정책 e 단계 2026-05-12: dep_snap 이 부모 모서리에 직접 정렬하므로
     # 자동 갭에서도 0 으로 통일.

@@ -98,13 +98,15 @@ class AlignmentDockPanelThree(QWidget):
         self._attached_canvas = None
 
     # ── M4-b — three.js 입력 → vispy canvas 위임 ──
-    def _on_three_click(self, wx: float, wy: float, button: int) -> None:
-        """three.js 2D 클릭(world 좌표) → vispy AlignmentCanvas 의 기존 선택 로직."""
+    def _on_three_click(self, wx: float, wy: float, button: int,
+                        ctrl: bool = False) -> None:
+        """three.js 2D 클릭(world 좌표) → vispy AlignmentCanvas 의 기존 선택 로직.
+        ctrl=True 면 다중선택 토글(Ctrl+클릭)."""
         cv = self._attached_canvas
         if cv is None or not hasattr(cv, 'handle_world_click'):
             return
         try:
-            cv.handle_world_click(float(wx), float(wy), int(button))
+            cv.handle_world_click(float(wx), float(wy), int(button), bool(ctrl))
         except Exception as e:
             print(f'[AlignmentDockPanelThree._on_three_click] {e}')
 
@@ -118,13 +120,14 @@ class AlignmentDockPanelThree(QWidget):
         except Exception as e:
             print(f'[AlignmentDockPanelThree._on_three_move] {e}')
 
-    def _on_three_key(self, js_key: str, text: str) -> None:
-        """three.js 2D 키 입력 → vispy AlignmentCanvas 의 기존 키 처리."""
+    def _on_three_key(self, js_key: str, text: str, shift: bool = False) -> None:
+        """three.js 2D 키 입력 → vispy AlignmentCanvas 의 기존 키 처리.
+        shift=True 면 뒤집기(Shift+X/Y) 판별에 쓰인다."""
         cv = self._attached_canvas
         if cv is None or not hasattr(cv, 'handle_key'):
             return
         try:
-            cv.handle_key(str(js_key), str(text))
+            cv.handle_key(str(js_key), str(text), bool(shift))
         except Exception as e:
             print(f'[AlignmentDockPanelThree._on_three_key] {e}')
 

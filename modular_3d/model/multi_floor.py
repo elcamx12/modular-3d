@@ -261,10 +261,9 @@ def create_multi_floor_group(
         comp_id = scene.add_component(comp)
         created_ids.append(comp_id)
 
-    # [정책 2026-05-12] 코어 슬래브 자동 생성 폐지 — 사용자가 좌측 팔레트의
-    # "코어 슬래브 생성/재생성" 버튼을 눌러야만 슬래브가 만들어진다.
-    # 호출자가 필요한 시점에 직접 regenerate_core_slabs / regenerate_all_core_slabs
-    # 를 호출해야 한다.
+    # [정책 2026-06] 코어 슬래브는 사용자가 코어벽을 다중선택 후 I 키로만 정의한다
+    # (controls_f5._f5_core_slab_from_walls → create_core_slabs_for_bbox).
+    # 자동 생성·그룹 일괄 재생성 기능은 폐지됨.
 
     return gid, created_ids
 
@@ -280,150 +279,59 @@ def _next_sub_index(scene: Scene, group_id: int) -> int:
     return max_sub + 1
 
 
-# ── 코어 슬래브 자동 생성 / 갱신 ────────────────────────────
+# ── 코어 슬래브 (I 키 수동 정의 전용) ──────────────────────
 
-def _compute_core_slab_bbox_xy(
-    scene: Scene, group_id: int, floor_index: int,
-) -> Optional[Tuple[float, float, float, float]]:
-    """그룹의 그 층 모든 코어벽들의 월드 xy bbox 반환.
-
-    Returns:
-        (min_x, min_y, max_x, max_y) — 코어벽이 1 장도 없으면 None.
-    """
-    xs: List[float] = []
-    ys: List[float] = []
-    for comp in scene.components.values():
-        if (getattr(comp, 'group_id', 0) != group_id
-                or getattr(comp, 'floor_index', 0) != floor_index
-                or comp.comp_type != ComponentType.CORE):
-            continue
-        corners = comp.get_world_corners()  # (8, 3) 바닥 4 + 천장 4
-        # xy 평면 bbox 만 필요 — 모든 코너 사용해도 z 무관.
-        xs.extend(corners[:, 0].tolist())
-        ys.extend(corners[:, 1].tolist())
-    if not xs:
-        return None
-    return min(xs), min(ys), max(xs), max(ys)
-
-
-def regenerate_core_slabs(
-    scene: Scene, group_id: int, n_floors: int,
-    slab_thickness: float = None,
+def create_core_slabs_for_bbox(
+    scene: Scene, group_id: int,
+    bbox_xy: Tuple[float, float, float, float],
+    n_floors: int, slab_thickness: float, wall_t: float,
+    polygon=None, keep_undo: bool = False,
 ) -> List[int]:
-    """그룹의 모든 층(0..n_floors) 코어 슬래브를 재계산 / 갱신.
+    """주어진 xy bbox(또는 폴리곤)에 코어 슬래브를 층마다 생성(천장 k=0..N + 1층 바닥).
 
-    [절차]
-    1. 같은 group_id 의 기존 CORE_SLAB 컴포넌트를 모두 제거 (Scene 직접 pop).
-    2. 각 floor_index k=0..N 에 대해 그 층 코어벽들의 xy bbox 계산.
-    3. bbox 가 있는 층에만 슬래브 1 개 생성 (회전 0, 앵커 0=좌하).
-       슬래브 상면 z = k·H + MODULE_HEIGHT_MM. position.z = 상면 - thickness.
-
-    Returns:
-        새로 생성된 CoreSlab comp_id 리스트.
+    P 키 그리기용. z·층 규칙: 각 층 천장(z 상면 = k·H + h), 1층 바닥(z 상면 = 0).
+    polygon(로컬 (x,y) 점, bbox 좌하=원점) 주면 임의 N각형 슬래브, 없으면 사각형.
+    keep_undo=False 면 슬래브 'place' undo 를 제거(부속물), True 면 보존(상위에서
+    group_place 로 묶어 undo 가능). 생성된 comp_id 리스트 반환.
     """
     from modular_3d.model.core import instantiate
-    from modular_3d.카탈로그.geometry import CORE_SLAB_DEFAULT_THICKNESS_MM
-    if slab_thickness is None:
-        slab_thickness = float(CORE_SLAB_DEFAULT_THICKNESS_MM)
-
     H = float(FLOOR_HEIGHT)
     h = float(MODULE_HEIGHT_MM)
-
-    # 1. 기존 코어 슬래브 제거 (Scene.remove_component 는 undo 영향 X — 직접 pop)
-    to_remove = [
-        cid for cid, c in list(scene.components.items())
-        if (getattr(c, 'group_id', 0) == group_id
-            and c.comp_type == ComponentType.CORE_SLAB)
-    ]
-    for cid in to_remove:
-        scene.components.pop(cid, None)
-
-    # 2~3. 각 층 슬래브 생성
+    min_x, min_y, max_x, max_y = bbox_xy
+    w_slab = max_x - min_x
+    d_slab = max_y - min_y
     created: List[int] = []
-    for k in range(n_floors + 1):
-        bbox = _compute_core_slab_bbox_xy(scene, group_id, k)
-        if bbox is None:
-            continue
-        min_x, min_y, max_x, max_y = bbox
-        w_slab = max_x - min_x
-        d_slab = max_y - min_y
-        if w_slab <= 0.0 or d_slab <= 0.0:
-            continue
+    if w_slab <= 0.0 or d_slab <= 0.0:
+        return created
+    poly_local = ([[float(p[0]), float(p[1])] for p in polygon]
+                  if polygon and len(polygon) >= 3 else None)
 
-        # 같은 그룹·같은 층 코어벽 두께를 슬래브 dimensions 에 박음 (해석 측에서
-        # 슬래브 외곽 격자를 t_wall/2 안쪽으로 후퇴시켜 코어벽 상단 노드와 자동
-        # 노드 병합되도록 함 — 사용자 답변 F (a), 같은 그룹 두께 동일 가정).
-        wall_t_in_group = 300.0  # 기본값
-        for c in scene.components.values():
-            if (getattr(c, 'group_id', 0) == group_id
-                    and getattr(c, 'floor_index', 0) == k
-                    and c.comp_type == ComponentType.CORE):
-                wall_t_in_group = float(c.dimensions.get('depth', 300.0))
-                break
-
-        # 슬래브 상면 = k·H + h, 하면(=position.z) = 상면 - 두께.
-        z_bot = k * H + h - float(slab_thickness)
-        slab_pos = np.array([min_x, min_y, z_bot], dtype=np.float64)
-        slab_dims = {
-            'width': float(w_slab),
-            'depth': float(d_slab),
-            'thickness': float(slab_thickness),
-            'height': float(slab_thickness),  # 일부 코드가 height 만 참조하는 경우 대비
-            'wall_thickness': float(wall_t_in_group),
+    def _make(z_bot: float, k: int):
+        dims = {
+            'width': float(w_slab), 'depth': float(d_slab),
+            'thickness': float(slab_thickness), 'height': float(slab_thickness),
+            'wall_thickness': float(wall_t),
         }
-        slab = instantiate(ComponentType.CORE_SLAB, slab_pos, slab_dims,
-                           rotation=0, anchor=0)
+        if poly_local is not None:
+            dims['polygon'] = [list(p) for p in poly_local]
+        slab = instantiate(ComponentType.CORE_SLAB,
+                           np.array([min_x, min_y, z_bot], dtype=np.float64),
+                           dims, rotation=0, anchor=0)
         slab.group_id = group_id
         slab.floor_index = k
         slab.sub_index = _next_sub_index(scene, group_id)
         cid = scene.add_component(slab)
-        # add_component 가 undo_stack 에 'place' 를 push 하지만, 슬래브는
-        # 코어벽의 부속물이라 사용자 시점 undo 단위가 아님 — pop 해서 제거.
-        # 안전망: 직전 항목이 '바로 이 슬래브의 place' 인지 component_id 일치 검사.
-        if (scene.undo_stack
+        # 슬래브는 코어벽 부속물 — add_component 가 push 한 'place' undo 는 제거
+        # (keep_undo 면 보존 → 상위에서 group_place 로 묶음).
+        if (not keep_undo and scene.undo_stack
                 and scene.undo_stack[-1].action_type == 'place'
                 and scene.undo_stack[-1].data.get('component_id') == cid):
             scene.undo_stack.pop()
         created.append(cid)
 
-    # [2026-05-17] 1층 바닥 코어슬래브 추가 — 기존 z_list 는 k·H+h(=각 층
-    # 천장=다음 층 바닥) 만 포함해 1층 바닥(z≈0) 위치 슬래브가 빠짐.
-    # 다른 1층 부재(FloorPanel z=0, 모듈 바닥보 z=0) 와 같은 z 레벨에
-    # 노드가 오도록 pos.z = -slab_thickness 로 두면, 슬래브 상면 z = 0.
-    # floor_index=0 의 기존 천장 슬래브와 구별을 위해 sub_index 새로 부여.
-    bbox_floor1 = _compute_core_slab_bbox_xy(scene, group_id, 0)
-    if bbox_floor1 is not None:
-        min_x, min_y, max_x, max_y = bbox_floor1
-        w_slab = max_x - min_x
-        d_slab = max_y - min_y
-        if w_slab > 0.0 and d_slab > 0.0:
-            wall_t_in_group = 300.0
-            for c in scene.components.values():
-                if (getattr(c, 'group_id', 0) == group_id
-                        and getattr(c, 'floor_index', 0) == 0
-                        and c.comp_type == ComponentType.CORE):
-                    wall_t_in_group = float(c.dimensions.get('depth', 300.0))
-                    break
-            z_bot = -float(slab_thickness)
-            slab_pos = np.array([min_x, min_y, z_bot], dtype=np.float64)
-            slab_dims = {
-                'width': float(w_slab),
-                'depth': float(d_slab),
-                'thickness': float(slab_thickness),
-                'height': float(slab_thickness),
-                'wall_thickness': float(wall_t_in_group),
-            }
-            slab = instantiate(ComponentType.CORE_SLAB, slab_pos, slab_dims,
-                               rotation=0, anchor=0)
-            slab.group_id = group_id
-            slab.floor_index = 0
-            slab.sub_index = _next_sub_index(scene, group_id)
-            cid = scene.add_component(slab)
-            if (scene.undo_stack
-                    and scene.undo_stack[-1].action_type == 'place'
-                    and scene.undo_stack[-1].data.get('component_id') == cid):
-                scene.undo_stack.pop()
-            created.append(cid)
+    for k in range(n_floors + 1):
+        _make(k * H + h - float(slab_thickness), k)   # 각 층 천장
+    _make(-float(slab_thickness), 0)                   # 1층 바닥
     return created
 
 

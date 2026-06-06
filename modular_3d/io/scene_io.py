@@ -68,7 +68,13 @@ def scene_to_state_dict(scene: Scene, n_floors: int) -> dict:
             'position': [float(comp.position[0]), float(comp.position[1]),
                          float(comp.position[2])],
             'rotation': int(comp.rotation),
-            'dimensions': {k: float(v) for k, v in comp.dimensions.items()},
+            # 값은 보통 float 지만, 'polygon'(코어 슬래브 임의 폴리곤) 같은 리스트
+            # 값도 그대로 보존한다(폴리곤=[[x,y],...] 로컬 점 목록).
+            'dimensions': {
+                k: (float(v) if isinstance(v, (int, float))
+                    else [[float(p[0]), float(p[1])] for p in v]
+                    if k == 'polygon' and v else v)
+                for k, v in comp.dimensions.items()},
             'anchor': int(comp.anchor),
             'group_id': int(getattr(comp, 'group_id', 0)),
             'floor_index': int(getattr(comp, 'floor_index', 0)),

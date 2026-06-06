@@ -65,9 +65,13 @@ _JS_KEY_TO_QT = {
     '9': Qt.Key_9, '0': Qt.Key_0,
     'x': Qt.Key_X, 'y': Qt.Key_Y, 'r': Qt.Key_R, 'v': Qt.Key_V,
     'm': Qt.Key_M, 'c': Qt.Key_C, 'z': Qt.Key_Z, 'i': Qt.Key_I,
+    't': Qt.Key_T,   # 거리 측정 도구 토글
+    'p': Qt.Key_P,   # 코어 슬래브 그리기
+
     'escape': Qt.Key_Escape, 'enter': Qt.Key_Return,
     'delete': Qt.Key_Delete, 'backspace': Qt.Key_Backspace,
     'f5': Qt.Key_F5, 'f6': Qt.Key_F6,
+    ' ': Qt.Key_Space, '-': Qt.Key_Minus,   # 수치 이동 입력(스페이스 진입/적용, 음수)
 }
 
 
@@ -92,6 +96,8 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
     """2D 평면뷰 캔버스."""
 
     move_requested = pyqtSignal(int, int, float)  # (comp_id, axis, delta)
+    # 다중선택 묶음 통째 정렬 — (선택 id 목록, axis, delta)
+    move_multi_requested = pyqtSignal(object, int, float)
     # [2026-05-11] 선택 부재 변경 통지 — 우측 디자인 속성 패널 갱신용
     selection_changed = pyqtSignal(int)            # comp_id (선택 해제 = -1)
     # [2026-05-24] 선택 실 변경 통지 — 우측 실 속성 패널 갱신용
@@ -116,8 +122,30 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
         self._layer = LAYER_BOTTOM
         self._state = STATE_IDLE
         self._selected_id = -1
+        # 다중선택(Ctrl+클릭): 직접 고른 본체 부재 id 목록(순서 보존, [0]=기준 seed).
+        # _selected_id 는 항상 이 목록의 seed(첫 원소) 또는 -1 과 동기화한다(단일선택
+        # 코드 경로가 _selected_id 만 읽어도 동작하도록). 길이 2 이상이면 다중 경로.
+        self._selected_ids: list = []
+        # X/Y 정렬을 다중(묶음 통째)으로 진입했는지 표시 — _apply_snap 분기용.
+        self._multi_align = False
+        # 수치 거리 이동 모드(스페이스바 진입): 축 선택(x/y) + 부호 숫자 입력 후
+        # 스페이스/엔터로 그 거리만큼 평행이동. _num_axis: None|0(x)|1(y).
+        self._num_active = False
+        self._num_axis = None
+        self._num_buf = ''
+        # 거리 측정 도구(T 키): 선(부재 외곽 모서리) 두 개를 클릭해 사이 거리 표시.
+        # _measure_pts: [(axis, coord, wx, wy), ...] (0~2개). axis 0=세로선(x), 1=가로선(y).
+        self._measure_active = False
+        self._measure_pts = []
+        self._measure_result = None   # {'p1':[x,y],'p2':[x,y],'dist':float} or None
+        # 코어 슬래브 그리기(P 키): 실 그리기처럼 폴리곤 점을 찍어 코어 슬래브 생성.
+        self._core_slab_draw_active = False
+        self._core_slab_points = []          # [(wx, wy), ...]
+        self._core_slab_snap_point = None
         # 내벽 수동 종속(i 키): 부모 클릭을 기다리는 내벽 id (-1=비활성).
         self._wall_attach_id = -1
+        # 코어벽 종속(i 키): 슬래브 클릭을 기다리는 코어벽 id 목록(빈=비활성).
+        self._core_attach_ids = []
         self._direction = None          # 'X' or 'Y'
         self._reference_edge = None     # (axis, coord) axis: 0=V(x)선, 1=H(y)선
         self._hover_id = -1
@@ -165,6 +193,9 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
         self._room_cursor_world = (0.0, 0.0)  # 현재 마우스(스냅 후) — 고무줄선
         self._room_snap_point = None        # 꼭짓점 스냅 마커 표시용
         self._selected_room_id = -1         # 선택된 실 id (-1 = 없음)
+        # 실 다중선택(Ctrl+클릭): 고른 실 id 목록(순서 보존, [0]=기준 seed).
+        # _selected_room_id 는 항상 이 목록의 seed 또는 -1 과 동기화.
+        self._selected_room_ids = []
         self._f5_on_room_complete = None    # 콜백(points) — 완료 시 호출
         self._f5_on_room_delete = None      # 콜백(room_id) — Del 삭제 시 호출
         # 실 이동/복사 미리보기 (부재식 조작) — 개구부 _op_preview 와 같은 패턴.
@@ -240,28 +271,37 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
 
         # ── M3-c-1: 하이라이트 집합 미리 계산 ──
         selected_id = int(self._selected_id)
-        # 정렬 오차 (선택 부재 기준)
+        # 다중선택(Ctrl+클릭) 집합 — 비면 단일 selected_id 로 대체.
+        sel_ids = (list(self._selected_ids) if getattr(self, '_selected_ids', None)
+                   else ([selected_id] if selected_id > 0 else []))
+        selected_set = set(int(c) for c in sel_ids)
+        # 정렬 오차는 단일선택일 때만 의미.
         mis_dict = (self._misaligned_set(selected_id)
-                    if selected_id > 0 else {})
+                    if len(sel_ids) == 1 and selected_id > 0 else {})
 
-        # 같은 그룹 + 합체 파트너
+        # 같은 그룹 + 합체 파트너 — 다중이면 고른 모든 부재 기준 합집합.
+        sel_gids = set()
+        for sid in sel_ids:
+            c0 = scene.get(int(sid))
+            g0 = int(getattr(c0, 'group_id', 0) or 0) if c0 is not None else 0
+            if g0 > 0:
+                sel_gids.add(g0)
         same_group_ids = set()
+        if sel_gids:
+            for cid_o, c in scene.items():
+                if (int(cid_o) not in selected_set
+                        and int(getattr(c, 'group_id', 0) or 0) in sel_gids):
+                    same_group_ids.add(int(cid_o))
         merged_partner_ids = set()
-        if selected_id > 0:
-            sel = scene.get(selected_id)
-            sel_gid = int(getattr(sel, 'group_id', 0) or 0) if sel else 0
-            if sel and sel_gid > 0:
-                for cid_o, c in scene.items():
-                    if (cid_o != selected_id
-                            and int(getattr(c, 'group_id', 0) or 0) == sel_gid):
-                        same_group_ids.add(int(cid_o))
-            if sel is not None:
-                # 합체 파트너 — StructWall ↔ FloorPanel
-                if isinstance(sel, StructWall) and sel.merged_fp_id is not None:
-                    merged_partner_ids.add(int(sel.merged_fp_id))
-                elif isinstance(sel, FloorPanel) and sel.merged_wall_ids:
-                    for fp_w in sel.merged_wall_ids:
-                        merged_partner_ids.add(int(fp_w))
+        for sid in sel_ids:
+            sel = scene.get(int(sid))
+            if sel is None:
+                continue
+            if isinstance(sel, StructWall) and sel.merged_fp_id is not None:
+                merged_partner_ids.add(int(sel.merged_fp_id))
+            elif isinstance(sel, FloorPanel) and sel.merged_wall_ids:
+                for fp_w in sel.merged_wall_ids:
+                    merged_partner_ids.add(int(fp_w))
 
         # DEPENDENCY_PICK 후보 부재 (종속 부재 부모 클릭 단계)
         dep_candidate_ids = set()
@@ -308,7 +348,7 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
             tname = TYPE_NAMES.get(ct, '부재') if ct is not None else '부재'
 
             # M3-c-1: 하이라이트 카테고리 — vispy 의 _pick_base_color 와 동일 우선순위
-            if cid == selected_id or int(cid) in merged_partner_ids:
+            if int(cid) in selected_set or int(cid) in merged_partner_ids:
                 hl = 'selected'
             elif int(cid) in mis_dict:
                 hl = 'misaligned'
@@ -346,6 +386,15 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
                                and getattr(comp, 'merged_fp_id', None))
             if (_is_dep_label or _is_merged_wall) and ' ' in _raw_label:
                 _raw_label = _raw_label.replace(' ', '\n', 1)
+            # 폴리곤 코어 슬래브 — 2D 에 실제 폴리곤 외곽(월드 xy) 전달(사각형 대신).
+            comp_poly = None
+            if (_ctv == 'core_slab' and comp.dimensions.get('polygon')
+                    and getattr(comp, 'slab', None) is not None):
+                try:
+                    comp_poly = [[float(c[0]), float(c[1])]
+                                 for c in comp.slab.corners]
+                except Exception:
+                    comp_poly = None
             components.append({
                 'id': int(cid),
                 'comp_type': ct.value if ct is not None else '',
@@ -354,6 +403,7 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
                 'sub_index': int(getattr(comp, 'sub_index', 0) or 0),
                 'rects': rects,
                 'bbox': [float(bx0), float(by0), float(bx1), float(by1)],
+                'polygon': comp_poly,
                 'label': _raw_label,
                 'highlight': hl,
                 'mis_label': mis_label,
@@ -385,27 +435,66 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
                 'color': [int(col[0]), int(col[1]), int(col[2])],
                 'name': str(name),
                 'centroid': [float(cx_r), float(cy_r)],
-                'selected': bool(rid == self._selected_room_id),
+                'selected': bool(rid == self._selected_room_id
+                                 or int(rid) in self._selected_room_ids),
             })
 
-        # ── M3-c-2: 미리보기·고스트·스냅 (Python 에서 폴리곤 계산) ──
-        # F5 PREVIEW 고스트 — 부재 4 꼭짓점 + 마우스 앵커
+        # ── M3-c-2: 미리보기·고스트·스냅 (Python 에서 계산) ──
+        # F5 PREVIEW 고스트 — 실제 부재와 같은 형식(역할 사각형 + 개구부 + bbox)으로
+        # 정밀 표시. 공유 빌더(controller)가 2D·3D 동일한 변환 부재를 만들어, 두 화면
+        # 고스트가 항상 정합한다. [함정] JS `_drawPreviews` 가 f5_ghost.comps 를 읽으므로
+        # 구조를 바꾸면 양쪽을 같이 고쳐야 한다.
         f5_ghost = None
         if self._f5_in_preview:
+            mx, my = (float(self._f5_mouse_world[0]),
+                      float(self._f5_mouse_world[1]))
+            gcomps = None
             try:
-                corners = self._f5_compute_ghost_corners()
+                gcomps = self._controller._f5_build_ghost_components(mx, my)
             except Exception:
-                corners = None
-            if corners:
-                f5_ghost = {
-                    'corners': [[float(c[0]), float(c[1])] for c in corners],
-                    'mouse': [float(self._f5_mouse_world[0]),
-                              float(self._f5_mouse_world[1])],
-                }
+                gcomps = None
+            if gcomps:
+                from modular_3d.render.opening_mesh import opening_xy_polygons
+                comps_payload = []
+                for gc in gcomps:
+                    grects = []
+                    try:
+                        for rect, role in _iter_component_rects(gc, self._layer):
+                            x0, y0, x1, y1 = rect
+                            grects.append({'role': role,
+                                           'x0': float(x0), 'y0': float(y0),
+                                           'x1': float(x1), 'y1': float(y1)})
+                    except Exception:
+                        pass
+                    try:
+                        bx0, by0, bx1, by1 = _xy_bbox(gc)
+                        bbox = [float(bx0), float(by0), float(bx1), float(by1)]
+                    except Exception:
+                        bbox = None
+                    gops = []
+                    try:
+                        for (idx, pts, kind) in opening_xy_polygons(gc):
+                            gops.append([[float(px), float(py)]
+                                         for (px, py) in pts])
+                    except Exception:
+                        pass
+                    comps_payload.append({'rects': grects, 'bbox': bbox,
+                                          'openings': gops})
+                f5_ghost = {'comps': comps_payload, 'mouse': [mx, my]}
 
         # 실 이동/복사 미리보기 폴리곤 (계산된 결과)
         room_preview_poly = None
-        if self._room_preview is not None:
+        room_preview_multi = None
+        if self._room_preview is not None and self._room_preview.get('multi'):
+            try:
+                polys = self._room_preview_polygons_multi()
+            except Exception:
+                polys = {}
+            room_preview_multi = [
+                [[float(x), float(y)] for (x, y) in poly]
+                for poly in polys.values() if poly and len(poly) >= 2
+            ]
+        elif self._room_preview is not None:
             try:
                 poly = self._room_preview_polygon()
             except Exception:
@@ -584,7 +673,14 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
                 'cursor': list(self._room_cursor_world),
                 'snap_point': self._room_snap_point,
             },
-            'room_preview': self._room_preview,
+            'room_preview': (None if (self._room_preview is not None
+                                      and self._room_preview.get('multi'))
+                             else self._room_preview),
+            'room_preview_multi': room_preview_multi,
+            'core_slab_draw': {
+                'active': bool(self._core_slab_draw_active),
+                'points': [[float(x), float(y)] for (x, y) in self._core_slab_points],
+            },
             'op_preview': self._op_preview,
             'import_preview': self._import_preview,
             'help_text': help_text,
@@ -595,6 +691,8 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
             'op_preview_poly': op_preview_poly,
             'import_preview_polys': import_preview_polys,
             'openings': openings,
+            # 거리 측정 결과(선 두 개 사이) — {p1,p2,dist} 또는 None
+            'measure': (self._measure_result if self._measure_active else None),
         }
 
     def set_placement_callback(self, on_type_key=None,
@@ -703,8 +801,9 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
         # 진행 중 상태 일괄 정리
         self._cancel_room_draw()
         self._cancel_room_preview()
-        if self._selected_room_id != -1:
+        if self._selected_room_id != -1 or self._selected_room_ids:
             self._selected_room_id = -1
+            self._selected_room_ids = []
             self.room_selection_changed.emit(-1)
         self._cancel_opening_preview()
         self._selected_opening = None
@@ -906,6 +1005,10 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
         if pv is None:
             return
         pv['_wx'] = float(wx); pv['_wy'] = float(wy)
+        if pv.get('multi'):
+            # 다중: 2D payload 가 모든 폴리곤을 그림(3D 고스트는 생략).
+            self.update()
+            return
         poly = self._room_preview_polygon(wx, wy)
         if poly and self._f5_on_room_ghost is not None:
             self._f5_on_room_ghost(pv['room_type'], poly)
@@ -916,11 +1019,180 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
         pv = self._room_preview
         if pv is None:
             return
+        if pv.get('multi'):
+            polys = self._room_preview_polygons_multi(wx, wy)
+            mode = pv['mode']
+            self._cancel_room_preview()
+            items = [(rid, poly) for rid, poly in polys.items()]
+            if items and hasattr(self._controller, '_f5_on_room_commit_multi'):
+                self._controller._f5_on_room_commit_multi(items, mode)
+            return
         poly = self._room_preview_polygon(wx, wy)
         src = pv['src']; mode = pv['mode']
         self._cancel_room_preview()
         if poly and self._f5_on_room_commit is not None:
             self._f5_on_room_commit(src, poly, mode)
+
+    def begin_room_preview_multi(self, mode):
+        """다중 실 이동/복사 미리보기 — 기준 실(첫 클릭) 중심 공통 변환."""
+        ids = list(self._selected_room_ids)
+        if len(ids) < 2:
+            return
+        rooms = self._controller._scene.rooms
+        seed = rooms.get(ids[0])
+        if seed is None or len(getattr(seed, 'polygon', [])) < 3:
+            return
+        scx = sum(p[0] for p in seed.polygon) / len(seed.polygon)
+        scy = sum(p[1] for p in seed.polygon) / len(seed.polygon)
+        bases = {}
+        rtypes = {}
+        for rid in ids:
+            r = rooms.get(rid)
+            if r is None or len(getattr(r, 'polygon', [])) < 3:
+                continue
+            bases[rid] = [(float(x), float(y)) for (x, y) in r.polygon]
+            rtypes[rid] = r.room_type
+        if len(bases) < 2:
+            return
+        self._room_preview = {
+            'mode': mode, 'multi': True, 'seed_id': ids[0],
+            'seed_center': (scx, scy),
+            'base': bases[ids[0]],     # V 앵커는 seed 폴리곤 꼭짓점 기준
+            'bases': bases, 'room_types': rtypes,
+            'anchor': 0, 'rot': 0, '_wx': None, '_wy': None,
+        }
+        self.setFocus()
+        self.update()
+
+    def _room_preview_polygons_multi(self, wx=None, wy=None):
+        """다중 미리보기 — {room_id: 변환된 폴리곤}. seed 중심 회전 + seed 앵커→마우스."""
+        pv = self._room_preview
+        if pv is None or not pv.get('multi'):
+            return {}
+        import math
+        scx, scy = pv['seed_center']
+        rad = math.radians(pv['rot'])
+        cs, sn = math.cos(rad), math.sin(rad)
+        if wx is None:
+            wx, wy = pv.get('_wx'), pv.get('_wy')
+        seed_base = pv['base']
+        ai = pv['anchor'] % len(seed_base)
+        sx0, sy0 = seed_base[ai]
+        rax = scx + (sx0 - scx) * cs - (sy0 - scy) * sn
+        ray = scy + (sx0 - scx) * sn + (sy0 - scy) * cs
+        ddx, ddy = (0.0, 0.0) if wx is None else (wx - rax, wy - ray)
+        out = {}
+        for rid, base in pv['bases'].items():
+            poly = []
+            for (x, y) in base:
+                rx = scx + (x - scx) * cs - (y - scy) * sn
+                ry = scy + (x - scx) * sn + (y - scy) * cs
+                poly.append((rx + ddx, ry + ddy))
+            out[rid] = poly
+        return out
+
+    def _rotate_rooms_multi(self):
+        """다중 실 제자리 묶음 회전 — 기준 실(첫 클릭) 중심 90° 회전 후 확정."""
+        ids = list(self._selected_room_ids)
+        if len(ids) < 2:
+            return
+        rooms = self._controller._scene.rooms
+        seed = rooms.get(ids[0])
+        if seed is None or len(getattr(seed, 'polygon', [])) < 3:
+            return
+        scx = sum(p[0] for p in seed.polygon) / len(seed.polygon)
+        scy = sum(p[1] for p in seed.polygon) / len(seed.polygon)
+        items = []
+        for rid in ids:
+            r = rooms.get(rid)
+            if r is None or len(getattr(r, 'polygon', [])) < 3:
+                continue
+            rot = [(scx - (y - scy), scy + (x - scx)) for (x, y) in r.polygon]
+            items.append((rid, rot))
+        if items and hasattr(self._controller, '_f5_on_room_commit_multi'):
+            self._controller._f5_on_room_commit_multi(items, 'move')
+
+    def _flip_selected_room(self, axis):
+        """단일 실 제자리 거울 뒤집기 — 자기 중심 축 기준 폴리곤 반사(전 층 동기)."""
+        rid = self._selected_room_id
+        room = self._controller._scene.rooms.get(rid)
+        if room is None or len(getattr(room, 'polygon', [])) < 3:
+            return
+        cx = sum(p[0] for p in room.polygon) / len(room.polygon)
+        cy = sum(p[1] for p in room.polygon) / len(room.polygon)
+        if axis == 'x':
+            fl = [(2 * cx - x, y) for (x, y) in room.polygon]
+        else:
+            fl = [(x, 2 * cy - y) for (x, y) in room.polygon]
+        if self._f5_on_room_commit is not None:
+            self._f5_on_room_commit(rid, fl, 'move')
+
+    def _flip_rooms_multi(self, axis):
+        """다중 실 거울 뒤집기 — 기준 실(첫 클릭) 중심 축 기준 전체 반사(자리바꿈+각 반사)."""
+        ids = list(self._selected_room_ids)
+        if len(ids) < 2:
+            return
+        rooms = self._controller._scene.rooms
+        seed = rooms.get(ids[0])
+        if seed is None or len(getattr(seed, 'polygon', [])) < 3:
+            return
+        scx = sum(p[0] for p in seed.polygon) / len(seed.polygon)
+        scy = sum(p[1] for p in seed.polygon) / len(seed.polygon)
+        items = []
+        for rid in ids:
+            r = rooms.get(rid)
+            if r is None or len(getattr(r, 'polygon', [])) < 3:
+                continue
+            if axis == 'x':
+                fl = [(2 * scx - x, y) for (x, y) in r.polygon]
+            else:
+                fl = [(x, 2 * scy - y) for (x, y) in r.polygon]
+            items.append((rid, fl))
+        if items and hasattr(self._controller, '_f5_on_room_commit_multi'):
+            self._controller._f5_on_room_commit_multi(items, 'move')
+
+    def _delete_rooms_multi(self):
+        """다중 실 삭제."""
+        ids = list(self._selected_room_ids)
+        if ids and hasattr(self._controller, '_f5_on_room_delete_multi'):
+            self._controller._f5_on_room_delete_multi(ids)
+        self._selected_room_id = -1
+        self._selected_room_ids = []
+        self.update()
+        self.room_selection_changed.emit(-1)
+
+    # ── 코어 슬래브 그리기 (P 키, 실 그리기 흐름 재사용) ─────────
+    def start_core_slab_draw(self):
+        """P 키 — 코어 슬래브 폴리곤 그리기 시작(부재 모드). 완료 시 자동 종료."""
+        self._core_slab_draw_active = True
+        self._core_slab_points = []
+        self._core_slab_snap_point = None
+        self._selected_id = -1
+        self._selected_ids = []
+        self.setFocus()
+        if hasattr(self._controller, '_dim_panel') and self._controller._dim_panel:
+            self._controller._dim_panel.set_mode_text(
+                '[코어 슬래브 그리기: 점 클릭 / Enter 완료 / 우클릭=취소 / Esc 종료]')
+        self.update()
+
+    def _finish_core_slab_draw(self):
+        """Enter — 점 3개 이상이면 코어 슬래브 생성 후 모드 자동 종료."""
+        pts = list(self._core_slab_points)
+        self._core_slab_draw_active = False
+        self._core_slab_points = []
+        self._core_slab_snap_point = None
+        self.update()
+        if len(pts) >= 3 and hasattr(self._controller, '_f5_on_core_slab_complete'):
+            self._controller._f5_on_core_slab_complete(pts)
+
+    def _cancel_core_slab_draw(self):
+        """Esc — 코어 슬래브 그리기 취소."""
+        self._core_slab_draw_active = False
+        self._core_slab_points = []
+        self._core_slab_snap_point = None
+        if hasattr(self._controller, '_dim_panel') and self._controller._dim_panel:
+            self._controller._dim_panel.set_mode_text('[IDLE]')
+        self.update()
 
     def _cancel_room_preview(self):
         if self._room_preview is not None:
@@ -962,8 +1234,9 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
         if self._edit_mode != 'room':
             self.set_edit_mode('room')
         # 기존 선택 해제
-        if self._selected_room_id != -1:
+        if self._selected_room_id != -1 or self._selected_room_ids:
             self._selected_room_id = -1
+            self._selected_room_ids = []
             self.room_selection_changed.emit(-1)
         self._room_draw_active = True
         self._room_points = []
@@ -973,8 +1246,9 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
 
     def clear_room_selection(self):
         """실 선택 해제(패널 삭제 등 외부 트리거용) — 시그널 발생 없음."""
-        if self._selected_room_id != -1:
+        if self._selected_room_id != -1 or self._selected_room_ids:
             self._selected_room_id = -1
+            self._selected_room_ids = []
             self.update()
 
     def _hit_test_room(self, wx, wy):
@@ -1066,7 +1340,18 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
         """선택/방향/기준을 모두 초기화."""
         self._state = STATE_IDLE
         self._selected_id = -1
+        self._selected_ids = []
+        self._multi_align = False
+        self._num_active = False
+        self._num_axis = None
+        self._num_buf = ''
+        self._measure_active = False
+        self._measure_pts = []
+        self._measure_result = None
+        self._core_slab_draw_active = False
+        self._core_slab_points = []
         self._wall_attach_id = -1
+        self._core_attach_ids = []
         self._direction = None
         self._reference_edge = None
         self._hover_id = -1
@@ -1134,24 +1419,29 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
             self._pan_start_cy = self._pan_y
             return
         # 좌/우클릭 처리는 _process_press_at 로 위임 (three.js 입력과 공유).
+        # Ctrl 동시누름이면 다중선택 토글 신호로 전달.
+        ctrl_held = bool(event.modifiers() & Qt.ControlModifier)
         self._process_press_at(event.pos().x(), event.pos().y(),
-                               event.button())
+                               event.button(), ctrl=ctrl_held)
 
     # ── UI 마이그레이션 M4-b — three.js 2D 클릭 진입점 ──
-    def handle_world_click(self, wx: float, wy: float, button: int) -> None:
+    def handle_world_click(self, wx: float, wy: float, button: int,
+                           ctrl: bool = False) -> None:
         """three.js 2D 의 클릭 — world 좌표를 받아 기존 선택 분기를 그대로 재사용.
 
         three.js 는 자체 카메라 world 좌표를 보냄. 이를 vispy `_world_to_screen`
         으로 환산하면 (왕복 항등) 기존 _process_press_at 이 `_screen_to_world`
         로 정확히 복원해 동일 동작. button: 0=left, 2=right (JS 규약).
+        ctrl=True 면 다중선택 토글(Ctrl+클릭).
         """
         qt_btn = Qt.RightButton if button == 2 else Qt.LeftButton
         sx, sy = self._world_to_screen(wx, wy)
-        self._process_press_at(int(sx), int(sy), qt_btn)
+        self._process_press_at(int(sx), int(sy), qt_btn, ctrl=bool(ctrl))
 
-    def _process_press_at(self, mx, my, button):
+    def _process_press_at(self, mx, my, button, ctrl=False):
         """좌/우클릭 처리 — vispy mousePressEvent 와 three.js handle_world_click
-        이 공유. mx, my 는 *vispy screen 좌표*, button 은 Qt.LeftButton 등."""
+        이 공유. mx, my 는 *vispy screen 좌표*, button 은 Qt.LeftButton 등.
+        ctrl=True 면 본체 부재 다중선택 토글(Ctrl+클릭)."""
         # ── 내벽 수동 종속(i 키): 부모 클릭 대기 ──
         # 좌클릭한 모듈/패널을 부모로 삼아 종속. 우클릭/빈 곳/취소면 모드 해제.
         if getattr(self, '_wall_attach_id', -1) > 0:
@@ -1163,6 +1453,35 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
                     ctrl._f5_attach_wall_to_parent(self._wall_attach_id, int(hit))
             self._wall_attach_id = -1
             self.reset_state()
+            return
+        # ── 코어벽 종속(i 키): 좌클릭한 코어 슬래브에 선택 코어벽들을 종속 ──
+        if self._core_attach_ids:
+            if button == Qt.LeftButton:
+                hit = self._hit_test_component(mx, my)
+                ctrl = self._controller
+                if hit and int(hit) > 0 and hasattr(ctrl, '_f5_attach_core_to_slab'):
+                    ctrl._f5_attach_core_to_slab(
+                        list(self._core_attach_ids), int(hit))
+            self._core_attach_ids = []
+            self.reset_state()
+            return
+        # ── 거리 측정 모드: 좌클릭으로 선(모서리) 2개를 찍어 거리 표시 ──
+        if self._measure_active:
+            if button == Qt.LeftButton:
+                self._measure_click(mx, my)
+            return
+        # ── 코어 슬래브 그리기: 좌클릭=점 추가(스냅), 우클릭=직전 점 취소 ──
+        if self._core_slab_draw_active:
+            if button == Qt.RightButton:
+                if self._core_slab_points:
+                    self._core_slab_points.pop()
+                    self.update()
+                return
+            if button == Qt.LeftButton:
+                raw_wx, raw_wy = self._screen_to_world(mx, my)
+                sx, sy, _ = self._room_snap(raw_wx, raw_wy)
+                self._core_slab_points.append((sx, sy))
+                self.update()
             return
         # ── 정의 가져오기 미리보기: 좌클릭 확정 ──
         if self._import_preview is not None:
@@ -1190,11 +1509,27 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
                     self._room_points.append((sx, sy))
                     self.update()
                 return
-            # 그리기 중 아님 → 좌클릭으로 실 선택/해제
+            # 그리기 중 아님 → 좌클릭으로 실 선택/해제 (Ctrl=다중 토글)
             if button == Qt.LeftButton:
                 wx, wy = self._screen_to_world(mx, my)
                 rid = self._hit_test_room(wx, wy)
+                if ctrl:
+                    if rid > 0:
+                        if rid in self._selected_room_ids:
+                            self._selected_room_ids.remove(rid)
+                        else:
+                            if (not self._selected_room_ids
+                                    and self._selected_room_id > 0):
+                                self._selected_room_ids = [int(self._selected_room_id)]
+                            self._selected_room_ids.append(int(rid))
+                        self._selected_room_id = (self._selected_room_ids[0]
+                                                  if self._selected_room_ids else -1)
+                        self.setFocus()
+                        self.update()
+                        self.room_selection_changed.emit(int(self._selected_room_id))
+                    return
                 self._selected_room_id = rid
+                self._selected_room_ids = [int(rid)] if rid > 0 else []
                 self.setFocus()
                 self.update()
                 self.room_selection_changed.emit(int(rid))
@@ -1266,8 +1601,41 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
 
         # IDLE / SELECTED / REFERENCE 에서 다른 부재 클릭 → 선택 변경
         hit = self._hit_test_component(mx, my)
+
+        # ── Ctrl+클릭: 본체 부재 다중선택 토글 ──────────────────
+        if ctrl:
+            if hit > 0:
+                comp = self._controller._scene.components.get(hit)
+                # 본체(sub_index==0)만 다중선택 대상 — 종속 보/캔틸레버·개구부 제외.
+                if comp is not None and int(getattr(comp, 'sub_index', 0) or 0) == 0:
+                    if hit in self._selected_ids:
+                        self._selected_ids.remove(hit)        # 이미 있으면 해제
+                    else:
+                        # 기존 단일선택이 목록에 없으면 seed 로 먼저 승계 후 추가.
+                        if (not self._selected_ids and self._selected_id > 0
+                                and self._selected_id != hit):
+                            self._selected_ids = [int(self._selected_id)]
+                        self._selected_ids.append(int(hit))
+                    # seed(_selected_id) 동기화 — 목록 비면 해제.
+                    self._selected_id = (self._selected_ids[0]
+                                         if self._selected_ids else -1)
+                    self._state = (STATE_SELECTED if self._selected_ids
+                                   else STATE_IDLE)
+                    self._direction = None
+                    self._reference_edge = None
+                    self._multi_align = False
+                    self._hover_id = -1
+                    self.setFocus()
+                    self.update()
+                    self.selection_changed.emit(int(self._selected_id))
+            # Ctrl+빈클릭: 선택 유지(변화 없음)
+            return
+
         if hit > 0:
+            # 일반 클릭 → 단일선택으로 초기화
             self._selected_id = hit
+            self._selected_ids = [int(hit)]
+            self._multi_align = False
             self._state = STATE_SELECTED
             self._direction = None
             self._reference_edge = None
@@ -1376,23 +1744,73 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
 
     def keyPressEvent(self, event):
         # 좌/우/키 처리는 _process_key 로 위임 (three.js 입력과 공유).
-        self._process_key(event.key(), event.text())
+        # 수정키(Shift)는 뒤집기(Shift+X/Y) 판별에 쓰인다.
+        self._process_key(event.key(), event.text(), int(event.modifiers()))
         event.accept()  # 2D 캔버스 키는 항상 소비 (QLabel 기본 동작 불필요)
 
     # ── UI 마이그레이션 M5-a — three.js 2D 키 입력 진입점 ──
-    def handle_key(self, js_key: str, text: str) -> None:
+    def handle_key(self, js_key: str, text: str, shift: bool = False) -> None:
         """three.js 2D 키 입력 — JS KeyboardEvent.key 문자열을 Qt.Key_* 로
-        매핑해 기존 키 처리 분기를 그대로 재사용."""
+        매핑해 기존 키 처리 분기를 그대로 재사용. shift=True 면 뒤집기(Shift+X/Y)
+        판별용 ShiftModifier 비트를 함께 넘긴다."""
         qt_key = _JS_KEY_TO_QT.get((js_key or '').lower())
         if qt_key is not None:
-            self._process_key(qt_key, text)
+            mods = Qt.ShiftModifier if shift else Qt.NoModifier
+            self._process_key(qt_key, text, int(mods))
 
-    def _process_key(self, key, text):
+    def _process_key(self, key, text, modifiers=0):
         """키 처리 — vispy keyPressEvent 와 three.js handle_key 공유.
-        key 는 Qt.Key_*, text 는 입력 문자."""
+        key 는 Qt.Key_*, text 는 입력 문자, modifiers 는 Qt 수정키 비트(Shift 등)."""
         # 0) F5/F6 키는 항상 컨트롤러로 전달 (도크에 포커스가 있어도 토글 작동).
         if key in (Qt.Key_F5, Qt.Key_F6):
             self._controller.on_qt_key_press(text, key)
+            return
+
+        # 0a1) 수치 거리 이동 모드(스페이스바 진입) — 활성 시 키를 독점 처리.
+        #   X/Y=축, 0~9·'-'=숫자 입력, Backspace=한 자 지움, Space/Enter=적용, Esc=취소.
+        if self._num_active:
+            self._handle_num_key(key, text)
+            return
+
+        # 0a1b) T 키 — 거리 측정 도구 토글(선 두 개 클릭 → 사이 거리). 부재 모드에서만.
+        if (key == Qt.Key_T and self._edit_mode == 'component'
+                and not self._f5_in_preview and self._import_preview is None):
+            if self._measure_active:
+                self._measure_active = False
+                self._measure_pts = []
+                self._measure_result = None
+                self._num_set_panel('[IDLE]')
+            else:
+                self._measure_active = True
+                self._measure_pts = []
+                self._measure_result = None
+                self._selected_id = -1
+                self._selected_ids = []
+                self._state = STATE_IDLE
+                self._num_set_panel(
+                    '[거리 측정: 첫 번째 선(부재 모서리) 클릭 — T 또는 Esc 로 종료]')
+            self.update()
+            return
+
+        # 0a1c) 코어 슬래브 그리기 모드(P 키 진입) — 점 찍는 중엔 키 독점.
+        if self._core_slab_draw_active:
+            if key in (Qt.Key_Return, Qt.Key_Enter):
+                self._finish_core_slab_draw()
+                return
+            if key == Qt.Key_Escape:
+                self._cancel_core_slab_draw()
+                return
+            if key in (Qt.Key_Backspace, Qt.Key_Delete):
+                if self._core_slab_points:
+                    self._core_slab_points.pop()
+                    self.update()
+                return
+            return  # 그리는 중 다른 키 무시
+        # P 키 — 코어 슬래브 그리기 시작(부재 모드, 미리보기/측정/그리기 아닐 때).
+        if (key == Qt.Key_P and self._edit_mode == 'component'
+                and not self._f5_in_preview and not self._measure_active
+                and self._import_preview is None):
+            self.start_core_slab_draw()
             return
 
         # 0a2) 정의 가져오기 미리보기 — R 회전 / V 기준점 / Esc 취소. 다른 키 차단.
@@ -1446,8 +1864,28 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
                     self._cancel_room_preview()
                     return
                 return  # 미리보기 중 다른 키 무시
-            # 선택 실 조작 — M 이동 / C 복사 / R 제자리 90°회전 / Del / Z / Esc
+            # 다중선택(2개+) 실 — M/C/R/Delete/뒤집기 묶음(기준 실 중심 공통 변환).
+            if len(self._selected_room_ids) >= 2:
+                if (modifiers & Qt.ShiftModifier) and key in (Qt.Key_X, Qt.Key_Y):
+                    self._flip_rooms_multi('x' if key == Qt.Key_X else 'y')
+                    return
+                if key == Qt.Key_M:
+                    self.begin_room_preview_multi('move')
+                    return
+                if key == Qt.Key_C:
+                    self.begin_room_preview_multi('copy')
+                    return
+                if key == Qt.Key_R:
+                    self._rotate_rooms_multi()
+                    return
+                if key in (Qt.Key_Delete, Qt.Key_Backspace):
+                    self._delete_rooms_multi()
+                    return
+            # 선택 실 조작 — M 이동 / C 복사 / R 회전 / Shift+X·Y 뒤집기 / Del / Z / Esc
             if self._selected_room_id > 0:
+                if (modifiers & Qt.ShiftModifier) and key in (Qt.Key_X, Qt.Key_Y):
+                    self._flip_selected_room('x' if key == Qt.Key_X else 'y')
+                    return
                 if key == Qt.Key_M:
                     self.begin_room_preview('move')
                     return
@@ -1462,6 +1900,7 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
                     if self._f5_on_room_delete is not None:
                         self._f5_on_room_delete(rid)
                     self._selected_room_id = -1
+                    self._selected_room_ids = []
                     self.update()
                     self.room_selection_changed.emit(-1)
                     return
@@ -1549,6 +1988,15 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
             self._f5_on_undo()
             return
 
+        # 2b-multi) 다중선택(2개+) + Delete → 합집합 통째 삭제(단일 undo).
+        if (self._state == STATE_SELECTED and len(self._selected_ids) >= 2
+                and key in (Qt.Key_Delete, Qt.Key_Backspace)):
+            ctrl = self._controller
+            if hasattr(ctrl, '_f5_on_delete_multi'):
+                ctrl._f5_on_delete_multi(list(self._selected_ids))
+                self.reset_state()
+                return
+
         # 2b) F5 SELECTED + Delete → 삭제. 이동과 동일 대상으로 '자기 줄' 만 지운다:
         #     - 종속 부재(sub>0, 비코어): 같은 group_id+sub_index(모든 층).
         #     - 코어벽(core): 같은 group_id+xy(모든 층) 한 줄 — 다른 코어벽·슬래브는
@@ -1624,36 +2072,87 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
 
         # 4) ALIGN_SELECTED → 방향 선택 / M 키 = 자유 이동(배치와 동일 흐름)
         if self._state == STATE_SELECTED and self._selected_id > 0:
+            # 스페이스바 → 수치 거리 이동 모드 진입(이후 x/y 축 + 부호 숫자 입력).
+            if key == Qt.Key_Space:
+                self._num_active = True
+                self._num_axis = None
+                self._num_buf = ''
+                self._num_update_text()
+                self.update()
+                return
+            # 다중선택(2개+) 여부 — X/Y 정렬·M 이동·C 복사를 묶음 통째로 처리.
+            _multi = len(self._selected_ids) >= 2
+            # Shift+X(좌우)·Shift+Y(상하) — 거울 뒤집기. 개별·다중 모두. 정렬(X/Y)
+            # 보다 먼저 가로채야 한다(같은 키라 순서 중요).
+            if (modifiers & Qt.ShiftModifier) and key in (Qt.Key_X, Qt.Key_Y):
+                axis = 'x' if key == Qt.Key_X else 'y'
+                flip_ids = (list(self._selected_ids) if self._selected_ids
+                            else [int(self._selected_id)])
+                if hasattr(self._controller, '_f5_on_flip_key'):
+                    self._controller._f5_on_flip_key(
+                        int(self._selected_id), flip_ids, axis)
+                return
             if key == Qt.Key_X:
                 self._direction = 'X'
+                self._multi_align = _multi   # 정렬 확정 시 묶음 통째 이동 분기용
                 self._state = STATE_DIRECTION
                 self.update()
                 return
             if key == Qt.Key_Y:
                 self._direction = 'Y'
+                self._multi_align = _multi
                 self._state = STATE_DIRECTION
                 self.update()
                 return
             # M 키: 자유 이동 모드 — 배치와 동일하게 마우스 따라 반투명 고스트 +
-            # R/V 작동. 치수는 기존 부재 그대로 사용.
+            # R/V 작동. 치수는 기존 부재 그대로 사용. 다중이면 합집합을 seed
+            # (처음 클릭 부재) 기준으로 통째 이동(회전·앵커도 seed 기준).
             if key == Qt.Key_M:
-                if self._f5_on_move_key is not None:
+                if _multi and hasattr(self._controller, '_f5_on_move_key_multi'):
+                    self._controller._f5_on_move_key_multi(
+                        int(self._selected_id), list(self._selected_ids))
+                elif self._f5_on_move_key is not None:
                     self._f5_on_move_key(self._selected_id)
                 return
             # C 키: 복사 — M 과 동일 흐름이되 원본 부재는 그대로 두고 새 부재를
             # 같은 위치에 만들어 마우스 따라 이동 후 클릭으로 위치 확정.
             if key == Qt.Key_C:
-                if self._f5_on_copy is not None:
+                if _multi and hasattr(self._controller, '_f5_on_copy_multi'):
+                    self._controller._f5_on_copy_multi(
+                        int(self._selected_id), list(self._selected_ids))
+                elif self._f5_on_copy is not None:
                     self._f5_on_copy(self._selected_id)
                 return
-            # I 키(개발자용 수동 종속): 선택한 내벽을 다음에 클릭하는 모듈/패널에
-            # 종속시킨다. 자동 종속이 실패한 내벽을 직접 붙이는 루트.
+            # I 키:
+            #  · 코어벽(단일/다중) 선택 → 선택한 벽들로 코어 슬래브 재정의
+            #    (해당 벽들이 속한 그룹의 기존 코어 슬래브 제거 + 새 슬래브 1개 생성).
+            #  · 내벽 선택 → 다음 클릭 모듈/패널에 수동 종속(기존).
             if key == Qt.Key_I:
                 comp = self._controller._scene.components.get(self._selected_id)
                 ctv = getattr(getattr(comp, 'comp_type', None), 'value', '')
-                if comp is not None and ctv == 'interior_wall':
+                if ctv == 'core':
+                    # 코어벽(단일/다중) 선택 + I → 다음 클릭한 코어 슬래브에 종속.
+                    self._core_attach_ids = (list(self._selected_ids)
+                                             if self._selected_ids
+                                             else [int(self._selected_id)])
+                    self._hover_id = -1
+                    if (hasattr(self._controller, '_dim_panel')
+                            and self._controller._dim_panel):
+                        self._controller._dim_panel.set_mode_text(
+                            '[코어벽 종속: 종속시킬 코어 슬래브를 클릭하세요 / Esc 취소]')
+                    self.update()
+                    return
+                if comp is not None and ctv in ('interior_wall',
+                                                'mid_column', 'mid_beam'):
+                    # 내벽·중간기둥·중간보 — 다음 클릭한 부모(모듈 등)에 수동 종속.
                     self._wall_attach_id = int(self._selected_id)
                     self._hover_id = -1
+                    if (hasattr(self._controller, '_dim_panel')
+                            and self._controller._dim_panel):
+                        msg = ('[중간부재 종속: 종속시킬 모듈을 클릭하세요 / Esc 취소]'
+                               if ctv in ('mid_column', 'mid_beam')
+                               else '[내벽 종속: 부모(모듈/패널)를 클릭하세요 / Esc 취소]')
+                        self._controller._dim_panel.set_mode_text(msg)
                     self.update()
                 return
 
@@ -1661,6 +2160,156 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
         # 분기에서 이미 잡혔으므로 본 자리 도달 불가.
         # 처리 안 된 키 — 2D 캔버스는 기본 동작 불필요하므로 무시.
         return
+
+    # ── 수치 거리 이동 (스페이스바 → x/y → 부호 숫자 → Space/Enter) ──
+    def _num_set_panel(self, msg: str):
+        dp = getattr(self._controller, '_dim_panel', None)
+        if dp is not None and hasattr(dp, 'set_mode_text'):
+            dp.set_mode_text(msg)
+
+    def _num_update_text(self):
+        axis_txt = {0: 'X', 1: 'Y'}.get(self._num_axis, '축?(X/Y)')
+        buf = self._num_buf if self._num_buf else '0'
+        self._num_set_panel(
+            f'[수치 이동: {axis_txt} {buf}mm — X/Y 축, 숫자/-, '
+            f'Space·Enter 적용, Esc 취소]')
+
+    def _handle_num_key(self, key, text):
+        """수치 이동 모드 키 처리. _num_active 일 때 _process_key 가 위임."""
+        if key == Qt.Key_Escape:
+            self._num_active = False
+            self._num_axis = None
+            self._num_buf = ''
+            self._num_set_panel('[IDLE]')
+            self.update()
+            return
+        if key == Qt.Key_X:
+            self._num_axis = 0
+            self._num_update_text()
+            return
+        if key == Qt.Key_Y:
+            self._num_axis = 1
+            self._num_update_text()
+            return
+        if key == Qt.Key_Minus:
+            # 부호 토글 — 위치 무관하게 앞 '-' 를 켜고 끈다.
+            if self._num_buf.startswith('-'):
+                self._num_buf = self._num_buf[1:]
+            else:
+                self._num_buf = '-' + self._num_buf
+            self._num_update_text()
+            return
+        if key == Qt.Key_Backspace:
+            if self._num_buf:
+                self._num_buf = self._num_buf[:-1]
+            self._num_update_text()
+            return
+        if Qt.Key_0 <= key <= Qt.Key_9:
+            self._num_buf += chr(key)   # Qt.Key_0..9 == ord('0'..'9')
+            self._num_update_text()
+            return
+        if key in (Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter):
+            self._num_apply()
+            return
+        # 그 외 키는 모드 중 무시.
+        return
+
+    def _num_apply(self):
+        """입력한 부호 거리만큼 선택 부재(들)를 축 방향으로 평행이동."""
+        # 축·숫자 미입력이면 적용 안 함(모드 유지).
+        if self._num_axis is None or self._num_buf in ('', '-', '+'):
+            return
+        try:
+            delta = float(self._num_buf)
+        except ValueError:
+            return
+        axis = int(self._num_axis)
+        ids = (list(self._selected_ids) if self._selected_ids
+               else ([int(self._selected_id)] if self._selected_id > 0 else []))
+        # 모드 종료(선택은 유지 — 반복 입력 가능).
+        self._num_active = False
+        self._num_axis = None
+        self._num_buf = ''
+        if not ids:
+            self._num_set_panel('[IDLE]')
+            return
+        self._emit_move(ids, axis, float(delta))
+        self._num_set_panel(f'[수치 이동 적용: {"XY"[axis]} {delta:+.0f}mm]')
+        self.update()
+
+    def _emit_move(self, ids, axis, delta):
+        """선택 1개=move_requested, 2개+=move_multi_requested 로 평행이동 요청."""
+        if len(ids) >= 2:
+            self.move_multi_requested.emit(list(ids), int(axis), float(delta))
+        else:
+            self.move_requested.emit(int(ids[0]), int(axis), float(delta))
+
+    # ── 거리 측정 도구 (T 키) ────────────────────────────────
+    def _pick_any_edge(self, mx, my):
+        """클릭 위치에서 가장 가까운 부재 외곽 모서리(선) 반환.
+
+        반환 (axis, coord, wx, wy): axis 0=세로선(x=coord), 1=가로선(y=coord).
+        wx,wy=클릭 월드좌표(연결선 중점용). 가까운 모서리 없으면 None.
+        모서리 선분 범위(±여유) 안의 클릭만 후보로 본다.
+        """
+        wx, wy = self._screen_to_world(mx, my)
+        scene = self._controller._scene.components
+        tol_px = EDGE_PICK_PX * 2.5
+        margin = 80.0   # 선분 끝 약간 바깥 클릭도 허용(mm)
+        best = None     # (d_px, axis, coord)
+        for cid in self._current_visible_ids():
+            comp = scene.get(cid)
+            if comp is None:
+                continue
+            try:
+                x0, y0, x1, y1 = _xy_bbox(comp)
+            except Exception:
+                continue
+            # (axis, coord, span_lo, span_hi)
+            for axis, coord, lo, hi in ((0, x0, y0, y1), (0, x1, y0, y1),
+                                        (1, y0, x0, x1), (1, y1, x0, x1)):
+                along = wy if axis == 0 else wx
+                if along < lo - margin or along > hi + margin:
+                    continue
+                d_world = abs(wx - coord) if axis == 0 else abs(wy - coord)
+                d_px = d_world * self._zoom
+                if best is None or d_px < best[0]:
+                    best = (d_px, axis, coord)
+        if best is not None and best[0] <= tol_px:
+            return (best[1], best[2], wx, wy)
+        return None
+
+    def _measure_click(self, mx, my):
+        """측정 모드 클릭 — 선 1개 찍고, 2개째에서 사이 거리 계산·표시."""
+        edge = self._pick_any_edge(mx, my)
+        if edge is None:
+            self._num_set_panel('[거리 측정: 부재 모서리 가까이 클릭하세요]')
+            return
+        if len(self._measure_pts) != 1:
+            # 0개 또는 2개(측정 끝남) → 새 측정 시작.
+            self._measure_pts = [edge]
+            self._measure_result = None
+            self._num_set_panel('[거리 측정: 두 번째 선 클릭]')
+            self.update()
+            return
+        e1, e2 = self._measure_pts[0], edge
+        if e1[0] != e2[0]:
+            # 방향이 다른 두 선(세로 vs 가로)은 평행 거리 정의가 안 됨 — 다시 받기.
+            self._num_set_panel('[거리 측정: 같은 방향 선 2개(둘 다 세로/가로) — 두 번째 선 다시 클릭]')
+            self.update()
+            return
+        dist = abs(e1[1] - e2[1])
+        if e1[0] == 0:           # 세로선 → 가로 연결선(중점 y)
+            ym = (e1[3] + e2[3]) / 2.0
+            p1, p2 = [e1[1], ym], [e2[1], ym]
+        else:                    # 가로선 → 세로 연결선(중점 x)
+            xm = (e1[2] + e2[2]) / 2.0
+            p1, p2 = [xm, e1[1]], [xm, e2[1]]
+        self._measure_pts = [e1, e2]
+        self._measure_result = {'p1': p1, 'p2': p2, 'dist': float(dist)}
+        self._num_set_panel(
+            f'[거리: {dist:.0f} mm — 새 측정=선 클릭, 종료=T·Esc]')
+        self.update()
 
     def _apply_snap(self, key):
         """1/2/3/4/5 키에 해당하는 스냅으로 이동 요청.
@@ -1689,7 +2338,12 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
             self.reset_state()
             return
 
-        self.move_requested.emit(self._selected_id, axis, delta)
+        if self._multi_align and len(self._selected_ids) >= 2:
+            # 묶음 통째 정렬 — 합집합 전체를 같은 delta 로 평행이동(상대 배치 유지).
+            self.move_multi_requested.emit(
+                list(self._selected_ids), axis, float(delta))
+        else:
+            self.move_requested.emit(self._selected_id, axis, delta)
         # 이동 후 자동 ESC
         self.reset_state()
 
@@ -1780,6 +2434,7 @@ class AlignmentDockPanel(QWidget):
         self._canvas = AlignmentCanvas(controller, self)
         layout.addWidget(self._canvas)
         self._canvas.move_requested.connect(self._apply_move)
+        self._canvas.move_multi_requested.connect(self._apply_move_multi)
 
     @property
     def canvas(self):
@@ -1929,6 +2584,48 @@ class AlignmentDockPanel(QWidget):
 
         ctrl._status.update_count(ctrl._scene.component_count)
         # X/Y 정렬·스냅으로 코어벽이 이동했으면 슬래브 자동 재생성(코어 변경 시에만).
+        if hasattr(ctrl, '_auto_regen_core_slabs'):
+            ctrl._auto_regen_core_slabs()
+        self._canvas.update()
+
+    def _apply_move_multi(self, ids, axis: int, delta: float):
+        """다중선택 묶음 통째 정렬 — 선택 부재들의 합집합을 (axis,delta)만큼 평행이동.
+
+        각 선택 부재를 `_resolve_move_targets` 로 '자기 줄/그룹'까지 확장한 합집합을
+        cid 중복 없이 모은 뒤, 같은 delta 로 평행이동(상대 배치 유지, 회전 없음).
+        단일 정렬(_apply_move)과 동일하게 undo 는 남기지 않는다(정렬 정책).
+        """
+        ctrl = self._controller
+        if not hasattr(ctrl, '_resolve_move_targets'):
+            return
+        from modular_3d.render.mesh_builder import build_component_mesh
+
+        # 합집합 — 각 선택 부재의 이동 대상(전 층/종속/코어 줄)을 모아 dedup.
+        target_ids: list = []
+        seen: set = set()
+        for sid in ids:
+            for cid in ctrl._resolve_move_targets(int(sid)):
+                if cid not in seen:
+                    seen.add(cid)
+                    target_ids.append(cid)
+        if not target_ids:
+            return
+
+        delta_vec = np.zeros(3)
+        delta_vec[axis] = float(delta)
+        for cid in target_ids:
+            c = ctrl._scene.components.get(cid)
+            if c is None:
+                continue
+            c.position = c.position + delta_vec
+            c.generate_sub_components()
+            ctrl._viewer.remove_component_visual(cid)
+            v, f, cl = build_component_mesh(c)
+            ctrl._viewer.add_component_visual(cid, v, f, cl)
+            ctrl._snap.remove_component(cid)
+            ctrl._snap.add_component(cid, c)
+
+        ctrl._status.update_count(ctrl._scene.component_count)
         if hasattr(ctrl, '_auto_regen_core_slabs'):
             ctrl._auto_regen_core_slabs()
         self._canvas.update()

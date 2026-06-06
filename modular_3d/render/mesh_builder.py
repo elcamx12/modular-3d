@@ -269,12 +269,104 @@ COLOR_WALL = np.array([0.815, 0.815, 0.815, 1.0], dtype=np.float32)  # #D0D0D0
 COLOR_WALL_PARTITION = np.array([0.815, 0.815, 0.815, 0.35], dtype=np.float32)  # 반투명
 
 
+# ── 임의 폴리곤 슬래브(귀자르기 삼각분할) ─────────────────────
+def _poly_signed_area(pts) -> float:
+    s = 0.0
+    n = len(pts)
+    for i in range(n):
+        x1, y1 = pts[i]
+        x2, y2 = pts[(i + 1) % n]
+        s += x1 * y2 - x2 * y1
+    return s * 0.5
+
+
+def _tri_cross(a, b, c) -> float:
+    return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+
+def _pt_in_tri(p, a, b, c) -> bool:
+    d1 = _tri_cross(a, b, p)
+    d2 = _tri_cross(b, c, p)
+    d3 = _tri_cross(c, a, p)
+    has_neg = (d1 < 0) or (d2 < 0) or (d3 < 0)
+    has_pos = (d1 > 0) or (d2 > 0) or (d3 > 0)
+    return not (has_neg and has_pos)
+
+
+def _earclip_triangulate(pts):
+    """단순 폴리곤(오목 허용) 귀자르기 삼각분할 → 삼각형 인덱스 [(i,j,k),...]."""
+    n = len(pts)
+    if n < 3:
+        return []
+    idx = list(range(n))
+    if _poly_signed_area(pts) < 0:   # CCW 로 통일
+        idx.reverse()
+    tris = []
+    guard = 0
+    while len(idx) > 3 and guard < 10000:
+        guard += 1
+        m = len(idx)
+        ear = False
+        for ii in range(m):
+            i0, i1, i2 = idx[(ii - 1) % m], idx[ii], idx[(ii + 1) % m]
+            a, b, c = pts[i0], pts[i1], pts[i2]
+            if _tri_cross(a, b, c) <= 0:   # 오목(reflex) 꼭짓점 — 귀 아님
+                continue
+            ok = True
+            for jj in idx:
+                if jj in (i0, i1, i2):
+                    continue
+                if _pt_in_tri(pts[jj], a, b, c):
+                    ok = False
+                    break
+            if not ok:
+                continue
+            tris.append((i0, i1, i2))
+            del idx[ii]
+            ear = True
+            break
+        if not ear:   # 퇴화 — 폴백(부채꼴)
+            break
+    if len(idx) == 3:
+        tris.append((idx[0], idx[1], idx[2]))
+    elif len(idx) > 3:   # 폴백: 남은 것 부채꼴
+        for ii in range(1, len(idx) - 1):
+            tris.append((idx[0], idx[ii], idx[ii + 1]))
+    return tris
+
+
+def _build_slab_polygon_mesh(corners, thickness, color) -> MeshData:
+    """임의 N각형 슬래브 프리즘 — 윗/아랫면(삼각분할) + 옆면(두께). 개구부 미지원."""
+    arr = np.asarray(corners, dtype=np.float64)
+    xy = [(float(c[0]), float(c[1])) for c in arr]
+    n = len(xy)
+    z0 = float(arr[:, 2].min())
+    z1 = z0 + float(thickness)
+    tris = _earclip_triangulate(xy)
+    verts = [[x, y, z0] for (x, y) in xy] + [[x, y, z1] for (x, y) in xy]
+    faces = []
+    for (i, j, k) in tris:
+        faces.append([i, k, j])           # 아랫면(법선 -z)
+        faces.append([n + i, n + j, n + k])  # 윗면(법선 +z)
+    for i in range(n):                     # 옆면 두께
+        j = (i + 1) % n
+        faces.append([i, j, n + j])
+        faces.append([i, n + j, n + i])
+    V = np.array(verts, dtype=np.float32)
+    F = np.array(faces, dtype=np.uint32)
+    C = np.tile(np.asarray(color, dtype=np.float32), (len(F), 1))
+    return V, F, C
+
+
 def _build_slab_mesh(slab, openings=None, color=COLOR_SLAB) -> MeshData:
     """SlabData → 솔리드 박스 메쉬. openings 있으면 z 관통 사각 구멍.
 
     슬래브는 xy 평면 + z 두께 박스 → 관통축 = z(2), 평면축 = (x,y).
+    [폴리곤] corners 가 4개 초과면 임의 N각형 프리즘(개구부 미지원).
     """
     corners = slab.corners
+    if len(corners) > 4:
+        return _build_slab_polygon_mesh(corners, slab.thickness, color)
     mn = corners.min(axis=0).copy()
     mx = corners.max(axis=0).copy()
     mx[2] = mn[2] + slab.thickness

@@ -40,19 +40,20 @@ class _AlignmentThreeBridge(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.on_click_cb = None   # fn(wx, wy, button)
+        self.on_click_cb = None   # fn(wx, wy, button, ctrl)
         self.on_move_cb = None    # fn(wx, wy)
-        self.on_key_cb = None      # fn(key, text)
+        self.on_key_cb = None      # fn(key, text, shift)
 
     @pyqtSlot(str)
     def js_log(self, msg: str) -> None:
         pass
 
-    @pyqtSlot(float, float, int)
-    def on_2d_click(self, wx: float, wy: float, button: int) -> None:
+    @pyqtSlot(float, float, int, bool)
+    def on_2d_click(self, wx: float, wy: float, button: int,
+                    ctrl: bool = False) -> None:
         if self.on_click_cb is not None:
             try:
-                self.on_click_cb(wx, wy, button)
+                self.on_click_cb(wx, wy, button, bool(ctrl))
             except Exception as e:
                 print(f'[bridge.on_2d_click] {e}')
 
@@ -64,11 +65,11 @@ class _AlignmentThreeBridge(QObject):
             except Exception as e:
                 print(f'[bridge.on_2d_move] {e}')
 
-    @pyqtSlot(str, str)
-    def on_2d_key(self, js_key: str, text: str) -> None:
+    @pyqtSlot(str, str, bool)
+    def on_2d_key(self, js_key: str, text: str, shift: bool = False) -> None:
         if self.on_key_cb is not None:
             try:
-                self.on_key_cb(js_key, text)
+                self.on_key_cb(js_key, text, bool(shift))
             except Exception as e:
                 print(f'[bridge.on_2d_key] {e}')
 

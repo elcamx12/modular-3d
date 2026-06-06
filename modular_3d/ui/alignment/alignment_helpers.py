@@ -205,7 +205,9 @@ def iter_component_rects(comp, layer):
 
     elif isinstance(comp, CoreSlab):
         # RC 코어 슬래브 — 하부 레이어에만 그림 (다른 슬래브들과 동일 패턴).
-        if layer == LAYER_BOTTOM and comp.slab is not None:
+        # 폴리곤 슬래브는 사각 rect 대신 payload 의 polygon 으로 그리므로 여기선 생략.
+        if (layer == LAYER_BOTTOM and comp.slab is not None
+                and not comp.dimensions.get('polygon')):
             yield slab_xy(comp.slab), 'slab'
 
     elif isinstance(comp, Vertical3Module):

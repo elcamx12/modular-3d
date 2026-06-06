@@ -836,6 +836,7 @@ class Controller(F5Mixin, F6Mixin):
         elif action.action_type == 'group_move':
             # 그룹 이동 취소 — 저장된 부재별 원래 position 복원
             old_positions = action.data.get('old_positions', {})
+            old_openings_map = action.data.get('old_openings', {})
             for cid, old_pos in old_positions.items():
                 comp = self._scene.components.get(cid)
                 if comp is None:
@@ -848,6 +849,10 @@ class Controller(F5Mixin, F6Mixin):
                     comp.rotation = int(old_rot)
                 if old_anc is not None:
                     comp.anchor = int(old_anc)
+                # 개구부 복원 — 뒤집기(Shift+X/Y)로 면·위치가 바뀐 경우 원복.
+                if cid in old_openings_map:
+                    import copy as _cp
+                    comp.openings = _cp.deepcopy(old_openings_map[cid])
                 comp.generate_sub_components()
                 self._viewer.remove_component_visual(cid)
                 v, f, c = build_component_mesh(comp)

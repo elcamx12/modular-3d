@@ -749,6 +749,16 @@ class CoreSlab(Component):
         pos = self.position
 
         to_world = make_local_to_world(ax, ay, rot, pos)
+        # [폴리곤] dimensions['polygon'] 이 있으면 임의 N각형 슬래브(P 키 그리기).
+        # 점은 로컬 (x,y) 목록(앵커 0 기준, bbox 좌하=원점). 없으면 width×depth 사각형.
+        poly = self.dimensions.get('polygon')
+        if poly and len(poly) >= 3:
+            self.slab = SlabData(
+                corners=np.array([to_world(float(p[0]), float(p[1]), 0)
+                                  for p in poly]),
+                thickness=t,
+            )
+            return
         # 슬래브 하면 = position.z (월드).
         self.slab = SlabData(
             corners=np.array([

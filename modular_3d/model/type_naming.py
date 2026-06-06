@@ -21,7 +21,19 @@ from modular_3d.model import ComponentType, TYPE_NAMES
 from modular_3d._utils.format import alpha_label
 
 
-_TOL = 5.0  # mm — 외형 치수·좌표 비교 허용오차
+_TOL = 5.0  # mm — 외형 치수(알파벳=크기) 비교 허용오차. 크기 판정은 엄격히 유지.
+# [2026-06-07 사용자] 구성(숫자) 비교 유격 — 사람이 손으로 배치해 생기는 위치·크기
+# 오차로 숫자가 갈리는 것을 막으려 종속부재·개구부 비교는 100mm 로 느슨하게 본다.
+# (크기=알파벳 판정은 위 _TOL 5mm 그대로.)
+_SIG_TOL = 100.0  # mm — (구버전 진단용 _signature 에서만 사용)
+
+# [2026-06-07 사용자] 구성(숫자) 판정 = 기준-거리(대표) 방식. 칸 반올림의 경계
+# 문제(2~3mm 차이로 갈림)를 없애려, 먼저 나온 부재를 "본보기"로 삼고 다음 부재는
+# 본보기와의 실제 거리가 유격 이내면 같은 숫자로 묶는다. 크기(알파벳)는 _TOL(5mm) 유지.
+_POS_TOL = 100.0    # mm — 종속부재·개구부 위치 유격
+_SIZE_TOL = 100.0   # mm — 종속부재·개구부 크기 유격
+_AREA_TOL = 5.0     # %p — 실 면적 비율 유격
+_LOAD_TOL = 0.5     # 실 하중 보정값(활/고정) 유격
 
 # 자체 타입을 받는 독립 부재
 _INDEP_TYPES = {
@@ -33,8 +45,13 @@ _INDEP_TYPES = {
 
 
 def _q(v: float) -> float:
-    """5mm 단위 양자화 — 허용오차 안 차이를 같은 값으로 본다."""
+    """5mm 단위 양자화 — 크기(알파벳) 판정용. 허용오차 안 차이를 같은 값으로 본다."""
     return round(float(v) / _TOL) * _TOL
+
+
+def _qs(v: float) -> float:
+    """100mm 단위 양자화 — 구성(숫자) 시그니처용. 손배치 오차를 같은 구성으로 본다."""
+    return round(float(v) / _SIG_TOL) * _SIG_TOL
 
 
 def _size_key(comp) -> tuple:
@@ -86,7 +103,8 @@ def _canon_deps(deps) -> tuple:
         for (typ, x, y, w, d, h) in deps:
             nx, ny = fn(x, y)
             nw, nd = (d, w) if swap else (w, d)
-            items.append((typ, _q(nx), _q(ny), _q(nw), _q(nd), _q(h)))
+            # 구성 비교는 100mm 유격(손배치 오차 흡수).
+            items.append((typ, _qs(nx), _qs(ny), _qs(nw), _qs(nd), _qs(h)))
         cand = tuple(sorted(items))
         if best is None or cand < best:
             best = cand
@@ -113,13 +131,14 @@ def _opening_key(o, width: float, depth: float) -> tuple:
         wall_len = width if (idx % 2 == 0) else depth
         cls = 'w' if (idx % 2 == 0) else 'd'   # 폭방향/깊이방향 벽(평행벽 동일시)
         pos = min(u, max(wall_len - u - w, 0.0))   # 가까운 끝에서 거리(거울 불변)
-        return ('wall', cls, _q(pos), _q(v), _q(w), _q(h))
+        # 구성 비교는 100mm 유격(손배치 오차 흡수).
+        return ('wall', cls, _qs(pos), _qs(v), _qs(w), _qs(h))
     if face == 'slab':
         cx = abs(u + w / 2.0 - width / 2.0)
         cy = abs(v + h / 2.0 - depth / 2.0)
-        a, b = sorted((_q(cx), _q(cy)))
-        return ('slab', a, b, _q(min(w, h)), _q(max(w, h)))
-    return ('other', face, _q(u), _q(v), _q(w), _q(h))
+        a, b = sorted((_qs(cx), _qs(cy)))
+        return ('slab', a, b, _qs(min(w, h)), _qs(max(w, h)))
+    return ('other', face, _qs(u), _qs(v), _qs(w), _qs(h))
 
 
 def _poly_area(poly) -> float:
@@ -133,6 +152,198 @@ def _poly_area(poly) -> float:
         x1, y1 = poly[(i + 1) % n]
         a += x0 * y1 - x1 * y0
     return abs(a) * 0.5
+
+
+# ── 기준-거리(대표) 군집화 — 칸 반올림 대신 실제 거리로 같은 구성 판정 ──
+def _opening_key_raw(o, width: float, depth: float) -> tuple:
+    """_opening_key 의 비양자화(raw) 버전 — 기준-거리 비교용(숫자는 실제 값)."""
+    face = str(o.get('face', ''))
+    u = float(o.get('u', 0.0) or 0.0)
+    v = float(o.get('v', 0.0) or 0.0)
+    w = float(o.get('w', 0.0) or 0.0)
+    h = float(o.get('h', 0.0) or 0.0)
+    if face.startswith('wall_'):
+        try:
+            idx = int(face.split('_')[1])
+        except Exception:
+            idx = 0
+        wall_len = width if (idx % 2 == 0) else depth
+        cls = 'w' if (idx % 2 == 0) else 'd'
+        pos = min(u, max(wall_len - u - w, 0.0))
+        return ('wall', cls, pos, v, w, h)
+    if face == 'slab':
+        cx = abs(u + w / 2.0 - width / 2.0)
+        cy = abs(v + h / 2.0 - depth / 2.0)
+        a, b = sorted((cx, cy))
+        return ('slab', a, b, min(w, h), max(w, h))
+    return ('other', face, u, v, w, h)
+
+
+def _descriptor(comp, scene) -> dict:
+    """모듈 구성을 raw(비양자화)로 모은 기술자 — 기준-거리 비교용.
+
+    deps: 모듈 로컬(회전 풀림) 상대좌표·치수. openings: 로컬 불변키(raw).
+    rooms: (실종류, 면적비%, 활하중, 고정하중). 의미는 _signature 와 동일.
+    """
+    px = float(comp.position[0])
+    py = float(comp.position[1])
+    rot = int(getattr(comp, 'rotation', 0))
+    gid = int(getattr(comp, 'group_id', 0) or 0)
+    fi = int(getattr(comp, 'floor_index', 0))
+
+    deps = []
+    if gid:
+        for c2 in scene.components.values():
+            if int(getattr(c2, 'group_id', 0) or 0) != gid:
+                continue
+            if int(getattr(c2, 'sub_index', 0)) == 0:
+                continue
+            dd = c2.dimensions
+            lx, ly = _rot2d_int(float(c2.position[0]) - px,
+                                float(c2.position[1]) - py, -rot)
+            deps.append((
+                getattr(c2.comp_type, 'value', str(c2.comp_type)),
+                float(lx), float(ly),
+                float(dd.get('width', 0.0)),
+                float(dd.get('depth', 0.0)),
+                float(dd.get('height', 0.0)),
+            ))
+    for wid in (getattr(comp, 'merged_wall_ids', None) or []):
+        w = scene.components.get(wid)
+        if w is None:
+            continue
+        wd = w.dimensions
+        wlx, wly = _rot2d_int(float(w.position[0]) - px,
+                              float(w.position[1]) - py, -rot)
+        deps.append((
+            'merged_wall', float(wlx), float(wly),
+            float(wd.get('width', 0.0)),
+            float(wd.get('depth', 0.0)),
+            float(wd.get('height', 0.0)),
+        ))
+
+    rooms = []
+    try:
+        corners = comp.get_world_corners()
+        xmin, xmax = float(corners[:, 0].min()), float(corners[:, 0].max())
+        ymin, ymax = float(corners[:, 1].min()), float(corners[:, 1].max())
+        module_area = max((xmax - xmin) * (ymax - ymin), 1.0)
+    except Exception:
+        xmin = xmax = ymin = ymax = None
+        module_area = 1.0
+    if xmin is not None:
+        for room in (getattr(scene, 'rooms', {}) or {}).values():
+            if int(getattr(room, 'floor_index', 0)) != fi:
+                continue
+            try:
+                cx, cy = room.centroid()
+            except Exception:
+                continue
+            if xmin <= cx <= xmax and ymin <= cy <= ymax:
+                area = _poly_area(getattr(room, 'polygon', []) or [])
+                rooms.append((
+                    str(getattr(room, 'room_type', '')),
+                    area / module_area * 100.0,   # 면적비 %(raw)
+                    float(getattr(room, 'live_load_override', 0) or 0),
+                    float(getattr(room, 'sdl_override', 0) or 0),
+                ))
+
+    width = float(comp.dimensions.get('width', 0.0))
+    depth = float(comp.dimensions.get('depth', 0.0))
+    openings = []
+    for o in (getattr(comp, 'openings', None) or []):
+        try:
+            openings.append(_opening_key_raw(o, width, depth))
+        except Exception:
+            continue
+    return {'deps': deps, 'rooms': rooms, 'openings': openings}
+
+
+def _perfect_match(a_items, b_items, ok) -> bool:
+    """두 목록을 1:1 로 짝지을 수 있으면(ok 로 짝 가능 판정) True. 작은 N 백트래킹."""
+    n = len(a_items)
+    if n != len(b_items):
+        return False
+    if n == 0:
+        return True
+    used = [False] * n
+
+    def bt(i):
+        if i == n:
+            return True
+        for j in range(n):
+            if not used[j] and ok(a_items[i], b_items[j]):
+                used[j] = True
+                if bt(i + 1):
+                    return True
+                used[j] = False
+        return False
+
+    return bt(0)
+
+
+def _deps_match(A, B) -> bool:
+    """종속부재 목록 일치 — D4(회전+대칭) 중 하나로 1:1 거리 짝맞춤 되면 같음."""
+    if len(A) != len(B):
+        return False
+
+    def ok(a, b):
+        return (a[0] == b[0]
+                and abs(a[1] - b[1]) <= _POS_TOL and abs(a[2] - b[2]) <= _POS_TOL
+                and abs(a[3] - b[3]) <= _SIZE_TOL and abs(a[4] - b[4]) <= _SIZE_TOL
+                and abs(a[5] - b[5]) <= _SIZE_TOL)
+
+    for fn, swap in _D4:
+        Bt = []
+        for (typ, x, y, w, d, h) in B:
+            nx, ny = fn(x, y)
+            nw, nd = (d, w) if swap else (w, d)
+            Bt.append((typ, nx, ny, nw, nd, h))
+        if _perfect_match(A, Bt, ok):
+            return True
+    return False
+
+
+def _openings_match(A, B) -> bool:
+    """개구부 목록 일치 — 종류 같고 위치·크기 거리 유격 이내로 1:1 짝맞춤."""
+    if len(A) != len(B):
+        return False
+
+    def ok(a, b):
+        if a[0] != b[0]:
+            return False
+        if a[0] == 'wall':
+            return (a[1] == b[1]
+                    and abs(a[2] - b[2]) <= _POS_TOL and abs(a[3] - b[3]) <= _POS_TOL
+                    and abs(a[4] - b[4]) <= _SIZE_TOL and abs(a[5] - b[5]) <= _SIZE_TOL)
+        if a[0] == 'slab':
+            return (abs(a[1] - b[1]) <= _POS_TOL and abs(a[2] - b[2]) <= _POS_TOL
+                    and abs(a[3] - b[3]) <= _SIZE_TOL and abs(a[4] - b[4]) <= _SIZE_TOL)
+        return (a[1] == b[1]
+                and abs(a[2] - b[2]) <= _POS_TOL and abs(a[3] - b[3]) <= _POS_TOL
+                and abs(a[4] - b[4]) <= _SIZE_TOL and abs(a[5] - b[5]) <= _SIZE_TOL)
+
+    return _perfect_match(A, B, ok)
+
+
+def _rooms_match(A, B) -> bool:
+    """실 목록 일치 — 종류 같고 면적비·하중 유격 이내로 1:1 짝맞춤."""
+    if len(A) != len(B):
+        return False
+
+    def ok(a, b):
+        return (a[0] == b[0]
+                and abs(a[1] - b[1]) <= _AREA_TOL
+                and abs(a[2] - b[2]) <= _LOAD_TOL and abs(a[3] - b[3]) <= _LOAD_TOL)
+
+    return _perfect_match(A, B, ok)
+
+
+def _same_composition(A: dict, B: dict) -> bool:
+    """두 모듈 구성이 기준-거리 유격 안에서 같은가(숫자 통합 여부)."""
+    return (_rooms_match(A['rooms'], B['rooms'])
+            and _deps_match(A['deps'], B['deps'])
+            and _openings_match(A['openings'], B['openings']))
 
 
 def _signature(comp, scene) -> tuple:
@@ -207,7 +418,8 @@ def _signature(comp, scene) -> tuple:
                 continue
             if xmin <= cx <= xmax and ymin <= cy <= ymax:
                 area = _poly_area(getattr(room, 'polygon', []) or [])
-                frac_pct = round(area / module_area * 100.0)   # 모듈 면적 대비 %(1% 단위)
+                # 모듈 면적 대비 % — [2026-06-07 사용자] 5% 단위(손배치 유격).
+                frac_pct = round(area / module_area * 100.0 / 5.0) * 5
                 rooms.append((
                     str(getattr(room, 'room_type', '')),
                     int(frac_pct),
@@ -267,12 +479,20 @@ def classify_component_types(scene) -> Dict[int, str]:
         for cid, c in items:
             by_letter[size_letter[_size_key(c)]].append((cid, c))
         for letter, group in by_letter.items():
-            sig_num: Dict[tuple, int] = {}
-            for cid, c in group:
-                sig = _signature(c, scene)
-                if sig not in sig_num:
-                    sig_num[sig] = len(sig_num) + 1
-                labels[cid] = f'{tname}{letter}-{sig_num[sig]}'
+            # 기준-거리(대표) 군집화 — 먼저 나온(작은 id) 부재를 본보기로 삼고,
+            # 이후 부재는 본보기와 실제 거리가 유격 이내면 같은 번호로 묶는다.
+            reps = []   # [(descriptor, number)]
+            for cid, c in sorted(group, key=lambda t: t[0]):
+                desc = _descriptor(c, scene)
+                num = None
+                for rdesc, rnum in reps:
+                    if _same_composition(rdesc, desc):
+                        num = rnum
+                        break
+                if num is None:
+                    num = len(reps) + 1
+                    reps.append((desc, num))
+                labels[cid] = f'{tname}{letter}-{num}'
 
     # ── 종속 부재 라벨 — 부모(독립부재) 라벨 + 종속명 + 순번 ──
     # 예: '모듈A-2 캔틸레버보1'. 부모가 독립부재(라벨 보유)인 경우만.

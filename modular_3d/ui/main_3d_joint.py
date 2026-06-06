@@ -335,8 +335,11 @@ class JointEditController:
         parts = []
         for cid, c in sorted(self.window._scene.components.items()):
             pos = tuple(round(float(v), 1) for v in c.position)
+            # 값이 수치인 항목만(코어 슬래브 'polygon' 같은 리스트 값은 제외 —
+            # float() 불가). 폴리곤 변경은 위치/회전/타입 변화로 충분히 감지됨.
             dims = tuple(sorted((k, round(float(v), 1))
-                                for k, v in c.dimensions.items()))
+                                for k, v in c.dimensions.items()
+                                if isinstance(v, (int, float))))
             parts.append((cid, pos, dims, int(getattr(c, 'rotation', 0))))
         return hash(tuple(parts))
 

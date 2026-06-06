@@ -244,119 +244,60 @@ class F5Mixin:
         self._dim_panel.set_mode_text(
             f'[불러오기: 마우스 이동 → 클릭 배치  ({len(comps)}개, N={n_floors})]')
 
-    # ── 코어 슬래브 수동 생성/재생성 ───────────────────────────
-
-    def regenerate_all_core_slabs(self, silent: bool = False):
-        """좌측 팔레트의 '코어 슬래브 생성/재생성' 버튼 핸들러.
-
-        [절차]
-        1. Scene 의 모든 코어벽 group_id 수집.
-        2. 각 그룹에 대해 그룹 내 코어벽 floor_index 최댓값을 N 으로 추정.
-        3. 그룹 단위로 regenerate_core_slabs 호출 — 기존 슬래브 제거 + 재생성.
-        4. viewer/snap 등록 갱신. Scene 에 사라진 옛 슬래브 visual 청소.
-        """
-        from modular_3d.model.multi_floor import regenerate_core_slabs
-        from modular_3d.render.mesh_builder import build_component_mesh
-
-        # 1. 코어벽 그룹별 (floor_index 최댓값, 슬래브 두께) 수집
-        gid_max_floor: dict[int, int] = {}
-        gid_slab_thk: dict[int, float] = {}
-        for comp in self._scene.components.values():
-            if comp.comp_type != ComponentType.CORE:
-                continue
-            gid = getattr(comp, 'group_id', 0)
-            if gid <= 0:
-                continue
-            fi = int(getattr(comp, 'floor_index', 0))
-            if fi > gid_max_floor.get(gid, -1):
-                gid_max_floor[gid] = fi
-            # 슬래브 두께: 첫 코어벽의 dimensions['slab_thickness']
-            # (없으면 카탈로그 기본 CORE_SLAB_DEFAULT_THICKNESS_MM)
-            if gid not in gid_slab_thk:
-                from modular_3d.카탈로그.geometry import (
-                    CORE_SLAB_DEFAULT_THICKNESS_MM as _CST_DEF,
-                )
-                gid_slab_thk[gid] = float(
-                    comp.dimensions.get('slab_thickness', _CST_DEF))
-
-        if not gid_max_floor:
-            if not silent:
-                self._dim_panel.set_mode_text('[코어 슬래브: 코어벽 없음]')
-            return
-
-        # 2. 옛 슬래브 visual 청소를 위해 현재 슬래브 ID 미리 기록
-        old_slab_ids = [
-            cid for cid, c in self._scene.components.items()
-            if c.comp_type == ComponentType.CORE_SLAB
-        ]
-
-        # 3. 그룹별로 재생성
-        new_total = 0
-        for gid, max_floor in gid_max_floor.items():
-            slab_thk = gid_slab_thk.get(gid, 180.0)
-            new_ids = regenerate_core_slabs(
-                self._scene, gid, max_floor, slab_thickness=slab_thk)
-            new_total += len(new_ids)
-
-        # 4. 옛 슬래브 visual/snap 청소 (Scene 에서 pop 되어 더 이상 없음)
-        for cid_old in old_slab_ids:
-            if cid_old not in self._scene.components:
-                self._viewer.remove_component_visual(cid_old)
-                self._snap.remove_component(cid_old)
-
-        # 5. 새 슬래브 visual/snap 등록
-        for cid_s, comp_s in self._scene.components.items():
-            if comp_s.comp_type != ComponentType.CORE_SLAB:
-                continue
-            if cid_s in self._viewer._component_visuals:
-                continue
-            v, f, cl = build_component_mesh(comp_s)
-            self._viewer.add_component_visual(cid_s, v, f, cl)
-            self._snap.add_component(cid_s, comp_s)
-
-        self._status.update_count(self._scene.component_count)
-        if not silent:
-            self._dim_panel.set_mode_text(
-                f'[코어 슬래브: 그룹 {len(gid_max_floor)}개 / {new_total}장]')
-            self._refresh_2d()
-
-    def _core_signature(self):
-        """코어벽 구성 시그니처 — 변경 감지용.
-
-        코어벽(슬래브 제외)의 그룹·위치·층·회전·앵커·치수를 모은 정렬 튜플.
-        직전 시그니처와 비교해 *코어벽이 실제로 달라졌는지*만 가린다.
-        """
-        sig = []
-        for c in self._scene.components.values():
-            if c.comp_type != ComponentType.CORE:
-                continue
-            dims = tuple(sorted(
-                (str(k), round(float(v), 1))
-                for k, v in (c.dimensions or {}).items()
-                if isinstance(v, (int, float))))
-            sig.append((
-                int(getattr(c, 'group_id', 0) or 0),
-                round(float(c.position[0]), 1),
-                round(float(c.position[1]), 1),
-                round(float(c.position[2]), 1),
-                int(getattr(c, 'floor_index', 0)),
-                int(getattr(c, 'rotation', 0)),
-                int(getattr(c, 'anchor', 0)),
-                dims,
-            ))
-        return tuple(sorted(sig))
+    # ── 코어 슬래브 (I 키 수동 정의 전용) ──────────────────────
 
     def _auto_regen_core_slabs(self):
-        """코어벽 *구성이 직전과 달라졌을 때만* 코어 슬래브를 조용히 재생성.
+        """[정책 변경 2026-06] 코어 슬래브 자동 재생성 비활성화 — no-op.
 
-        코어벽 관련 동작(배치/이동/복사/회전/삭제/층변경)에서만 시그니처가
-        바뀌므로, 코어와 무관한 조작(모듈 이동 등)에서는 아무 일도 하지 않는다.
+        이전: 코어벽 구성이 바뀌면 group_id 단위로 슬래브 1개(그룹 전체 bbox)를
+        자동 재생성 — '코어 하나' 가정. 또 좌측 팔레트의 '코어 슬래브 재생성'
+        기능(regenerate_all_core_slabs)이 그룹 단위 슬래브를 만들었음.
+        현재: 그 자동/그룹 일괄 기능을 모두 제거하고, 코어 슬래브는 사용자가
+        코어벽을 다중선택 후 I 키로만 정의(`_f5_core_slab_from_walls`)한다.
+        기존 호출처가 많아 메서드는 남기되 아무 일도 하지 않는다.
         """
-        sig = self._core_signature()
-        if sig == getattr(self, '_last_core_sig', None):
+        return
+
+    def _f5_attach_core_to_slab(self, core_ids, slab_id):
+        """I 키 — 선택한 코어벽(들)을 클릭한 코어 슬래브에 종속.
+
+        벽(들)의 같은 xy 전 층 줄을 슬래브 group 으로 편입하고 parent_id=슬래브로
+        둔다. 이후 _resolve_move_targets 가 자동으로 "슬래브 선택→벽 함께(CORE_SLAB
+        =그룹 전체), 벽만 선택→그 벽 줄만(CORE=같은 group+같은 xy)" 을 처리한다.
+        sub_index 는 0(본체) 유지 — Ctrl 다중선택 가능성 보존.
+        """
+        slab = self._scene.components.get(int(slab_id))
+        if slab is None or slab.comp_type != ComponentType.CORE_SLAB:
+            if self._dim_panel is not None:
+                self._dim_panel.set_mode_text('[코어벽 종속: 코어 슬래브를 클릭하세요]')
             return
-        self._last_core_sig = sig
-        self.regenerate_all_core_slabs(silent=True)
+        slab_gid = int(getattr(slab, 'group_id', 0) or 0)
+        if slab_gid <= 0:
+            return
+        # 대상 벽 줄을 먼저 수집(편입 중 group 변경으로 resolve 결과가 흔들리지 않게).
+        targets = []
+        seen = set()
+        for cid in core_ids:
+            comp = self._scene.components.get(int(cid))
+            if comp is None or comp.comp_type != ComponentType.CORE:
+                continue
+            for wid in self._resolve_move_targets(int(cid)):
+                if wid not in seen:
+                    seen.add(wid)
+                    targets.append(wid)
+        moved = 0
+        for wid in targets:
+            w = self._scene.components.get(wid)
+            if w is None or w.comp_type != ComponentType.CORE:
+                continue
+            w.group_id = slab_gid
+            w.parent_id = int(slab_id)
+            moved += 1
+        self._status.update_count(self._scene.component_count)
+        self._refresh_2d()
+        if self._dim_panel is not None:
+            self._dim_panel.set_mode_text(
+                f'[코어벽 종속: 벽 {moved}개 → 슬래브 #{slab_id}]')
 
     # ── 층수 변경 ───────────────────────────────────────────
 
@@ -382,6 +323,9 @@ class F5Mixin:
         # 1. 1층 메타정보 수집 — 본체와 종속 분리
         body_seeds = []  # sub_index == 0
         dep_seeds = []   # sub_index >  0
+        # 코어 슬래브 — 그룹별 1개(폴리곤/bbox)만 모아 층 변경 후 전 층 재복제.
+        # 코어벽 종속(같은 group)도 새 그룹 매핑으로 함께 유지된다.
+        core_slab_seeds = {}   # old_group_id -> {bbox, polygon, thickness, wall_thickness}
         # 종속 부재의 부모 comp_type 추적 (캔틸 슬래브 모듈/패널 종속 분기용)
         gid_to_body_type = {}
         # 개구부 보존 — 부재 재생성 시 openings 가 시드에 없어 사라진다. floor 0
@@ -442,9 +386,24 @@ class F5Mixin:
                 body_seeds.append(info)
                 gid_to_body_type[info['group_id']] = info['comp_type']
             elif comp.comp_type == ComponentType.CORE_SLAB:
-                # [정책 2026-05-12] 코어 슬래브는 자동 재생성하지 않는다.
-                # 층수 변경 시 슬래브는 사라지며, 사용자가 좌측 팔레트의 "코어
-                # 슬래브 생성/재생성" 버튼을 눌러 다시 만들어야 한다.
+                # [정책 2026-06-06] 코어 슬래브도 캔틸레버 슬래브처럼 층 변경에
+                # 살아남는다. 그룹별 1개만 시드로 모아(폴리곤/bbox/두께) 재생성 후
+                # 전 층 재복제한다(아래 4-b 단계). 코어벽 종속(같은 group)도 유지.
+                g = int(info['group_id'])
+                if g not in core_slab_seeds:
+                    from modular_3d.카탈로그.geometry import (
+                        CORE_SLAB_DEFAULT_THICKNESS_MM as _CS_T,
+                        CORE_WALL_DEFAULT_THICKNESS_MM as _CW_T)
+                    _dim = info['dimensions']
+                    _px = float(info['position'][0]); _py = float(info['position'][1])
+                    core_slab_seeds[g] = {
+                        'bbox': (_px, _py,
+                                 _px + float(_dim.get('width', 0.0)),
+                                 _py + float(_dim.get('depth', 0.0))),
+                        'polygon': _dim.get('polygon'),
+                        'thickness': float(_dim.get('thickness', _CS_T)),
+                        'wall_thickness': float(_dim.get('wall_thickness', _CW_T)),
+                    }
                 continue
             else:
                 dep_seeds.append(info)
@@ -470,8 +429,8 @@ class F5Mixin:
             # CORE 그룹 통합 분기 — 두 번째 이후 CORE 시드는 같은 그룹 합류.
             if (seed['comp_type'] == ComponentType.CORE
                     and unified_core_gid > 0):
-                # [정책 2026-05-12] 코어 슬래브 자동 재생성 폐지 — 코어벽만 N+1
-                # 층 재생성하고 슬래브는 만들지 않는다. 사용자가 버튼으로 생성.
+                # 코어벽만 N+1 층 재생성. 코어 슬래브는 아래 4-b 단계에서 그룹
+                # 시드로 따로 재복제한다(종속관계는 같은 group 으로 보존).
                 from modular_3d.model.multi_floor import _floor_z_list
                 from modular_3d.model.core import instantiate as _inst
                 z_list = _floor_z_list(ComponentType.CORE, n_floors=n)
@@ -562,6 +521,28 @@ class F5Mixin:
                 v, f, c = build_component_mesh(comp)
                 self._viewer.add_component_visual(cid, v, f, c)
                 self._snap.add_component(cid, comp)
+
+        # 4-b. 코어 슬래브 재복제 — 층 변경에도 슬래브 + 코어벽 종속관계 유지.
+        # new_gid: 코어벽이 종속된 그룹이면 그 벽들이 합류한 새 그룹(gid_map),
+        # 독립 슬래브면 새 그룹 발급. 같은 그룹에 넣어 종속(슬래브↔벽)을 보존한다.
+        if core_slab_seeds:
+            from modular_3d.model.multi_floor import (
+                create_core_slabs_for_bbox, next_group_id)
+            for old_g, cs in core_slab_seeds.items():
+                new_gid = gid_map.get(old_g)
+                if new_gid is None:
+                    new_gid = next_group_id(self._scene)
+                new_ids = create_core_slabs_for_bbox(
+                    self._scene, new_gid, cs['bbox'], max(0, n - 1),
+                    cs['thickness'], cs['wall_thickness'],
+                    polygon=cs['polygon'], keep_undo=False)
+                for cid in new_ids:
+                    c = self._scene.components.get(cid)
+                    if c is None:
+                        continue
+                    v, f, cl = build_component_mesh(c)
+                    self._viewer.add_component_visual(cid, v, f, cl)
+                    self._snap.add_component(cid, c)
 
         self._status.update_count(self._scene.component_count)
         self._auto_regen_core_slabs()
@@ -715,10 +696,14 @@ class F5Mixin:
             new_rot = self._preview_rotation
             new_anc = self._preview_anchor
 
-            # (그룹 undo) 이동 전 대상 부재들의 원래 상태 기록
+            # (그룹 undo) 이동 전 대상 부재들의 원래 상태 기록.
+            # old_openings 도 기록 — 뒤집기(Shift+X/Y)가 개구부 면/위치를 바꾸므로
+            # Z 한 번에 개구부까지 원복하려면 필요(일반 이동은 개구부 불변이라 무해).
+            import copy as _cp
             old_positions: dict = {}
             old_rotations: dict = {}
             old_anchors: dict = {}
+            old_openings: dict = {}
             for cid_g in target_ids:
                 c_g = self._scene.components.get(cid_g)
                 if c_g is None:
@@ -726,6 +711,7 @@ class F5Mixin:
                 old_positions[cid_g] = c_g.position.copy()
                 old_rotations[cid_g] = int(c_g.rotation)
                 old_anchors[cid_g] = int(c_g.anchor)
+                old_openings[cid_g] = _cp.deepcopy(getattr(c_g, 'openings', None) or [])
 
             # [2026-05-16 버그 수정 v3] 회전 + 앵커 변환을 종속/합체 부재 위치에
             # 모두 적용. 회전 델타는 본체 새 위치를 축으로 종속 위치 회전, 앵커
@@ -808,16 +794,35 @@ class F5Mixin:
                 self._snap.remove_component(cid)
                 self._snap.add_component(cid, c)
 
+            # [뒤집기 Shift+X/Y] 이동·회전 확정 뒤, 합집합 전체를 seed 최종 위치
+            # 통과 축 기준 거울 반사(개구부 면·위치 포함). 이동+회전과 합성된다.
+            flip_axis = getattr(self, '_f5_flip', None)
+            if flip_axis in ('x', 'y'):
+                from modular_3d.model.mirror import mirror_component_inplace
+                axis_coord = seed_new_x if flip_axis == 'x' else seed_new_y
+                for cid in target_ids:
+                    c = self._scene.components.get(cid)
+                    if c is None:
+                        continue
+                    mirror_component_inplace(c, axis_coord, flip_axis)
+                    c.generate_sub_components()
+                    self._viewer.remove_component_visual(cid)
+                    v, f, cl = build_component_mesh(c)
+                    self._viewer.add_component_visual(cid, v, f, cl)
+                    self._snap.remove_component(cid)
+                    self._snap.add_component(cid, c)
+
             self._status.update_count(self._scene.component_count)
 
             # (2026-05-12 그룹 undo) group_move 액션 push — 사용자 Z 한 번에
-            # 그룹 통째 원위치 복원.
+            # 그룹 통째 원위치(+회전·앵커·개구부) 복원.
             from modular_3d.model.core import Action as _Action
             self._scene.undo_stack.append(_Action(
                 action_type='group_move',
                 data={'old_positions': old_positions,
                       'old_rotations': old_rotations,
-                      'old_anchors': old_anchors},
+                      'old_anchors': old_anchors,
+                      'old_openings': old_openings},
             ))
 
             # 옵션 (나) — 이동 후 조인트 기록 재계산.
@@ -838,6 +843,11 @@ class F5Mixin:
             self._f5_move_target_ids = []
             self._f5_move_seed_id = 0
             self._f5_user_rv_override = False
+            # 확정됐으므로 복사 취소 플래그 해제(이후 Esc 가 복제본을 지우지 않게).
+            self._f5_move_is_copy = False
+            self._f5_copy_clone_ids = []
+            self._f5_flip = None   # 뒤집기 세션 종료
+            self._f5_ghost_ids = []
             # 코어벽을 M(이동)/C(복사 후 이동)로 옮겼으면 슬래브 자동 재생성
             # (코어벽 구성이 실제로 바뀐 경우에만).
             self._auto_regen_core_slabs()
@@ -1071,6 +1081,55 @@ class F5Mixin:
         if self._dim_panel is not None:
             self._dim_panel.set_mode_text(f'[실 생성: {label}]')
 
+    def _f5_on_core_slab_complete(self, points):
+        """P 키 코어 슬래브 그리기 완료 — 그린 폴리곤으로 모든 층 코어 슬래브 생성.
+
+        그린 점(월드 xy)의 외곽 bbox 좌하를 기준점으로, 로컬 폴리곤을 dimensions
+        ['polygon'] 에 박아 임의 N각형 슬래브를 만든다. 층 복제·z 규칙은
+        create_core_slabs_for_bbox(천장 0..N + 1층 바닥). group_place 로 Z 한 번에 제거.
+        """
+        if not points or len(points) < 3:
+            return
+        from modular_3d.model.multi_floor import (
+            create_core_slabs_for_bbox, next_group_id)
+        from modular_3d.render.mesh_builder import build_component_mesh
+        from modular_3d.카탈로그.geometry import (
+            CORE_SLAB_DEFAULT_THICKNESS_MM, CORE_WALL_DEFAULT_THICKNESS_MM)
+
+        pts = [(float(x), float(y)) for (x, y) in points]
+        xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
+        min_x, min_y, max_x, max_y = min(xs), min(ys), max(xs), max(ys)
+        if max_x - min_x < 1.0 or max_y - min_y < 1.0:
+            return
+        local_poly = [(x - min_x, y - min_y) for (x, y) in pts]
+
+        if getattr(self, 'single_floor_mode', False):
+            stories = 1
+        else:
+            stories = int(self._f5_panel.floors) if self._f5_panel else 1
+        n_floors = max(0, stories - 1)   # 천장 floor_index 0..n_floors
+
+        gid = next_group_id(self._scene)
+        thk = float(CORE_SLAB_DEFAULT_THICKNESS_MM)
+        wall_t = float(CORE_WALL_DEFAULT_THICKNESS_MM)
+
+        self._scene.begin_group_action()
+        new_ids = create_core_slabs_for_bbox(
+            self._scene, gid, (min_x, min_y, max_x, max_y), n_floors,
+            thk, wall_t, polygon=local_poly, keep_undo=True)
+        for cid in new_ids:
+            c = self._scene.components.get(cid)
+            if c is None:
+                continue
+            v, f, cl = build_component_mesh(c)
+            self._viewer.add_component_visual(cid, v, f, cl)
+            self._snap.add_component(cid, c)
+        self._scene.end_group_action('group_place')
+        self._status.update_count(self._scene.component_count)
+        self._refresh_2d()
+        if self._dim_panel is not None:
+            self._dim_panel.set_mode_text(f'[코어 슬래브 생성: {len(new_ids)}장]')
+
     def _next_room_group_id(self) -> int:
         """현재 Scene 실 중 가장 큰 group_id + 1 (모두 0이면 1)."""
         mx = 0
@@ -1225,6 +1284,73 @@ class F5Mixin:
                     data={'room_id': rid, 'old_polygon': old_poly}))
                 self._render_room_3d(room)
             self._scene.end_group_action('room_group')
+        self._refresh_2d()
+
+    def _f5_on_room_commit_multi(self, items, mode: str):
+        """다중 실 이동/복사 확정 — 모든 실을 한 번의 room_group undo 로 묶음.
+
+        items: [(src_room_id, new_polygon(1층)), ...]. 각 실의 group(전 층)을 같은
+        새 polygon 으로 동기(이동) 또는 새 group 으로 복제(복사). _room_commit 과 같은
+        규칙이되 begin/end_group_action 을 *바깥에서 한 번만* 묶어 undo 1회.
+        """
+        from modular_3d.model import Action
+        from modular_3d.model.room import Room
+        self._room_ghost_clear()
+        self._scene.begin_group_action()
+        if mode == 'copy':
+            for src_id, polygon in items:
+                poly = [(float(x), float(y)) for (x, y) in polygon]
+                members = self._room_group_members(src_id)
+                src = self._scene.rooms.get(src_id)
+                rtype = src.room_type if src is not None else 'living'
+                floors = sorted({int(getattr(self._scene.rooms.get(rid), 'floor_index', 0))
+                                 for rid in members
+                                 if self._scene.rooms.get(rid) is not None})
+                if not floors:
+                    floors = [0]
+                gid = self._next_room_group_id()
+                for k in floors:
+                    nr = Room(room_type=rtype, polygon=list(poly),
+                              floor_index=k, group_id=gid)
+                    rid = self._scene.add_room(nr)
+                    self._scene.undo_stack.append(Action(
+                        action_type='room_add', data={'room_id': rid}))
+                    self._render_room_3d(nr)
+        else:  # move (회전 포함)
+            for src_id, polygon in items:
+                poly = [(float(x), float(y)) for (x, y) in polygon]
+                for rid in self._room_group_members(src_id):
+                    room = self._scene.rooms.get(rid)
+                    if room is None:
+                        continue
+                    old_poly = [(float(x), float(y)) for (x, y) in room.polygon]
+                    room.polygon = list(poly)
+                    self._scene.undo_stack.append(Action(
+                        action_type='room_move',
+                        data={'room_id': rid, 'old_polygon': old_poly}))
+                    self._render_room_3d(room)
+        self._scene.end_group_action('room_group')
+        self._refresh_2d()
+
+    def _f5_on_room_delete_multi(self, ids):
+        """다중 실 삭제 — 각 실의 group(전 층) 모두 제거, room_group undo 1회."""
+        from modular_3d.model import Action
+        self._scene.begin_group_action()
+        seen = set()
+        for room_id in ids:
+            for rid in self._room_group_members(room_id):
+                if rid in seen:
+                    continue
+                rr = self._scene.rooms.get(rid)
+                if rr is None:
+                    continue
+                seen.add(rid)
+                if hasattr(self._viewer, 'remove_room_visual'):
+                    self._viewer.remove_room_visual(rid)
+                self._scene.remove_room(rid)
+                self._scene.undo_stack.append(Action(
+                    action_type='room_del', data={'room': rr}))
+        self._scene.end_group_action('room_group')
         self._refresh_2d()
 
     # ── 개구부(Opening) 처리 (2026-05-24 3단계) ───────────
@@ -1798,6 +1924,28 @@ class F5Mixin:
 
     def _f5_on_escape(self):
         """F5 캔버스 Esc — 배치/이동/복사 취소."""
+        # [복사 취소] '복사 후 이동' 미리보기 중 Esc 면 방금 박은 복제본을 제거하고
+        # group_place 기록을 되돌린다(원본 위 잔존=중복 방지). 일반 이동은 영향 없음.
+        if getattr(self, '_f5_move_is_copy', False):
+            clone_ids = list(getattr(self, '_f5_copy_clone_ids', []) or [])
+            removed = False
+            for cid in clone_ids:
+                if cid in self._scene.components:
+                    self._viewer.remove_component_visual(cid)
+                    self._snap.remove_component(cid)
+                    self._scene.remove_component(cid)
+                    removed = True
+            us = self._scene.undo_stack
+            if us and getattr(us[-1], 'action_type', '') == 'group_place':
+                us.pop()   # 복제본 박기 기록 무효화
+            self._f5_copy_clone_ids = []
+            if removed:
+                self._status.update_count(self._scene.component_count)
+                self._auto_regen_core_slabs()
+                self._refresh_2d()
+        self._f5_move_is_copy = False
+        self._f5_flip = None        # 뒤집기 미리보기도 취소
+        self._f5_ghost_ids = []     # 다중 고스트 대상 정리
         self._f5_pending_placement = False
         self._f5_pending_dims = None
         self._f5_dep_meta = None
@@ -1816,24 +1964,113 @@ class F5Mixin:
 
     # ── 단계 3c: R/V/Move/Delete ──────────────────────────────
 
-    def _f5_update_ghost_at(self, world_x: float, world_y: float):
-        """현재 pending dims/comp_type/rotation/anchor 로 좌측 3D 고스트 갱신."""
+    def _f5_build_ghost_components(self, world_x: float, world_y: float):
+        """미리보기 상태로 변환된 고스트 부재 복사본 리스트 반환(원본 절대 불변).
+
+        2D·3D 고스트가 *같은* 결과를 소비해 두 화면이 항상 정합한다.
+        - 이동/복사/뒤집기(`_f5_ghost_ids` 있음): 고른 각 부재의 이동대상 중 1층
+          (floor_index==0, 본체+1층 종속)만 모아 dedup → deepcopy 후 seed(처음 클릭)
+          기준 변환(rel 회전 + 마우스로 평행이동, 뒤집기면 mirror_component_inplace).
+        - 신규 배치(`_f5_ghost_ids` 없음): pending dims 로 새 부재 1개.
+        """
+        import copy as _copy
+        import math
+        import numpy as np
+
+        ghost_ids = list(getattr(self, '_f5_ghost_ids', []) or [])
+        seed = self._scene.components.get(getattr(self, '_f5_move_seed_id', 0))
+        if ghost_ids and seed is not None:
+            # 대상 = 각 선택 부재의 이동대상 중 1층(본체+1층 종속) dedup.
+            member_ids: list = []
+            seen: set = set()
+            for sid in ghost_ids:
+                for cid in self._resolve_move_targets(int(sid)):
+                    if cid in seen:
+                        continue
+                    c = self._scene.components.get(cid)
+                    if c is None or int(getattr(c, 'floor_index', 0) or 0) != 0:
+                        continue
+                    seen.add(cid)
+                    member_ids.append(cid)
+            sx, sy = float(seed.position[0]), float(seed.position[1])
+            rot_delta = (int(self._preview_rotation) - int(seed.rotation)) % 360
+            rd = math.radians(rot_delta)
+            cosr, sinr = math.cos(rd), math.sin(rd)
+            flip = getattr(self, '_f5_flip', None)
+            # 앵커(V) 변경 — seed 앵커 오프셋 변화량을 새 회전으로 회전한 world 이동량.
+            # seed 본체 고스트는 앵커만 바꿔(위치=마우스) 시각 이동, 나머지 부재는 그만큼
+            # 평행이동해 따라간다(확정 로직과 동일). seed 객체는 절대 변형하지 않는다.
+            new_anc = int(self._preview_anchor)
+            seed_old_anc = int(seed.anchor)
+            anc_dx = anc_dy = 0.0
+            if new_anc != seed_old_anc:
+                _w = float(seed.dimensions.get('width', 0.0) or 0.0)
+                _d = float(seed.dimensions.get('depth', 0.0) or 0.0)
+                _off = [(0.0, 0.0), (_w, 0.0), (_w, _d), (0.0, _d)]
+                axo, ayo = _off[seed_old_anc] if 0 <= seed_old_anc < 4 else (0.0, 0.0)
+                axn, ayn = _off[new_anc] if 0 <= new_anc < 4 else (0.0, 0.0)
+                dax, day = axo - axn, ayo - ayn
+                radw = math.radians(int(self._preview_rotation))
+                cw, sw = math.cos(radw), math.sin(radw)
+                anc_dx = dax * cw - day * sw
+                anc_dy = dax * sw + day * cw
+            out = []
+            for cid in member_ids:
+                m = self._scene.components.get(cid)
+                if m is None:
+                    continue
+                rel_x = float(m.position[0]) - sx
+                rel_y = float(m.position[1]) - sy
+                gx = world_x + (rel_x * cosr - rel_y * sinr)
+                gy = world_y + (rel_x * sinr + rel_y * cosr)
+                clone = _copy.deepcopy(m)
+                # seed 본체(마우스 위치, 비종속)면 앵커 변경, 나머지는 시각이동량 평행.
+                is_seed_body = (abs(rel_x) < 1.0 and abs(rel_y) < 1.0
+                                and int(getattr(m, 'sub_index', 0) or 0) == 0)
+                if is_seed_body:
+                    clone.anchor = new_anc
+                else:
+                    gx += anc_dx
+                    gy += anc_dy
+                clone.position = np.array([gx, gy, float(m.position[2])],
+                                          dtype=np.float64)
+                clone.rotation = (int(m.rotation) + rot_delta) % 360
+                clone.generate_sub_components()
+                if flip in ('x', 'y'):
+                    from modular_3d.model.mirror import mirror_component_inplace
+                    axis_c = world_x if flip == 'x' else world_y
+                    mirror_component_inplace(clone, axis_c, flip)
+                    clone.generate_sub_components()
+                out.append(clone)
+            return out
+
+        # ── 신규 배치 — 단일 새 부재 ──
         dims = getattr(self, '_f5_pending_dims', None)
         if dims is None:
-            return
-        import numpy as np
+            return []
         from modular_3d.model.multi_floor import _floor_z_list
-        # 1층(floor=0) z 좌표 결정
         ct = self._current_comp_type
         merge = bool(dims.get('merge', False))
         z_list = _floor_z_list(ct, n_floors=1, merge_with_panel=merge)
         z_for_ghost = z_list[0] if z_list else 0.0
-
-        ghost_pos = np.array([world_x, world_y, z_for_ghost], dtype=np.float64)
         ghost = _create_component(
-            ct, ghost_pos, dims, self._preview_rotation, self._preview_anchor)
-        verts, faces, colors = build_ghost_component_mesh(ghost)
-        self._viewer.update_ghost(verts, faces, colors)
+            ct, np.array([world_x, world_y, z_for_ghost], dtype=np.float64),
+            dims, self._preview_rotation, self._preview_anchor)
+        return [ghost]
+
+    def _f5_update_ghost_at(self, world_x: float, world_y: float):
+        """좌측 3D 고스트 갱신 — 공유 빌더 결과(개구부·종속 포함)를 합본해 표시."""
+        from modular_3d.render.mesh_builder import (
+            build_ghost_component_mesh as _bg, _merge_meshes)
+        comps = self._f5_build_ghost_components(world_x, world_y)
+        if not comps:
+            return
+        meshes = [_bg(c) for c in comps]
+        if len(meshes) == 1:
+            v, f, col = meshes[0]
+        else:
+            v, f, col = _merge_meshes(meshes)
+        self._viewer.update_ghost(v, f, col)
 
     def _f5_on_canvas_move(self, world_x: float, world_y: float):
         """F5 캔버스 마우스 이동 (PREVIEW) → 좌측 3D 고스트 갱신."""
@@ -1899,6 +2136,10 @@ class F5Mixin:
         self._f5_move_group_id = getattr(comp, 'group_id', 0) or comp_id
         # 새 이동 세션 — 사용자 R/V 잠금 해제 (seed 의 기존 회전·앵커가 시작값)
         self._f5_user_rv_override = False
+        # 일반 이동이므로 복사·뒤집기 플래그 해제(직전 세션 잔류 차단).
+        self._f5_move_is_copy = False
+        self._f5_flip = None
+        self._f5_ghost_ids = [int(comp_id)]   # 단일 — 고스트 1개
 
         # 캔버스 PREVIEW 진입 + 포커스
         if self._f5_panel and self._f5_panel.canvas:
@@ -1920,6 +2161,118 @@ class F5Mixin:
         n_targets = len(target_ids)
         self._dim_panel.set_mode_text(
             f'[F5 이동: {name} #{comp_id} ({n_targets}개 같이 이동) — '
+            f'클릭으로 위치 확정 / R: 회전 / V: 앵커]')
+
+    def _collect_multi_targets(self, ids) -> list:
+        """다중선택 이동 대상 — 각 선택 부재의 `_resolve_move_targets` 합집합(dedup).
+
+        seed(첫 원소)의 확장이 앞에 오도록 순서를 보존한다(확정 분기가 seed 그룹을
+        '본체'로 식별하는 데 의존).
+        """
+        target_ids: list = []
+        seen: set = set()
+        for sid in ids:
+            for cid in self._resolve_move_targets(int(sid)):
+                if cid not in seen:
+                    seen.add(cid)
+                    target_ids.append(cid)
+        return target_ids
+
+    def _f5_on_move_key_multi(self, seed_id: int, ids):
+        """다중선택(2개+) + M — seed(처음 클릭) 기준 묶음 통째 자유 이동 진입.
+
+        대상 = 고른 모든 부재의 이동대상 합집합. seed 의 dims/rotation/anchor 로
+        PREVIEW 고스트를 띄우고, 확정은 기존 `_f5_on_canvas_click` 이동 분기가
+        그대로 처리한다(그 분기는 이미 seed 본체만 절대 회전·앵커, 나머지는 seed
+        중심 회전+평행이동으로 변환하므로 다른 선택 그룹도 자연히 함께 변환됨).
+        """
+        seed = self._scene.components.get(int(seed_id))
+        if seed is None:
+            return
+        target_ids = self._collect_multi_targets(ids)
+        if not target_ids:
+            return
+
+        self._current_comp_type = seed.comp_type
+        self._preview_rotation = seed.rotation
+        self._preview_anchor = seed.anchor
+        self._f5_pending_dims = dict(seed.dimensions)
+        self._f5_pending_dep_meta = None
+        self._f5_dep_meta = None
+        self._f5_move_target_ids = list(target_ids)
+        self._f5_move_seed_id = int(seed_id)
+        self._f5_move_group_id = getattr(seed, 'group_id', 0) or int(seed_id)
+        self._f5_user_rv_override = False
+        self._f5_move_is_copy = False   # 일반 다중 이동 — 복사 플래그 해제
+        self._f5_flip = None            # 일반 다중 이동 — 뒤집기 아님
+        self._f5_ghost_ids = [int(i) for i in ids]   # 고른 부재 전부 고스트로
+
+        if self._f5_panel and self._f5_panel.canvas:
+            cv = self._f5_panel.canvas
+            cv._f5_in_preview = True
+            cv._selected_id = -1
+            cv._selected_ids = []   # 미리보기 진입 시 선택 하이라이트 정리(단일과 동일)
+            cv._multi_align = False
+            cv._state = 'idle'
+            cv.setFocus()
+            cv._f5_mouse_world = (float(seed.position[0]), float(seed.position[1]))
+            cv.update()
+
+        self._viewer.set_ghost_enabled(True)
+        self._f5_update_ghost_at(float(seed.position[0]), float(seed.position[1]))
+
+        name = TYPE_NAMES.get(seed.comp_type, '')
+        self._dim_panel.set_mode_text(
+            f'[F5 다중 이동: {name} #{seed_id} 기준 ({len(target_ids)}개) — '
+            f'클릭으로 위치 확정 / R: 회전 / V: 앵커]')
+
+    def _f5_on_flip_key(self, seed_id: int, ids, axis: str):
+        """Shift+X(axis='x' 좌우)·Shift+Y(axis='y' 상하) — 거울 뒤집기 이동 진입.
+
+        이동 미리보기를 그대로 쓰되 `_f5_flip` 을 켜, 확정 시 이동·회전에 더해
+        seed(처음 클릭) 통과 축 기준 거울 반사를 합성한다(개구부 포함). 단일선택
+        (ids=[seed]) 이면 seed 한 그룹만 제자리 반사, 다중이면 묶음 통째 반사.
+        대상·고스트·R/V 처리는 다중 이동과 동일.
+        """
+        seed = self._scene.components.get(int(seed_id))
+        if seed is None or axis not in ('x', 'y'):
+            return
+        target_ids = self._collect_multi_targets(ids)
+        if not target_ids:
+            return
+
+        self._current_comp_type = seed.comp_type
+        self._preview_rotation = seed.rotation
+        self._preview_anchor = seed.anchor
+        self._f5_pending_dims = dict(seed.dimensions)
+        self._f5_pending_dep_meta = None
+        self._f5_dep_meta = None
+        self._f5_move_target_ids = list(target_ids)
+        self._f5_move_seed_id = int(seed_id)
+        self._f5_move_group_id = getattr(seed, 'group_id', 0) or int(seed_id)
+        self._f5_user_rv_override = False
+        self._f5_move_is_copy = False
+        self._f5_flip = axis   # ★ 확정 시 거울 반사 합성
+        self._f5_ghost_ids = [int(i) for i in ids]   # 고른 부재 전부 고스트로(반사됨)
+
+        if self._f5_panel and self._f5_panel.canvas:
+            cv = self._f5_panel.canvas
+            cv._f5_in_preview = True
+            cv._selected_id = -1
+            cv._selected_ids = []
+            cv._multi_align = False
+            cv._state = 'idle'
+            cv.setFocus()
+            cv._f5_mouse_world = (float(seed.position[0]), float(seed.position[1]))
+            cv.update()
+
+        self._viewer.set_ghost_enabled(True)
+        self._f5_update_ghost_at(float(seed.position[0]), float(seed.position[1]))
+
+        name = TYPE_NAMES.get(seed.comp_type, '')
+        dir_txt = '좌우' if axis == 'x' else '상하'
+        self._dim_panel.set_mode_text(
+            f'[F5 {dir_txt} 뒤집기: {name} #{seed_id} 기준 ({len(target_ids)}개) — '
             f'클릭으로 위치 확정 / R: 회전 / V: 앵커]')
 
     # ── 단계 4: 종속 부재 흐름 ───────────────────────────────
@@ -2041,33 +2394,48 @@ class F5Mixin:
         self._refresh_2d()
 
     def _f5_on_copy(self, comp_id: int):
-        """C 키 — 선택된 부재의 복사 모드 진입.
+        """C 키(단일선택) — 선택 부재 그룹 복사 후 이동 흐름 진입."""
+        comp = self._scene.components.get(comp_id)
+        if comp is None:
+            return
+        source_ids = self._resolve_move_targets(comp_id)
+        if not source_ids:
+            return
+        self._f5_copy_core(source_ids, int(comp_id), ghost_ids=[int(comp_id)])
 
-        [정책 2026-05-16 — M 키 통합]
-        이전: 별도의 복사 분기에서 클릭 시점에 deep copy + delta 적용. M 키
-              분기와 회전·합체 보정이 따로 관리돼 한쪽 버그가 다른 쪽에 전이.
-        현재: C 키 누르는 즉시 source_ids 의 deep copy 를 같은 위치에 박아
-              두고(원본은 그대로), 그 복사본들을 seed 로 하여 M 키 이동
-              흐름으로 진입. 사용자가 캔버스 클릭 시 M 분기가 그대로 동작해
-              회전(같은 그룹+같은 sub_index 만 적용) · 합체 그룹 따라감 보정을
-              자동 공유. Undo 한 번에 복사 통째 사라짐 ('group_place').
+    def _f5_on_copy_multi(self, seed_id: int, ids):
+        """C 키(다중선택 2개+) — 고른 부재들의 합집합을 복사 후 이동 흐름 진입.
 
-        [합체/페어 remap]
-        deep copy 만 하면 복사본의 merged_fp_id / merged_wall_ids / parent_id
-        가 원본 cid 를 그대로 가리켜 cross-link 되는 버그 발생. 본 함수가 새
-        cid 를 발급한 직후 old→new cid 매핑으로 remap 한다. _floor_pairs /
-        _child_pairs / _module_children / _child_parent (controls.py 관리 dict)
-        도 같은 매핑으로 갱신.
+        seed(처음 클릭)의 복사본을 이동 기준으로 삼아 묶음 통째 이동(회전·앵커도
+        seed 기준). 복제·remap·Esc 취소 처리는 단일과 같은 `_f5_copy_core` 공유.
+        """
+        seed = self._scene.components.get(int(seed_id))
+        if seed is None:
+            return
+        source_ids = self._collect_multi_targets(ids)
+        if not source_ids:
+            return
+        self._f5_copy_core(source_ids, int(seed_id),
+                           ghost_ids=[int(i) for i in ids])
+
+    def _f5_copy_core(self, source_ids, seed_comp_id: int, ghost_ids=None):
+        """복사 핵심 — source_ids 깊은복사 + gid/cid/합체/부모 remap 후 seed_comp_id
+        의 복사본을 기준으로 M 이동 흐름 진입. 단일·다중 C 키가 공유.
+
+        [정책 2026-05-16 — M 키 통합] C 즉시 deep copy 를 같은 위치에 박고(원본
+        불변) 복사본을 seed 로 M 이동 흐름 진입 → 회전·합체 보정 자동 공유.
+        [합체/페어 remap] deep copy 만 하면 복사본의 merged_fp_id / merged_wall_ids
+        / parent_id 가 원본 cid 를 가리켜 cross-link 된다 — 새 cid 발급 직후
+        old→new 매핑으로 remap. controls.py 관리 dict 도 같은 매핑으로 갱신.
+        [함정 — Esc 취소] 복제본을 클릭 전 즉시 박으므로(group_place), 이동
+        미리보기 중 Esc 면 _f5_on_escape 가 `_f5_move_is_copy` 플래그로 복제본을
+        제거해야 원본 위 잔존(중복)을 막는다.
         """
         import copy as _copy
         from modular_3d.model.multi_floor import next_group_id
         from modular_3d.model import FloorPanel, StructWall
         from modular_3d.render.mesh_builder import build_component_mesh
 
-        comp = self._scene.components.get(comp_id)
-        if comp is None:
-            return
-        source_ids = self._resolve_move_targets(comp_id)
         if not source_ids:
             return
 
@@ -2135,6 +2503,12 @@ class F5Mixin:
 
         self._scene.end_group_action('group_place')
 
+        # [Esc 취소용] 이번 이동이 '복사 후 이동' 임을 표시 + 박은 복제본 id 기록.
+        # 미리보기 중 Esc 면 _f5_on_escape 가 이 복제본을 제거하고 group_place 를
+        # 되돌려 원본 위 잔존(중복)을 막는다. 확정 클릭 시 플래그가 꺼진다.
+        self._f5_move_is_copy = True
+        self._f5_copy_clone_ids = list(clones.keys())
+
         # 5) controls.py 가 관리하는 페어/부모-자식 dict remap — 복사본들도
         #    원본과 동일한 페어/종속 구조를 갖도록.
         fp_dict = getattr(self, '_floor_pairs', None)
@@ -2165,8 +2539,8 @@ class F5Mixin:
                 if old_cid in copy_ids_set:
                     copy_ids_set.add(new_cid)
 
-        # 6) M 키 이동 흐름 진입 — seed = 복사된 seed
-        new_seed_id = old_to_new_cid.get(comp_id)
+        # 6) M 키 이동 흐름 진입 — seed = 복사된 seed(처음 클릭 부재의 복사본)
+        new_seed_id = old_to_new_cid.get(int(seed_comp_id))
         new_seed = self._scene.components.get(new_seed_id) if new_seed_id else None
         if new_seed is None:
             return
@@ -2181,6 +2555,10 @@ class F5Mixin:
         self._f5_move_target_ids = list(clones.keys())
         self._f5_move_seed_id = int(new_seed_id)
         self._f5_move_group_id = int(getattr(new_seed, 'group_id', 0)) or int(new_seed_id)
+        # 고스트 — 원본(같은 자리)으로 그린다. 복제본 seed 와 좌표가 같아 동일.
+        self._f5_ghost_ids = ([int(i) for i in ghost_ids] if ghost_ids
+                              else [int(seed_comp_id)])
+        self._f5_flip = None
         # 기존 복사 마커는 비움 — 본 분기 자체가 없어졌으므로.
         self._f5_copy_source_ids = []
         self._f5_copy_seed_id = 0
@@ -2191,6 +2569,8 @@ class F5Mixin:
             cv = self._f5_panel.canvas
             cv._f5_in_preview = True
             cv._selected_id = -1
+            cv._selected_ids = []   # 복사 미리보기 진입 시 선택 하이라이트 정리
+            cv._multi_align = False
             cv._state = 'idle'
             cv.setFocus()
             cv._f5_mouse_world = (float(new_seed.position[0]),
@@ -2209,11 +2589,14 @@ class F5Mixin:
             f'클릭으로 위치 확정 / R: 회전 / V: 앵커]')
 
     def _f5_attach_wall_to_parent(self, wall_id: int, parent_id: int):
-        """내벽을 사용자가 고른 부모(모듈/패널)에 수동 종속(개발자용 i 키 루트).
+        """내벽·중간기둥·중간보를 사용자가 고른 부모에 수동 종속(개발자용 i 키 루트).
 
-        자동 종속(_auto_parent_orphan_interior_walls)이 놓친 내벽을 직접 붙인다.
-        부모의 group_id 를 공유하고 새 sub_index 를 발급해 종속 부재로 만든다.
-        부모가 모듈/패널/수직3층모듈이 아니면 무시한다.
+        자동 종속이 놓친(고아) 부재를 직접 붙인다. 부모의 group_id 를 공유하고 새
+        sub_index 를 발급해 종속 부재로 만든다 → 이후 부모(모듈) 선택 시 함께 이동,
+        부재만 선택 시 그 줄만 이동(_resolve_move_targets).
+        - 내벽: 부모 = 모듈/패널/수직3층모듈.
+        - 중간기둥/중간보: 부모 = 모듈/수직3층모듈만. 같은 xy 의 같은 종류 부재
+          (중간보 바닥/천장·전 층)를 한 줄(같은 sub_index)로 묶어 함께 종속한다.
         """
         from modular_3d.model.core import ComponentType
         from modular_3d.model.multi_floor import next_group_id, _next_sub_index
@@ -2221,24 +2604,48 @@ class F5Mixin:
         parent = self._scene.components.get(int(parent_id))
         if wall is None or parent is None or wall is parent:
             return
-        if getattr(wall.comp_type, 'value', '') != 'interior_wall':
+        ctv = getattr(wall.comp_type, 'value', '')
+        is_mid = ctv in ('mid_column', 'mid_beam')
+        if ctv not in ('interior_wall', 'mid_column', 'mid_beam'):
             return
-        if parent.comp_type not in (ComponentType.MODULE,
-                                    ComponentType.VERTICAL_MODULE,
-                                    ComponentType.FLOOR_PANEL):
-            self._dim_panel.set_mode_text('[종속 실패: 부모는 모듈/패널만 가능]')
+        if is_mid:
+            allowed = (ComponentType.MODULE, ComponentType.VERTICAL_MODULE)
+            fail_msg = '[종속 실패: 중간기둥·보는 모듈에만 종속 가능]'
+        else:
+            allowed = (ComponentType.MODULE, ComponentType.VERTICAL_MODULE,
+                       ComponentType.FLOOR_PANEL)
+            fail_msg = '[종속 실패: 부모는 모듈/패널만 가능]'
+        if parent.comp_type not in allowed:
+            self._dim_panel.set_mode_text(fail_msg)
             return
         gid = int(getattr(parent, 'group_id', 0))
         if gid <= 0:
             gid = next_group_id(self._scene)
             parent.group_id = gid
-        wall.parent_id = int(parent_id)
-        wall.group_id = gid
-        wall.sub_index = _next_sub_index(self._scene, gid)
-        wall.floor_index = int(getattr(parent, 'floor_index', 0))
+        new_sub = _next_sub_index(self._scene, gid)
+        if is_mid:
+            # 같은 xy 의 같은 종류 중간부재(바닥/천장·전 층) 모두 한 줄로 묶는다.
+            cx, cy = float(wall.position[0]), float(wall.position[1])
+            targets = [cid for cid, c in self._scene.components.items()
+                       if c.comp_type == wall.comp_type
+                       and abs(float(c.position[0]) - cx) < 1.0
+                       and abs(float(c.position[1]) - cy) < 1.0]
+            for cid in targets:
+                c = self._scene.components[cid]
+                c.parent_id = int(parent_id)
+                c.group_id = gid
+                c.sub_index = new_sub   # floor_index 는 각자 유지(전 층 줄)
+            label = ('[중간기둥 종속 완료]' if ctv == 'mid_column'
+                     else '[중간보 종속 완료]')
+        else:
+            wall.parent_id = int(parent_id)
+            wall.group_id = gid
+            wall.sub_index = new_sub
+            wall.floor_index = int(getattr(parent, 'floor_index', 0))
+            label = '[내벽 종속 완료]'
         self._status.update_count(self._scene.component_count)
         self._refresh_2d()
-        self._dim_panel.set_mode_text('[내벽 종속 완료]')
+        self._dim_panel.set_mode_text(label)
 
     def _f5_delete_member_line(self, comp_id: int):
         """종속 부재 1줄(같은 group_id + 같은 sub_index, 모든 층)만 삭제.
@@ -2335,6 +2742,31 @@ class F5Mixin:
                   'group_ids': sorted(gids),
                   'deleted_comps': deleted_comps},
         ))
+        self._status.update_count(self._scene.component_count)
+        self._auto_regen_core_slabs()
+        self._refresh_2d()
+
+    def _f5_on_delete_multi(self, ids):
+        """다중선택(2개+) + Delete — 고른 부재들의 합집합 통째 삭제(단일 undo).
+
+        대상 = 이동과 동일하게 `_resolve_move_targets` 합집합(전 층/종속/코어 줄/
+        합체 그룹). 이동·삭제 대상 집합을 일치시켜(코드베이스 함정 정책) 사용자가
+        본 그대로 지운다. group_delete 액션 1개로 묶어 Z 한 번에 복원.
+        """
+        from modular_3d.model.core import Action as _Action
+        target_ids = [c for c in self._collect_multi_targets(ids)
+                      if c in self._scene.components]
+        if not target_ids:
+            return
+        deleted_comps = [self._scene.components[c] for c in target_ids]
+        for cid in target_ids:
+            self._viewer.remove_component_visual(cid)
+            self._snap.remove_component(cid)
+            self._scene.remove_component(cid)
+        self._scene.undo_stack.append(_Action(
+            action_type='group_delete',
+            data={'group_id': 0, 'group_ids': [],
+                  'deleted_comps': deleted_comps}))
         self._status.update_count(self._scene.component_count)
         self._auto_regen_core_slabs()
         self._refresh_2d()

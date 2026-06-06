@@ -180,16 +180,18 @@ function _setupMouseControls() {
       panning = false;
       return;
     }
+    // Ctrl(또는 Mac Cmd) 동시누름 → 다중선택 토글 신호로 Python 에 전달.
+    const ctrl = !!(e.ctrlKey || e.metaKey);
     if (e.button === 0 && !dragged) {
       const w = _screenToWorld(e.clientX, e.clientY);
       if (qtBridge && qtBridge.on_2d_click) {
-        qtBridge.on_2d_click(w[0], w[1], 0);
+        qtBridge.on_2d_click(w[0], w[1], 0, ctrl);
       }
     } else if (e.button === 2 && !dragged) {
       // 우클릭 (드래그 아님) — 우클릭 액션 (실 그리기 점 취소 등)
       const w = _screenToWorld(e.clientX, e.clientY);
       if (qtBridge && qtBridge.on_2d_click) {
-        qtBridge.on_2d_click(w[0], w[1], 2);
+        qtBridge.on_2d_click(w[0], w[1], 2, ctrl);
       }
     }
   });
@@ -212,7 +214,8 @@ function _setupMouseControls() {
   el.addEventListener('mousedown', () => el.focus());
   el.addEventListener('keydown', (e) => {
     if (qtBridge && qtBridge.on_2d_key) {
-      qtBridge.on_2d_key(e.key, e.key.length === 1 ? e.key : '');
+      // Shift 동시누름 → 뒤집기(Shift+X/Y) 판별용으로 함께 전달.
+      qtBridge.on_2d_key(e.key, e.key.length === 1 ? e.key : '', !!e.shiftKey);
       // 배치·편집 키는 브라우저 기본 동작 차단 (스크롤 등)
       e.preventDefault();
     }
@@ -298,8 +301,10 @@ window.applyPaintState = function(state) {
     re: state.reference_edge, sb: state.selected_bbox, hb: state.hover_bbox,
     te: state.target_edge_info, ht: state.help_text, sh: state.snap_hint,
     fg: state.f5_ghost, rpp: state.room_preview_poly,
+    rpm: state.room_preview_multi,
     opp: state.op_preview_poly, ipp: state.import_preview_polys,
     op: state.openings, rd: state.room_draw, fsp: state.f5_snap_point,
+    ms: state.measure, csd: state.core_slab_draw,
   });
   if (contentKey === _lastContentKey) {
     return;  // 콘텐츠 동일 — 카메라만 갱신, scene 재생성 스킵
@@ -431,6 +436,27 @@ function _drawComponents(components) {
   // 단 highlight 가 있는 부재는 두께·색 강조.
   const Z_BBOX = 0.5;
   for (const comp of components) {
+    // 폴리곤 코어 슬래브 — 그린 모양 그대로 채움 + 외곽(bbox 사각형 대신).
+    if (comp.polygon && comp.polygon.length >= 3) {
+      const poly = comp.polygon;
+      let pedge;
+      if (comp.highlight === 'selected') pedge = [120/255, 200/255, 255/255];
+      else pedge = [0.35, 0.35, 0.35];
+      const pf = _addPolygonFill(poly, ROLE_COLOR.slab || [0.82, 0.82, 0.74],
+                                 0.55, 0.1, 1);
+      if (pf) { pf.userData.comp_id = comp.id; groups.components.add(pf); }
+      const pe = _addPolylineLoop(poly, pedge, Z_BBOX, 10, true);
+      if (pe) { pe.userData.comp_id = comp.id; groups.components.add(pe); }
+      if (comp.label) {
+        let cxp = 0, cyp = 0;
+        for (const p of poly) { cxp += p[0]; cyp += p[1]; }
+        const sp = _makeTextSprite(comp.label, '#000000', 0.5);
+        sp.position.set(cxp / poly.length, cyp / poly.length, Z_BBOX + 0.1);
+        sp.renderOrder = 100;
+        groups.components.add(sp);
+      }
+      continue;
+    }
     if (!comp.bbox) continue;
     const [bx0, by0, bx1, by1] = comp.bbox;
     // bbox 외곽선 색 — highlight 우선, 없으면 type 색.
@@ -809,18 +835,36 @@ function _drawPreviews(state) {
     if (e) groups.previews.add(e);
   }
 
-  // F5 PREVIEW 고스트 — 청록 반투명 폴리곤 + 마우스 앵커 노란점
-  if (state.f5_ghost) {
-    const g = state.f5_ghost;
-    const f = _addPolygonFill(g.corners, [80/255, 200/255, 255/255],
-                              90/255, Z_PV + 0.05, RO_PV + 2);
-    if (f) groups.previews.add(f);
-    const e = _addPolylineLoop(g.corners, [80/255, 200/255, 255/255],
-                               Z_PV + 0.06, RO_PV + 3, true);
-    if (e) groups.previews.add(e);
-    if (g.mouse) {
-      groups.previews.add(_addDot(g.mouse[0], g.mouse[1],
-        [255/255, 200/255, 80/255], 5, Z_PV + 0.07, RO_PV + 4));
+  // F5 PREVIEW 고스트 — 실제 부재와 같은 역할 사각형 + 개구부, 반투명.
+  // (2D·3D 가 같은 공유 빌더 결과를 소비 → 정합) state.f5_ghost.comps 루프.
+  if (state.f5_ghost && state.f5_ghost.comps) {
+    const GA = 0.4;                       // 고스트 채움 반투명도
+    const GZ = Z_PV + 0.05;
+    const cyan = [80/255, 200/255, 255/255];
+    for (const gc of state.f5_ghost.comps) {
+      for (const r of (gc.rects || [])) {
+        const col = ROLE_COLOR[r.role] || cyan;
+        const a = (r.role === 'column') ? 0.6 : GA;   // 기둥은 살짝 진하게
+        const f = _buildRectMesh(r.x0, r.y0, r.x1, r.y1, col, a, GZ);
+        f.renderOrder = RO_PV + 2;
+        groups.previews.add(f);
+      }
+      if (gc.bbox) {
+        const e = _buildRectOutline(gc.bbox[0], gc.bbox[1], gc.bbox[2],
+                                    gc.bbox[3], cyan, GZ + 0.01);
+        e.renderOrder = RO_PV + 3;
+        groups.previews.add(e);
+      }
+      // 개구부 — 어두운 반투명 채움(구멍 표시).
+      for (const poly of (gc.openings || [])) {
+        const f = _addPolygonFill(poly, [20/255, 20/255, 20/255], 0.5,
+                                  GZ + 0.02, RO_PV + 4);
+        if (f) groups.previews.add(f);
+      }
+    }
+    if (state.f5_ghost.mouse) {
+      groups.previews.add(_addDot(state.f5_ghost.mouse[0], state.f5_ghost.mouse[1],
+        [255/255, 200/255, 80/255], 5, GZ + 0.07, RO_PV + 5));
     }
   }
 
@@ -836,6 +880,18 @@ function _drawPreviews(state) {
     if (rp.anchor) {
       groups.previews.add(_addDot(rp.anchor[0], rp.anchor[1],
         [255/255, 200/255, 80/255], 6, Z_PV + 0.07, RO_PV + 4));
+    }
+  }
+
+  // 다중 실 이동/복사 미리보기 — 각 실 폴리곤(녹색 반투명).
+  if (state.room_preview_multi) {
+    for (const poly of state.room_preview_multi) {
+      const f = _addPolygonFill(poly, [120/255, 220/255, 140/255],
+                                70/255, Z_PV + 0.05, RO_PV + 2);
+      if (f) groups.previews.add(f);
+      const e = _addPolylineLoop(poly, [120/255, 220/255, 140/255],
+                                 Z_PV + 0.06, RO_PV + 3, true);
+      if (e) groups.previews.add(e);
     }
   }
 
@@ -871,6 +927,40 @@ function _drawPreviews(state) {
     if (ip.mouse) {
       groups.previews.add(_addDot(ip.mouse[0], ip.mouse[1],
         [255/255, 200/255, 80/255], 6, Z_PV + 0.07, RO_PV + 4));
+    }
+  }
+
+  // 거리 측정(T) — 두 선 사이 연결선(노랑) + 양끝 점 + 거리(mm) 라벨.
+  if (state.measure) {
+    const m = state.measure;
+    const col = [1.0, 0.85, 0.2];
+    const e = _addPolylineLoop([m.p1, m.p2], col, Z_PV + 0.1, RO_PV + 6, false);
+    if (e) groups.previews.add(e);
+    groups.previews.add(_addDot(m.p1[0], m.p1[1], col, 6, Z_PV + 0.11, RO_PV + 7));
+    groups.previews.add(_addDot(m.p2[0], m.p2[1], col, 6, Z_PV + 0.11, RO_PV + 7));
+    const midx = (m.p1[0] + m.p2[0]) / 2, midy = (m.p1[1] + m.p2[1]) / 2;
+    const sprite = _makeTextSprite(Math.round(m.dist) + ' mm', '#ffe033', 1.3);
+    sprite.position.set(midx, midy, Z_PV + 0.3);
+    sprite.renderOrder = RO_PV + 8;
+    groups.previews.add(sprite);
+  }
+
+  // 코어 슬래브 그리기(P) — 진행 점 + 연결 폴리곤(회색 반투명).
+  if (state.core_slab_draw && state.core_slab_draw.active) {
+    const pts = state.core_slab_draw.points || [];
+    const col = [0.78, 0.78, 0.78];
+    if (pts.length >= 3) {
+      const f = _addPolygonFill(pts, col, 0.3, Z_PV + 0.05, RO_PV + 5);
+      if (f) groups.previews.add(f);
+    }
+    if (pts.length >= 2) {
+      const e = _addPolylineLoop(pts, col, Z_PV + 0.1, RO_PV + 6,
+                                 pts.length >= 3);
+      if (e) groups.previews.add(e);
+    }
+    for (const p of pts) {
+      groups.previews.add(_addDot(p[0], p[1],
+        [255 / 255, 200 / 255, 80 / 255], 5, Z_PV + 0.11, RO_PV + 7));
     }
   }
 }

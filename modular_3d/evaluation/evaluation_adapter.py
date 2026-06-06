@@ -167,8 +167,19 @@ def _compute_floor1_effective_area(comps: List[Component]) -> Dict[str, float]:
         f = int(getattr(c, "floor_index", 0))
         if f != floor:
             continue
-        xmin, ymin, _, xmax, ymax, _ = _aabb(c)
-        gross_mm2 += (xmax - xmin) * (ymax - ymin)
+        # 폴리곤 코어 슬래브는 슈레이스 면적(AABB 는 오목 부분까지 과대계상).
+        poly = c.dimensions.get("polygon") if isinstance(c, CoreSlab) else None
+        if poly and len(poly) >= 3:
+            s = 0.0
+            m = len(poly)
+            for i in range(m):
+                x1, y1 = poly[i]
+                x2, y2 = poly[(i + 1) % m]
+                s += x1 * y2 - x2 * y1
+            gross_mm2 += abs(s) * 0.5
+        else:
+            xmin, ymin, _, xmax, ymax, _ = _aabb(c)
+            gross_mm2 += (xmax - xmin) * (ymax - ymin)
 
     if gross_mm2 <= 0.0:
         return {"gross_m2": 0.0, "net_m2": 0.0, "ratio_pct": 0.0}

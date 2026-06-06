@@ -60,7 +60,13 @@ class AlignmentCanvasPaintMixin:
 
         scene = self._controller._scene.components
         vis_ids = self._current_visible_ids()
-        mis = self._misaligned_set(self._selected_id) if self._selected_id > 0 else {}
+        # 다중선택 집합(Ctrl+클릭) — 비어 있으면 단일 _selected_id 로 대체.
+        sel_ids = (list(self._selected_ids) if getattr(self, '_selected_ids', None)
+                   else ([self._selected_id] if self._selected_id > 0 else []))
+        selected_set = set(int(c) for c in sel_ids)
+        # 정렬 오차는 단일선택일 때만 의미 — 다중에선 끔.
+        mis = (self._misaligned_set(self._selected_id)
+               if len(sel_ids) == 1 and self._selected_id > 0 else {})
 
         # 1) 내부 구성 요소를 역할별로 그림 (뒤→앞: slab → wall → beam → column)
         role_alphas = {'slab': 55, 'wall': 140, 'beam': 185, 'column': 235}
@@ -80,35 +86,40 @@ class AlignmentCanvasPaintMixin:
                         and getattr(comp, 'sub_index', 0) == 0):
                     dep_candidate_ids.add(cid)
 
-        # 단계 5: SELECTED 시 같은 그룹 부재 옅게 강조 (다층 일체화 가시화)
+        # 단계 5: SELECTED 시 같은 그룹 부재 옅게 강조 (다층 일체화 가시화).
+        # 다중선택이면 고른 모든 부재의 group_id 합집합을 대상으로 한다.
+        sel_gids = set()
+        for sid in sel_ids:
+            c0 = scene.get(int(sid))
+            g0 = int(getattr(c0, 'group_id', 0) or 0) if c0 is not None else 0
+            if g0 > 0:
+                sel_gids.add(g0)
         same_group_ids = set()
-        if self._selected_id > 0:
-            sel = scene.get(self._selected_id)
-            sel_gid = getattr(sel, 'group_id', 0) if sel is not None else 0
-            if sel_gid > 0:
-                for cid in vis_ids:
-                    if cid == self._selected_id:
-                        continue
-                    c = scene.get(cid)
-                    if c is None:
-                        continue
-                    if getattr(c, 'group_id', 0) == sel_gid:
-                        same_group_ids.add(cid)
+        if sel_gids:
+            for cid in vis_ids:
+                if cid in selected_set:
+                    continue
+                c = scene.get(cid)
+                if c is None:
+                    continue
+                if int(getattr(c, 'group_id', 0) or 0) in sel_gids:
+                    same_group_ids.add(cid)
 
         # 합체 파트너(벽 ↔ FP) 도 선택된 것처럼 표시 — 사용자가 한쪽을 클릭해도
-        # 합체된 상대편이 같이 강조되도록.
+        # 합체된 상대편이 같이 강조되도록. 다중선택은 모든 선택 부재에 대해.
         merged_partner_ids = set()
-        if self._selected_id > 0:
-            sel = scene.get(self._selected_id)
-            if sel is not None:
-                if isinstance(sel, StructWall) and sel.merged_fp_id is not None:
-                    merged_partner_ids.add(sel.merged_fp_id)
-                elif isinstance(sel, FloorPanel) and sel.merged_wall_ids:
-                    merged_partner_ids.update(sel.merged_wall_ids)
+        for sid in sel_ids:
+            sel = scene.get(int(sid))
+            if sel is None:
+                continue
+            if isinstance(sel, StructWall) and sel.merged_fp_id is not None:
+                merged_partner_ids.add(sel.merged_fp_id)
+            elif isinstance(sel, FloorPanel) and sel.merged_wall_ids:
+                merged_partner_ids.update(sel.merged_wall_ids)
 
         def _pick_base_color(cid, comp):
             """상태에 따라 기본 색(R,G,B) 반환."""
-            if cid == self._selected_id or cid in merged_partner_ids:
+            if cid in selected_set or cid in merged_partner_ids:
                 return (80, 160, 255)
             if cid in mis:
                 return (220, 60, 60)
@@ -160,7 +171,7 @@ class AlignmentCanvasPaintMixin:
             rh = abs(sy1 - sy0)
 
             r, g, b = TYPE_COLORS.get(comp.comp_type, (150, 150, 150))
-            if cid == self._selected_id or cid in merged_partner_ids:
+            if cid in selected_set or cid in merged_partner_ids:
                 edge = QColor(120, 200, 255, 255)
                 ew = 2
             elif cid in mis:
@@ -193,10 +204,12 @@ class AlignmentCanvasPaintMixin:
                 p.setPen(QColor(255, 230, 230))
                 p.drawText(int(rx + 4), int(ry + 27), ' / '.join(parts))
 
-        # 2) 선택 부재의 4 모서리 파랑 강조 (합체 파트너도 동일 강조)
-        if self._selected_id > 0 and self._selected_id in scene:
-            self._draw_bbox_edges(
-                p, scene[self._selected_id], QColor(120, 200, 255), 2)
+        # 2) 선택 부재의 4 모서리 파랑 강조 (합체 파트너도 동일 강조).
+        #    다중선택이면 고른 모든 부재의 모서리를 강조.
+        for sid in selected_set:
+            if sid in scene:
+                self._draw_bbox_edges(
+                    p, scene[sid], QColor(120, 200, 255), 2)
         for pid in merged_partner_ids:
             if pid in scene:
                 self._draw_bbox_edges(

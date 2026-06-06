@@ -25,7 +25,7 @@ import openseespy.opensees as ops
 from modular_3d.카탈로그.geometry import (
     CORE_WALL_DEFAULT_THICKNESS_MM,
     SECTION_W_MM,
-    MODULE_JOINT_GAP_MM,
+    CORE_JOINT_GAP_MM,
     SPLIT_NODE_BASE_OFFSET,
     RULE_NODE_OFFSET_R03,
     RULE_NODE_OFFSET_R09,
@@ -56,6 +56,92 @@ _EDGE_PERP_MAX = _GAP_MAX
 # R02 수직 적층 갭 상한 (mm). 아래 모듈 천장 코너 ↔ 위 모듈 바닥 코너 z 차이
 # ≈ 220mm (모듈 천장 z=3200, 윗 모듈 바닥 z=3420). 5mm 부동소수 마진 포함 225.
 _VSTACK_MAX = 225.0
+
+
+# ── 공간 격자(해시) — 코너 짝짓기 후보 축소 (2026-06-05) ────────
+# R01·R02·R03 의 코너 매칭은 원래 모든 컴포넌트 쌍을 전수 비교(O(N²))했다.
+# 두 코너가 결합 후보가 되려면 평면 거리가 매칭 임계(_GAP_MAX=225) 이내여야
+# 하므로, 바닥을 _GRID_CELL 간격 격자로 나눠 코너를 칸에 담아두고 "자기 칸 +
+# 8 이웃 칸(3×3)" 만 보면 후보가 빠짐없이 포함된다(셀 크기 ≥ 임계라 |dx|·|dy|≤225
+# 인 쌍은 칸 차이가 최대 1 → 3×3 안). 후보만 줄일 뿐 순회 순서·판정·등록은
+# 기존과 동일하게 유지하므로 결과는 100% 보존된다(회귀 0).
+_GRID_CELL = _GAP_MAX   # 225.0 — 매칭 임계와 동일. 줄이면 누락 위험.
+
+
+def _cell_of(coord) -> Tuple[int, int]:
+    """평면 좌표 → 격자 칸 인덱스 (음수 좌표는 floor 나눗셈으로 안전)."""
+    return (int(coord[0] // _GRID_CELL), int(coord[1] // _GRID_CELL))
+
+
+def _build_corner_grid(om, corners: Dict[int, List[int]]
+                       ) -> Dict[Tuple[int, int], List[Tuple[int, int]]]:
+    """{cid: [nid]} → {(ix, iy): [(cid, nid), ...]}. 코너의 xy 격자 버킷."""
+    grid: Dict[Tuple[int, int], List[Tuple[int, int]]] = {}
+    for cid, nids in corners.items():
+        for nid in nids:
+            c = om.node_tags.get(nid)
+            if c is None:
+                continue
+            grid.setdefault(_cell_of(c), []).append((cid, nid))
+    return grid
+
+
+def _neighbor_cids(grid: Dict[Tuple[int, int], List[Tuple[int, int]]],
+                   coord, self_cid: int) -> Set[int]:
+    """coord 주변 3×3 칸에 있는, self_cid 가 아닌 컴포넌트 ID 집합.
+
+    이 집합에 든 cid 만 매칭 후보로 보면 된다 — 멀리 떨어진 컴포넌트는
+    애초에 후보에서 빠진다. 결과는 전수 비교와 동일(임계 이내는 모두 포함).
+    """
+    ix, iy = _cell_of(coord)
+    out: Set[int] = set()
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for cid, _nid in grid.get((ix + dx, iy + dy), ()):
+                if cid != self_cid:
+                    out.add(cid)
+    return out
+
+
+def _build_edge_grid(om, edges: Dict[int, List[Tuple[int, int, int]]]
+                     ) -> Dict[Tuple[int, int], Set[int]]:
+    """{cid: [(mid, nA, nB)]} → {(ix, iy): {cid, ...}}. 보(모서리)의 격자 등록.
+
+    [정책 2026-06-05 — 보 rasterize]
+    보는 점이 아니라 선이라 여러 칸에 걸친다(모듈 보는 최대 30칸). 코너가 보에
+    직각으로 닿을(perp ≤ 225) 가능성이 있는 칸을 빠짐없이 덮으려면, 보의 양 끝점
+    bbox 를 칸 단위로 1칸씩 넓혀(직각 ±1칸 = 225mm 여유) 그 안의 모든 칸에 cid 를
+    등록한다. 모듈 보가 100% 축정렬이라 bbox 가 한 축으로 얇아 등록 칸이 적다.
+    값은 코너 후보 판정용이라 cid 집합만 저장(보 식별자는 호출자가 edges 로 순회).
+    """
+    grid: Dict[Tuple[int, int], Set[int]] = {}
+    for cid, elist in edges.items():
+        for _mid, nA, nB in elist:
+            cA = om.node_tags.get(nA)
+            cB = om.node_tags.get(nB)
+            if cA is None or cB is None:
+                continue
+            ixA, iyA = _cell_of(cA)
+            ixB, iyB = _cell_of(cB)
+            ix0, ix1 = (ixA, ixB) if ixA <= ixB else (ixB, ixA)
+            iy0, iy1 = (iyA, iyB) if iyA <= iyB else (iyB, iyA)
+            for ix in range(ix0 - 1, ix1 + 2):
+                for iy in range(iy0 - 1, iy1 + 2):
+                    grid.setdefault((ix, iy), set()).add(cid)
+    return grid
+
+
+def _edge_cell_cids(edge_grid: Dict[Tuple[int, int], Set[int]],
+                    coord) -> Set[int]:
+    """coord 가 든 칸에 등록된 보의 컴포넌트 ID 집합 — (b) 후보 cid.
+
+    보가 자기 지나는 칸 전체 + 직각 ±1칸에 등록돼 있으므로, coord 가 그 보에
+    225mm 이내로 닿으면 반드시 같은 칸에서 만난다(후보 누락 0 = 결과 보존).
+    """
+    return edge_grid.get(_cell_of(coord), _EMPTY_CID_SET)
+
+
+_EMPTY_CID_SET: Set[int] = set()
 
 
 # ── 노드 식별 헬퍼 ─────────────────────────────────────────────
@@ -349,12 +435,17 @@ def _apply_corner_edge_rule(
     matched_pc: Set[Tuple[int, int]] = set()
 
     # ── (a) 꼭지점-꼭지점 매칭 ──────────────────────────────
+    # [성능 2026-06-05] cid_b 후보를 격자로 제한 — nP 주변 3×3 칸에 코너를 둔
+    # 컴포넌트만 본다. cid_b 순회 순서(corners 삽입 순서)와 best_per_module 선택·
+    # 등록 순서는 그대로라 결과 100% 보존(회귀 0).
+    grid_a = _build_corner_grid(om, corners)
     for cid_a in corners:
         for nP in corners[cid_a]:
             cP = om.node_tags[nP]
+            cand_a = _neighbor_cids(grid_a, cP, cid_a)
             best_per_module: Dict[int, Tuple[float, int]] = {}
             for cid_b in corners:
-                if cid_b == cid_a:
+                if cid_b == cid_a or cid_b not in cand_a:
                     continue
                 for nb in corners[cid_b]:
                     cb = om.node_tags[nb]
@@ -392,12 +483,18 @@ def _apply_corner_edge_rule(
     # ── (b) 꼭지점-모서리 매칭 ──────────────────────────────
     # 사영점은 외부 edge_split_map 에 누적 — 모든 룰 끝나고 apply_all_joint_rules
     # 가 _split_edges_and_link_corners 를 한 번만 호출해 일괄 분할.
+    # [성능 2026-06-05] cid_b 후보를 보 격자로 제한 — nP 칸에 보를 둔 컴포넌트만
+    # 본다. cid_b 순회 순서·보 순회·사영점 누적 순서는 그대로(결과 보존, 회귀 0).
+    edge_grid_b = _build_edge_grid(om, edges)
+    vedge_grid_b = _build_edge_grid(om, vedges)
     for cid_a in corners:
         for nP in corners[cid_a]:
             cP = om.node_tags[nP]
+            cand_e = _edge_cell_cids(edge_grid_b, cP)
+            cand_v = _edge_cell_cids(vedge_grid_b, cP)
             # 수평 보 모서리
             for cid_b, edge_list in edges.items():
-                if cid_b == cid_a:
+                if cid_b == cid_a or cid_b not in cand_e:
                     continue
                 if (nP, cid_b) in matched_pc:
                     continue
@@ -425,7 +522,7 @@ def _apply_corner_edge_rule(
 
             # 수직 기둥 모서리 (수직모듈 — 패널은 빈 리스트라 통과)
             for cid_b, vedge_list in vedges.items():
-                if cid_b == cid_a:
+                if cid_b == cid_a or cid_b not in cand_v:
                     continue
                 if (nP, cid_b) in matched_pc:
                     continue
@@ -750,50 +847,87 @@ def _apply_vstack_rule(
     from modular_3d.analysis.model_spec import EqualDofRec
     registered = 0
     seen: Set[Tuple[int, int]] = set()
-    cids = list(corners.keys())
-    for i in range(len(cids)):
-        for j in range(i + 1, len(cids)):
-            for nA in corners[cids[i]]:
-                cA = om.node_tags[nA]
-                for nB in corners[cids[j]]:
-                    cB = om.node_tags[nB]
-                    if abs(cA[0] - cB[0]) > _PERP_TOL:
-                        continue
-                    if abs(cA[1] - cB[1]) > _PERP_TOL:
-                        continue
-                    dz = abs(cA[2] - cB[2])
-                    if not (_PERP_TOL < dz <= z_max):
-                        continue
-                    master, slave = (nA, nB) if cA[2] < cB[2] else (nB, nA)
-                    if (master, slave) in seen:
-                        continue
-                    seen.add((master, slave))
-                    _dofs = _resolve_override_dofs(om, master, slave, dofs,
-                                                   rule_id)
-                    if _dofs is None:
-                        continue   # remove 오버라이드 — 이 결합 건너뜀
-                    try:
-                        ops.equalDOF(master, slave, *_dofs)
-                    except Exception as e:
-                        dprint('joint_rules', f'[joint_rules] equalDOF({master},{slave}) 실패: {e}')
-                        om.registration_failures.append(
-                            (slave, f'equalDOF master={master}: {e}'))
-                        continue
-                    om.constrained_node_ids.add(slave)
-                    if om.spec is not None:
-                        om.spec.equal_dofs.append(EqualDofRec(
-                            master=master, slave=slave, dofs=tuple(_dofs),
-                            kind='vstack', rule_id=rule_id,
-                        ))
-                    registered += 1
-    if registered:
-        pass
+    # [성능 2026-06-05] 전수 cid 쌍 비교(O(N²)) → 격자 후보 비교(O(N)).
+    # 각 코너는 주변 3×3 칸의 다른 cid 코너하고만 비교한다. xy 정렬(±5mm)이
+    # 조건이라 후보는 같은 칸 근처뿐 — 멀리 떨어진 코너는 자동 제외. master/slave
+    # 는 z 작은 쪽으로 결정적이고 seen 으로 중복을 막으므로, 한 쌍을 양방향으로
+    # 만나도 한 번만 등록된다(결과 = 전수 비교와 동일, 회귀 0).
+    grid = _build_corner_grid(om, corners)
+    for cid_a in corners:
+        for nA in corners[cid_a]:
+            cA = om.node_tags[nA]
+            ix, iy = _cell_of(cA)
+            for dcx in (-1, 0, 1):
+                for dcy in (-1, 0, 1):
+                    for cid_b, nB in grid.get((ix + dcx, iy + dcy), ()):
+                        if cid_b == cid_a:
+                            continue
+                        cB = om.node_tags[nB]
+                        if abs(cA[0] - cB[0]) > _PERP_TOL:
+                            continue
+                        if abs(cA[1] - cB[1]) > _PERP_TOL:
+                            continue
+                        dz = abs(cA[2] - cB[2])
+                        if not (_PERP_TOL < dz <= z_max):
+                            continue
+                        master, slave = (nA, nB) if cA[2] < cB[2] else (nB, nA)
+                        if (master, slave) in seen:
+                            continue
+                        seen.add((master, slave))
+                        _dofs = _resolve_override_dofs(om, master, slave, dofs,
+                                                       rule_id)
+                        if _dofs is None:
+                            continue   # remove 오버라이드 — 이 결합 건너뜀
+                        try:
+                            ops.equalDOF(master, slave, *_dofs)
+                        except Exception as e:
+                            dprint('joint_rules', f'[joint_rules] equalDOF({master},{slave}) 실패: {e}')
+                            om.registration_failures.append(
+                                (slave, f'equalDOF master={master}: {e}'))
+                            continue
+                        om.constrained_node_ids.add(slave)
+                        if om.spec is not None:
+                            om.spec.equal_dofs.append(EqualDofRec(
+                                master=master, slave=slave, dofs=tuple(_dofs),
+                                kind='vstack', rule_id=rule_id,
+                            ))
+                        registered += 1
     return registered
 
 
 # ── R02 — 모듈-모듈 수직 적층 접합 ────────────────────────────
 
 RULE_ID_MOD_MOD_V = 'R02_mod_mod_v'
+
+
+def _collect_mid_column_nodes(om) -> Dict[int, List[int]]:
+    """중간기둥(role='mid_column') 컴포넌트별 끝점 노드 → {cid: [nid, ...]}.
+
+    [정책 2026-06-05 — R02 중간기둥 수직 적층]
+    중간기둥은 층마다 별도 컴포넌트로 같은 평면 위치에 z=k·H 로 복제된다.
+    각 중간기둥 부재의 두 끝점(바닥·상단)을 컴포넌트 ID 별로 모아
+    _apply_vstack_rule 에 넘기면, 아래층 상단(z≈3200) ↔ 위층 하단(z≈3420,
+    갭 ≈220mm)이 모듈 코너와 똑같은 R02 코어로 자연 결합된다. 서로 다른 cid
+    끼리만 비교하므로(같은 중간기둥의 상단·하단 z 갭은 3200>225 라 어차피 제외)
+    인접 층 상단↔하단 한 쌍만 매칭된다.
+
+    [함정] 중간기둥 끝점이 _split_hosts_for_mid_endpoints 로 모듈 보에 통합되어
+    좌표가 옮겨진 경우에도 om.node_tags 의 현재 좌표를 쓰므로 정렬 판정이 정확.
+    """
+    am = om.analysis_model
+    if am is None:
+        return {}
+    out: Dict[int, List[int]] = {}
+    for mid in am.members_by_role('mid_column'):
+        m = am.members[mid]
+        if not m.source_comp_ids:
+            continue
+        cid = m.source_comp_ids[0]
+        bucket = out.setdefault(cid, [])
+        for nid in (m.n1, m.n2):
+            if nid in om.node_tags and nid not in bucket:
+                bucket.append(nid)
+    return out
 
 
 def apply_module_module_vertical(
@@ -803,17 +937,26 @@ def apply_module_module_vertical(
     """R02 — 모듈 ↔ 모듈 수직 적층 접합. _apply_vstack_rule 코어 사용.
 
     하부 모듈 천장 코너 ↔ 상부 모듈 바닥 코너 (xy 정렬 + z 갭 5~225mm).
+    [2026-06-05] 모듈 내부 중간기둥의 위·아래층 적층도 같은 R02 규칙으로 결합.
     """
+    n = 0
     mod_nids = _collect_module_nodes(om)
-    if len(mod_nids) < 2:
-        return 0
-    corners: Dict[int, List[int]] = {}
-    for cid, nids in mod_nids.items():
-        c = _module_corners(om, nids)
-        if c:
-            corners[cid] = c
-    return _apply_vstack_rule(
-        om, dofs, corners, RULE_ID_MOD_MOD_V, _VSTACK_MAX)
+    if len(mod_nids) >= 2:
+        corners: Dict[int, List[int]] = {}
+        for cid, nids in mod_nids.items():
+            c = _module_corners(om, nids)
+            if c:
+                corners[cid] = c
+        if len(corners) >= 2:
+            n += _apply_vstack_rule(
+                om, dofs, corners, RULE_ID_MOD_MOD_V, _VSTACK_MAX)
+    # 중간기둥 끝점도 별도 vstack — 모듈 코너 집합과 분리해 호출하므로 모듈
+    # 코너↔중간기둥 끝점 교차 매칭이 생기지 않는다(같은 평면이라도 종류별 격리).
+    mc_corners = _collect_mid_column_nodes(om)
+    if len(mc_corners) >= 2:
+        n += _apply_vstack_rule(
+            om, dofs, mc_corners, RULE_ID_MOD_MOD_V, _VSTACK_MAX)
+    return n
 
 
 # ── R03 — 바닥패널-모듈 접합 ──────────────────────────────────
@@ -996,6 +1139,12 @@ def apply_panel_module(
     if not mod_corners:
         return 0
 
+    # [성능 2026-06-05] 패널 꼭지점이 닿을 모듈 코너·보 후보를 격자로 제한.
+    # _match_pass 의 (a) 코너 루프·(b) 보 루프가 nP 칸 후보 모듈만 보도록 격자를
+    # 넘긴다(순회 순서·선택은 그대로 → 결과 보존).
+    mod_grid = _build_corner_grid(om, mod_corners)
+    mod_edge_grid = _build_edge_grid(om, mod_edges)
+
     # [진단 2026-05-14] 패널 꼭지점 z 와 모듈 코너 z 의 실제 분포 출력.
     # 매칭 안 되는 원인이 z 차이가 매칭 범위 밖인지 확인용.
     _pzs = sorted(set(round(om.node_tags[n][2], 1)
@@ -1065,8 +1214,10 @@ def apply_panel_module(
         """
         found = False
         # ── (a) 패널 꼭지점 ↔ 모듈 코너 ──────────────────
+        # 격자 후보 — nP 주변 3×3 칸에 코너를 둔 모듈만 본다(나머지 동일).
+        cand_mods = _neighbor_cids(mod_grid, cP, -1)
         for mcid, tc in mod_corners.items():
-            if mcid in matched_modules:
+            if mcid in matched_modules or mcid not in cand_mods:
                 continue
             best: Optional[Tuple[float, int]] = None  # (gap, nM)
             for nM in tc:
@@ -1107,8 +1258,10 @@ def apply_panel_module(
                 found = True
 
         # ── (b) 패널 꼭지점 ↔ 모듈 수평 보 ───────────────
+        # 격자 후보 — nP 칸에 보를 둔 모듈만 본다(순회 순서·선택 동일).
+        cand_edge_mods = _edge_cell_cids(mod_edge_grid, cP)
         for mcid, tedges in mod_edges.items():
-            if mcid in matched_modules:
+            if mcid in matched_modules or mcid not in cand_edge_mods:
                 continue   # (a) 에서 이미 결합 — 모듈 단위 양보
             best_b: Optional[Tuple[float, int, np.ndarray, float]] = None
             for mid, nA, nB in tedges:
@@ -1457,6 +1610,12 @@ def apply_wall_module(
     if not mod_corners:
         return 0
 
+    # [성능 2026-06-05] (a)코너·(b)수평보·(c)수직기둥 후보를 격자로 제한.
+    # 벽 상단 코너 nP 칸 후보 모듈만 본다(순회 순서·선택 동일 → 결과 보존).
+    mod_grid = _build_corner_grid(om, mod_corners)
+    mod_edge_grid = _build_edge_grid(om, mod_edges)
+    mod_vedge_grid = _build_edge_grid(om, mod_vedges)
+
     from modular_3d.analysis.model_spec import EqualDofRec
 
     registered = 0
@@ -1486,10 +1645,13 @@ def apply_wall_module(
         for nP in wnids:
             cP = om.node_tags[nP]
             matched_modules: Set[int] = set()
+            cand_c = _neighbor_cids(mod_grid, cP, -1)
+            cand_e = _edge_cell_cids(mod_edge_grid, cP)
+            cand_v = _edge_cell_cids(mod_vedge_grid, cP)
 
             # (a) 벽 상단 코너 ↔ 모듈/캔틸 코너 (같은 z 만)
             for mcid, tc in mod_corners.items():
-                if mcid in matched_modules:
+                if mcid in matched_modules or mcid not in cand_c:
                     continue
                 best: Optional[Tuple[float, int]] = None
                 for nM in tc:
@@ -1515,7 +1677,7 @@ def apply_wall_module(
 
             # (b) 벽 상단 코너 ↔ 모듈/캔틸 수평 보 사영 (같은 z 만)
             for mcid, tedges in mod_edges.items():
-                if mcid in matched_modules:
+                if mcid in matched_modules or mcid not in cand_e:
                     continue
                 best_b: Optional[Tuple[float, int, np.ndarray]] = None
                 for mid, nA, nB in tedges:
@@ -1551,7 +1713,7 @@ def apply_wall_module(
             # 상단이 닿으면 그 점에서 분절 분할 + 결합. 단층 모듈만 쓰면
             # mod_vedges 가 비어 자연 통과.
             for mcid, vedge_list in mod_vedges.items():
-                if mcid in matched_modules:
+                if mcid in matched_modules or mcid not in cand_v:
                     continue
                 for mid, nA, nB in vedge_list:
                     cA = om.node_tags[nA]
@@ -1754,18 +1916,20 @@ def apply_wall_wall_horizontal(
 
 RULE_ID_CORE = 'R09_core'
 
-# 코어 거리 임계 — 사용자 사양 (2026-05-17 수정).
-# 결합 방향(예: y 평행 결합): dy ≤ (코어벽 절반두께+부재 절반+갭+마진) = 275mm.
-# 정렬 방향(x): dx ≤ (코어벽 절반두께-부재 절반+마진) = 55mm.
-# (x ↔ y 반대 케이스도 동일.)
-# 카탈로그 상수 변경 시 자동 갱신되도록 식으로 표기 (회귀 위험 차단).
+# 코어 거리 임계 — 사용자 사양 (2026-05-17 수정 / 2026-06-05 코어 갭 100 분리).
+# 결합 방향(예: y 평행 결합): dy ≤ (코어벽 절반두께+부재 절반+코어갭+마진) = 355mm.
+# 정렬 방향(x): dx ≤ (코어벽 절반두께-부재 절반+마진) = 55mm. (갭 무관 — 코어 면을
+# 따라가는 방향이라 갭이 늘어도 그대로.) (x ↔ y 반대 케이스도 동일.)
+# [함정] 결합 거리 갭 항은 CORE_JOINT_GAP_MM(코어 전용, 100) 을 쓴다. 배치 자동 갭
+# (auto_snap.gap_between)의 코어↔타부재 값과 반드시 같은 상수여야 한다 — 어긋나면
+# 부재가 임계 밖으로 밀려 코어 결합이 끊긴다.
 _CORE_NUMERIC_MARGIN_MM = 5.0
 _CORE_LATERAL_MAX = (
     CORE_WALL_DEFAULT_THICKNESS_MM / 2.0
     + SECTION_W_MM / 2.0
-    + MODULE_JOINT_GAP_MM
+    + CORE_JOINT_GAP_MM
     + _CORE_NUMERIC_MARGIN_MM
-)  # 기본 = 275mm
+)  # 기본 = 355mm (코어 갭 100)
 _CORE_ALIGN_TOL = (
     CORE_WALL_DEFAULT_THICKNESS_MM / 2.0
     - SECTION_W_MM / 2.0

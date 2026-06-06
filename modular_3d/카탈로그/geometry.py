@@ -14,6 +14,13 @@
 MODULE_HEIGHT_MM = 3400
 # 적층 시 두 모듈 사이의 물리적 갭 (PC 철골 건식접합부 두께 ≈ 20mm).
 MODULE_JOINT_GAP_MM = 20
+# 코어(RC 코어벽/슬래브) ↔ 타 부재 사이 갭 (mm). RC 코어 선시공 + 모듈 후시공의
+# 시공 오차·연결철물 공간을 고려해 모듈끼리(20mm)보다 크게 둔다. 코어끼리(코어벽
+# ↔ 코어벽)는 한 시스템이라 갭 0(이 상수 미적용). 이 값을 바꾸면 배치 자동 갭
+# (auto_snap.gap_between)과 R09 결합 거리 임계(_CORE_LATERAL_MAX)가 함께 갱신된다.
+# [함정] 두 곳은 반드시 같은 상수를 참조해야 한다 — 한쪽만 바꾸면 부재가 멀어져
+# 코어 결합이 끊기거나(배치만 변경) 효과가 없다(접합만 변경).
+CORE_JOINT_GAP_MM = 100
 # 층-층 거리(period) = 단층 모듈 높이 + 접합부 갭 = 3420mm.
 # 다층 z 분포 계산(z_k = k·FLOOR_HEIGHT) 의 단위.
 FLOOR_HEIGHT = MODULE_HEIGHT_MM + MODULE_JOINT_GAP_MM
@@ -57,7 +64,7 @@ RULE_NODE_OFFSET_R09 = 40000      # R09 코어 축선 사영 가교
 
 
 __all__ = [
-    'MODULE_HEIGHT_MM', 'MODULE_JOINT_GAP_MM', 'FLOOR_HEIGHT',
+    'MODULE_HEIGHT_MM', 'MODULE_JOINT_GAP_MM', 'CORE_JOINT_GAP_MM', 'FLOOR_HEIGHT',
     'VERTICAL_MODULE_FLOORS',
     'SECTION_W_MM', 'SECTION_H_MM', 'SECTION_T_MM',
     'SLAB_THICKNESS_MODEL_MM', 'SLAB_THICKNESS_MM',

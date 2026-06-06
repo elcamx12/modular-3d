@@ -603,8 +603,61 @@ def _extract_core(comp: Core) -> _LocalExtract:
     return _LocalExtract(coords=coords, members=members, merge_group=None)
 
 
+def _extract_core_slab_polygon(comp: CoreSlab, poly) -> _LocalExtract:
+    """폴리곤 CoreSlab → N 코너 노드 + N 변 보(+천장 폐곡선).
+
+    사각형 분기와 같은 z 규칙·역할(core_slab_beam / core_ceiling_runner)을 쓰되,
+    벽두께 인셋은 생략(그린 폴리곤 변 그대로 — shapely 부재). 코어벽 상단 노드와의
+    결합은 노드 병합 허용오차 + 다이어프램에 맡긴다.
+    """
+    t = float(comp.dimensions.get('thickness', 180.0))
+    t_wall = float(comp.dimensions.get('wall_thickness',
+                                       CORE_WALL_DEFAULT_THICKNESS_MM))
+    W = float(comp.dimensions['width'])
+    D = float(comp.dimensions['depth'])
+    ax, ay = comp._anchor_offset(W, D)
+    to_world = make_local_to_world(ax, ay, comp.rotation, comp.position)
+    is_bottom_slab = float(comp.position[2]) < 0.0
+    z_top_local = t if is_bottom_slab else t + MODULE_JOINT_GAP_MM
+
+    n = len(poly)
+    keys = []
+    coords = {}
+    for (px, py) in poly:
+        p = to_world(float(px), float(py), z_top_local)
+        k = _round_key(p)
+        coords[k] = p
+        keys.append(k)
+    b_w, b_h = 1000.0, t
+    members: List[dict] = []
+    for i in range(n):
+        j = (i + 1) % n
+        if keys[i] == keys[j]:
+            continue
+        members.append(dict(n1_key=keys[i], n2_key=keys[j], kind='beam',
+                            role='core_slab_beam',
+                            section_w=b_w, section_h=b_h, section_t=t))
+    if not is_bottom_slab:
+        zc = z_top_local - (SECTION_W_MM + MODULE_JOINT_GAP_MM)
+        qkeys = []
+        for (px, py) in poly:
+            p = to_world(float(px), float(py), zc)
+            k = _round_key(p)
+            coords[k] = p
+            qkeys.append(k)
+        for i in range(n):
+            j = (i + 1) % n
+            if qkeys[i] == qkeys[j]:
+                continue
+            members.append(dict(n1_key=qkeys[i], n2_key=qkeys[j], kind='beam',
+                                role='core_ceiling_runner',
+                                section_w=t_wall, section_h=SECTION_W_MM,
+                                section_t=t_wall))
+    return _LocalExtract(coords=coords, members=members, merge_group=None)
+
+
 def _extract_core_slab(comp: CoreSlab) -> _LocalExtract:
-    """CoreSlab → 외곽 보 격자 (4 변).
+    """CoreSlab → 외곽 보 격자 (4 변). 폴리곤이면 _extract_core_slab_polygon 위임.
 
     [정책 2026-05-17 X-대각 제거]
     셸(ShellMITC4 격자) 폐기. 코어 슬래브 면내 강성은 다이어프램(rigidDiaphragm)이
@@ -615,6 +668,9 @@ def _extract_core_slab(comp: CoreSlab) -> _LocalExtract:
     - 보 폭: 1000mm (대표 폭)
     - 보 높이: 슬래브 두께 t
     """
+    _poly = comp.dimensions.get('polygon')
+    if _poly and len(_poly) >= 3:
+        return _extract_core_slab_polygon(comp, _poly)
     W = float(comp.dimensions['width'])
     D = float(comp.dimensions['depth'])
     t = float(comp.dimensions.get('thickness', 180.0))
