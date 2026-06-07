@@ -98,10 +98,10 @@ class EconomicsOptions:
     extendable_per_km_krw: float = 5000.0 # 광폭(확장형) 트레일러
     aframe_per_km_krw: float = 5000.0     # A-frame 트레일러
     # 트럭 종류별 1회 고정 운송비 (fixed_per_trip 방식)
-    # [2026-06-04] 사용자 확정 기본값: 저상 420만 / 광폭 440만 / A-frame 400만.
-    lowbed_fixed_krw: float = 4200000.0   # 저상/초저상
-    extendable_fixed_krw: float = 4400000.0  # 광폭(확장형)
-    aframe_fixed_krw: float = 4000000.0   # A-frame
+    # [2026-06-07] 사용자 확정 기본값: 저상 100만 / 광폭 120만 / A-frame 80만.
+    lowbed_fixed_krw: float = 1000000.0   # 저상/초저상
+    extendable_fixed_krw: float = 1200000.0  # 광폭(확장형)
+    aframe_fixed_krw: float = 800000.0   # A-frame
     # (참고) freight_table 모드는 FREIGHT_RATE_TABLE + 거리·트럭종류로 자동 조회.
 
     # ── 패커 측 호환 헬퍼 (구 EcoOptions API) ──────────────────────

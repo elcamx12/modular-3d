@@ -122,6 +122,8 @@ class PalettePanel(QWidget):
             f"QPushButton:disabled {{ color: #AEB6C2; background: #F3F5F8;"
             f" border-color: #E6EAF0; }}"
         )
+        # [2026-06-07] 창 크기 고정으로 좌측 패널이 좁아져 버튼이 압축되는 문제 →
+        # 각 버튼 밑 치수 설명 라벨을 제거하고 버튼만 남겨 간결하게.
         for key, ctype, label, desc, enabled in PALETTE_ITEMS:
             btn = QPushButton(f'[{key}] {label}')
             btn.setStyleSheet(_btn_css)
@@ -129,15 +131,6 @@ class PalettePanel(QWidget):
             btn.clicked.connect(lambda _checked=False, t=ctype: self._on_select(t))
             self._buttons.append(btn)
             lay.addWidget(btn)
-
-            # 부재 치수 설명 — 값 정보이므로 Freesentation.
-            d = QLabel(f'  {desc}')
-            d.setStyleSheet(
-                f"font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
-                f" color: {_SUB_FG}; font-size: 13px; background: transparent;"
-            )
-            d.setWordWrap(True)
-            lay.addWidget(d)
 
         # (코어 슬래브는 코어벽 동작 완료 시 자동 재생성 — 수동 버튼 제거.)
 

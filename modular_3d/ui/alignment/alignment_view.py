@@ -249,6 +249,35 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
                 from modular_3d._utils.debug import log_error
                 log_error(f'AlignmentCanvas.update three.js sync 실패: {e}', cat='alignment', exc=True)
 
+    def _label_cache_key(self):
+        """부재 라벨(classify)에 영향을 주는 구성만 모은 가벼운 시그니처.
+        이 값이 직전과 같으면 라벨을 다시 계산하지 않고 캐시를 쓴다.
+        classify 자체보다 훨씬 싸다(튜플 조립 O(N))."""
+        scene = self._controller._scene
+        comps = scene.components
+        parts = []
+        for cid in sorted(comps.keys()):
+            c = comps[cid]
+            d = getattr(c, 'dimensions', {}) or {}
+            parts.append((
+                int(cid),
+                getattr(c.comp_type, 'value', str(c.comp_type)),
+                int(getattr(c, 'group_id', 0) or 0),
+                int(getattr(c, 'sub_index', 0) or 0),
+                int(getattr(c, 'rotation', 0)),
+                round(float(c.position[0])), round(float(c.position[1])),
+                round(float(d.get('width', 0.0))),
+                round(float(d.get('depth', 0.0))),
+                round(float(d.get('height', 0.0))),
+                len(getattr(c, 'openings', None) or []),
+                getattr(c, 'merged_fp_id', None),
+            ))
+        rkey = tuple(sorted(
+            (int(rid), str(getattr(r, 'room_type', '')),
+             int(getattr(r, 'floor_index', 0) or 0))
+            for rid, r in (getattr(scene, 'rooms', {}) or {}).items()))
+        return (tuple(parts), rkey)
+
     # ── UI 마이그레이션 M3-b — three.js 측 paint 상태 dump ─────
     def _collect_paint_state(self) -> dict:
         """paintEvent 가 그리는 데이터 전체를 JSON 직렬화 가능 dict 로 반환.
@@ -321,12 +350,21 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
         # [F1] 독립 부재 '모듈A-1' 라벨 — 1 회 계산해 라벨에 사용.
         from modular_3d.model.type_naming import classify_component_types
         # 주의: 위 'scene' 은 components dict 다 — 분류 함수에는 Scene 객체를 넘긴다.
-        try:
-            type_labels = classify_component_types(ctrl._scene)
-        except Exception as _e:
-            from modular_3d._utils.debug import log_error
-            log_error(f'F1 분류 실패: {_e}', cat='alignment', exc=True)
-            type_labels = {}
+        # [성능] 라벨은 부재/실 구성이 바뀔 때만 재계산. redraw(pan·zoom·호버·
+        # 선택)마다 classify 를 다시 돌리면 큰 씬에서 매번 수 초가 걸리므로,
+        # 구성 시그니처가 직전과 같으면 캐시한 라벨을 그대로 쓴다.
+        _lbl_key = self._label_cache_key()
+        if _lbl_key == getattr(self, '_label_cache_key_val', None):
+            type_labels = getattr(self, '_label_cache_val', {})
+        else:
+            try:
+                type_labels = classify_component_types(ctrl._scene)
+            except Exception as _e:
+                from modular_3d._utils.debug import log_error
+                log_error(f'F1 분류 실패: {_e}', cat='alignment', exc=True)
+                type_labels = {}
+            self._label_cache_key_val = _lbl_key
+            self._label_cache_val = type_labels
         vis_ids = self._current_visible_ids()
         components = []
         for cid in vis_ids:
@@ -1435,9 +1473,16 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
 
     def _current_visible_ids(self):
         ctrl = self._controller
-        return _visible_ids(
+        ids = _visible_ids(
             ctrl._scene.components, ctrl._floor_pairs,
             ctrl._child_pairs, self._layer, ctrl._child_parent)
+        # [2026-06-07 성능] 평면뷰는 1층(floor_index==0)만 처리한다 — 실·개구부와
+        #   동일 정책. 18층 적층이면 전 층을 다 그려/히트테스트해 렉(payload·three.js
+        #   가 층수배). 렌더(_collect_paint_state)·히트테스트·줌(_auto_fit)이 모두
+        #   이 한 곳을 거치므로 1층 일관 보장(보이는 것만 클릭 가능).
+        comps = ctrl._scene.components
+        return [cid for cid in ids
+                if int(getattr(comps.get(cid), 'floor_index', 0) or 0) == 0]
 
     # ── 히트 테스트 ───────────────────────────────────
     def mousePressEvent(self, event):

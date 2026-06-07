@@ -430,8 +430,19 @@ def aggregate_steel(am: AnalysisModel,
 # ── 통합 ────────────────────────────────────────────────────
 def build_quantity_report(scene: Scene, am: AnalysisModel,
                           design_result: DesignResult) -> QuantityReport:
-    """단일 정책에 대한 QuantityReport 생성."""
-    steel = aggregate_steel(am, design_result)
+    """단일 정책에 대한 QuantityReport 생성.
+
+    [2026-06-07 사용자 확정] RC 코어는 콘크리트+철근만 — 강재 물량에 절대 포함하지
+    않는다. 따라서 강재 본수표는 *코어 부재를 제외한* design_result 로 집계한다(코어
+    트러스/러너 강재가 member_to_group 경유로 새어들지 않게). 코어는 아래 aggregate_core
+    로 콘크리트+철근만 별도 집계된다. 이 규칙은 물량 탭·종합 탭 등 모든 소비처에 적용.
+    """
+    try:
+        from .quantity_by_component import design_result_without_core
+        steel_dr = design_result_without_core(scene, am, design_result)
+    except Exception:
+        steel_dr = design_result
+    steel = aggregate_steel(am, steel_dr)
     slab = aggregate_slabs(scene)
     core = aggregate_core(scene)
     sections_by_group = {gname: gd.section

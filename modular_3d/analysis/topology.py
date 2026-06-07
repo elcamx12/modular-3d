@@ -1548,17 +1548,48 @@ def _split_hosts_for_mid_endpoints(model: 'AnalysisModel') -> None:
     next_nid = max(model.nodes.keys()) + 1 if model.nodes else 1
     next_mid = max(model.members.keys()) + 1 if model.members else 1
 
-    def _host_candidates() -> List[int]:
-        return [mid for mid, m in model.members.items()
-                if m.role not in ('mid_beam', 'mid_column')]
+    # [성능] host 후보를 공간 격자(z버킷+xy칸)로 색인한다. 끝점 × 전체 host 전수
+    # 비교(O(M·H), 18층 1800만 회)를 끝점이 든 칸의 host 만 보게 해 O(M) 으로
+    # 낮춘다. 각 host 를 자기 bbox ±TOL 칸 모두에 등록하므로, 끝점이 든 칸만
+    # 조회해도 사영거리 ≤TOL 후보가 빠짐없이 포함된다(결과 불변, 회귀 0).
+    # → 사용자 의도("다른 층·먼 위치 모듈 말고 대상 위치 부재만")의 안전한 구현.
+    from collections import defaultdict as _dd
+    _CELL = TOL    # 200mm — 사영 임계와 동일(셀 ≥ 임계라야 누락 0)
+
+    def _host_cells(m):
+        c1 = model.nodes[m.n1].coord
+        c2 = model.nodes[m.n2].coord
+        zlo = int((min(c1[2], c2[2]) - TOL) // _CELL); zhi = int((max(c1[2], c2[2]) + TOL) // _CELL)
+        xlo = int((min(c1[0], c2[0]) - TOL) // _CELL); xhi = int((max(c1[0], c2[0]) + TOL) // _CELL)
+        ylo = int((min(c1[1], c2[1]) - TOL) // _CELL); yhi = int((max(c1[1], c2[1]) + TOL) // _CELL)
+        for _zk in range(zlo, zhi + 1):
+            for _ix in range(xlo, xhi + 1):
+                for _iy in range(ylo, yhi + 1):
+                    yield (_zk, _ix, _iy)
+
+    _host_grid = _dd(list)
+
+    def _register_host(hmid):
+        for _cell in _host_cells(model.members[hmid]):
+            _host_grid[_cell].append(hmid)
+
+    for _hmid, _m in list(model.members.items()):
+        if _m.role not in ('mid_beam', 'mid_column'):
+            _register_host(_hmid)
 
     n_split = 0
     for end_nid in mid_endpoint_nids:
         end_coord = model.nodes[end_nid].coord
+        _ekey = (int(end_coord[2] // _CELL), int(end_coord[0] // _CELL),
+                 int(end_coord[1] // _CELL))
         best = None  # (dist, host_mid, t, proj)
-        for hmid in _host_candidates():
+        _seen_h = set()
+        for hmid in _host_grid.get(_ekey, ()):
+            if hmid in _seen_h:
+                continue
+            _seen_h.add(hmid)
             hm = model.members.get(hmid)
-            if hm is None:
+            if hm is None or hm.role in ('mid_beam', 'mid_column'):
                 continue
             # 끝점 노드가 host 의 양 끝 노드면 이미 공유됨 — 건너뜀
             if end_nid == hm.n1 or end_nid == hm.n2:
@@ -1610,6 +1641,9 @@ def _split_hosts_for_mid_endpoints(model: 'AnalysisModel') -> None:
             merge_group=hm.merge_group,
             parent_member_id=host_root,
         )
+        # [성능] 분할 sub-host 도 격자에 등록 — 같은 host 에 떨어지는 다음 끝점이
+        # 이 sub 직선을 후보로 볼 수 있게(반복 분할 정확성 보존).
+        _register_host(new_mid)
         # comp_to_members 갱신 (sub 부재도 같은 컴포넌트 소속)
         for cid in hm.source_comp_ids:
             lst = model.comp_to_members.get(cid)

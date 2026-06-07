@@ -161,7 +161,7 @@ class HomePanel(QWidget):
         h_lay.setContentsMargins(36, 28, 36, 28)
         h_lay.setSpacing(4)
         # 메인 타이틀 — Paperlogy, 키움 28→34
-        title = QLabel("모듈러 부재 스터디")
+        title = QLabel("모듈러 설계 프로그램")
         title.setStyleSheet(
             f"font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
             f" color: {_HEAD_FG}; font-size: 34px; font-weight: 800;"
@@ -186,7 +186,8 @@ class HomePanel(QWidget):
         body_lay.setSpacing(20)
         root.addWidget(body, stretch=1)
 
-        body_lay.addWidget(self._build_start_card(), stretch=3)
+        # [2026-06-07] 공통 설정 폼(시작하기 카드) 제거 — 진입 화면에는 작업 순서만
+        #   남긴다. 공통 설정은 메뉴의 [프로젝트 설정] 에서 관리한다.
 
         # ── 작업 순서 ─────────────────────────────────────
         flow_card = _card(min_height=320)
@@ -225,6 +226,28 @@ class HomePanel(QWidget):
         for c in range(3):
             grid.setColumnStretch(c, 1)
         fc.addLayout(grid, stretch=1)
+
+        # ── 작업 순서 박스 오른쪽 하단 — 새 프로젝트 시작 버튼 ──
+        # [2026-06-07] 시작하기 카드를 없애고 시작 버튼을 작업 순서 박스 안
+        #   오른쪽 아래로 옮긴다.
+        btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(0, 8, 0, 0)
+        btn_row.addStretch(1)
+        btn_new = QPushButton("새 프로젝트 시작")
+        btn_new.setCursor(Qt.PointingHandCursor)
+        btn_new.setMinimumHeight(42)
+        btn_new.setStyleSheet(
+            "QPushButton {"
+            f" font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+            f" background: {_ACCENT}; color: white; border: none;"
+            " border-radius: 6px; font-size: 14px; font-weight: 700;"
+            " padding: 8px 24px; }"
+            f"QPushButton:hover {{ background: {_ACCENT_HOV}; }}"
+        )
+        btn_new.clicked.connect(self._on_start_clicked)
+        btn_row.addWidget(btn_new)
+        fc.addLayout(btn_row)
+
         body_lay.addWidget(flow_card, stretch=4)
 
         # ── 푸터 ──────────────────────────────────────────
@@ -315,14 +338,24 @@ class HomePanel(QWidget):
 
     # ── 클릭 핸들러 ───────────────────────────────────────
     def _on_start_clicked(self) -> None:
-        """폼 → ProjectSettings 갱신 후 시그널 발화."""
-        self._form.apply_to_settings()
+        """[2026-06-07] 진입 화면에서 공통 설정 폼을 제거했으므로 적용 단계 없이
+        바로 시그널 발화. 공통 설정은 메뉴의 [프로젝트 설정] 에서 관리한다."""
+        form = getattr(self, '_form', None)
+        if form is not None:
+            try:
+                form.apply_to_settings()
+            except Exception:
+                pass
         self.start_new_project_requested.emit()
 
     # ── 외부 API ─────────────────────────────────────────
     def reload_from_settings(self) -> None:
-        """settings 가 외부에서 변경된 뒤(예: 다이얼로그 OK) 폼 위젯 갱신."""
+        """settings 가 외부에서 변경된 뒤(예: 다이얼로그 OK) 폼 위젯 갱신.
+        진입 화면 폼 제거 후에는 폼이 없으면 조용히 무시."""
+        form = getattr(self, '_form', None)
+        if form is None:
+            return
         try:
-            self._form.load_from_settings()
+            form.load_from_settings()
         except Exception:
             pass

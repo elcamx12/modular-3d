@@ -70,10 +70,10 @@ class ProjectSettings:
     extendable_per_km_krw: float = 5000.0  # 광폭(확장형) km단가
     aframe_per_km_krw: float = 5000.0   # A-frame km단가
     # 트레일러별 1회 고정 운송비 (cost_mode='fixed_per_trip' — 거리 무관, 회차당)
-    # [2026-06-04] 사용자 확정 기본값: 저상 420만 / 광폭 440만 / A-frame 400만.
-    lowbed_fixed_krw: float = 4200000.0
-    extendable_fixed_krw: float = 4400000.0
-    aframe_fixed_krw: float = 4000000.0
+    # [2026-06-07] 사용자 확정 기본값: 저상 100만 / 광폭 120만 / A-frame 80만.
+    lowbed_fixed_krw: float = 1000000.0
+    extendable_fixed_krw: float = 1200000.0
+    aframe_fixed_krw: float = 800000.0
     # 현장 운송 제한 (도로 등급 대체 — 2026-05-26). *_enabled=False → 해당없음(프리패스).
     # [2026-06-04] 기본 GVW 한도 45,000kg(사용자 확정).
     site_limit_gvw_kg: float = 45000.0       # 차체+화물 총중량(GVW) 한도

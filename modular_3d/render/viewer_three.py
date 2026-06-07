@@ -74,6 +74,10 @@ class ViewerThree:
         # end_batch 에서 window.addComponents 로 한 번에 보낸다(직렬화·IPC 1회).
         self._batching = False
         self._batch_items: list[dict] = []
+        # [3D 복제 최적화 3단계] 인스턴싱 — 묶음 안에서 form_key 가 같은 부재는
+        # InstancedMesh 로 묶는다. _inst_ref[key] = 그 형상의 기준(첫) 정점 배열.
+        # 같은 key 부재는 (정점 - 기준)이 평행이동 상수이므로 그 변위만 전송한다.
+        self._inst_ref: dict = {}
 
         # WebChannel 브리지 — JS → Python (M4 이후 사용)
         self._channel = QWebChannel()
@@ -123,12 +127,19 @@ class ViewerThree:
     # M2-b 대상 — 부재·실 메쉬 (현재는 골격, 본문 비어 있음)
     # ────────────────────────────────────────────────────────
     def begin_batch(self) -> None:
-        """묶음 전송 시작 — 이후 add_component_visual 은 큐에 모인다."""
+        """묶음 전송 시작 — 이후 add_component_visual 은 큐에 모인다.
+
+        묶음은 '전체 재구성'에 쓰이므로 기존 인스턴스 폼을 비운다(독립 메시는
+        호출측 remove 루프가 이미 제거). 형상 기준 정점 캐시도 초기화한다.
+        """
         self._batching = True
         self._batch_items = []
+        self._inst_ref = {}
+        self._run_js('window.clearAllInstances && window.clearAllInstances();')
 
     def end_batch(self) -> None:
-        """묶음 전송 종료 — 모인 부재를 window.addComponents 로 1회 전송."""
+        """묶음 전송 종료 — form_key 없는 부재는 addComponents(독립 메시),
+        form_key 있는 부재는 형상별 InstancedMesh(addInstanceBatch)로 1회 전송."""
         if not self._batching:
             return
         self._batching = False
@@ -136,25 +147,72 @@ class ViewerThree:
         self._batch_items = []
         if not items:
             return
-        payload = _to_json({'items': items})
-        self._run_js(f'window.addComponents({payload});')
+        plain = [it for it in items if it.get('form_key') is None]
+        keyed = [it for it in items if it.get('form_key') is not None]
+
+        if plain:
+            payload = _to_json({'items': [
+                {'comp_id': it['comp_id'], 'vertices': it['vertices'],
+                 'faces': it['faces'], 'face_colors': it['face_colors']}
+                for it in plain]})
+            self._run_js(f'window.addComponents({payload});')
+
+        if keyed:
+            self._run_js(f'window.addInstanceBatch({self._build_inst_payload(keyed)});')
+
+    def _build_inst_payload(self, keyed: list) -> str:
+        """form_key 가 같은 부재를 묶어 (기준형상 + 인스턴스별 평행이동) 으로 변환.
+
+        [함정] 같은 form_key 는 형상·회전이 동일하므로 (정점 - 기준)이 모든
+        정점에서 같은 평행이동 벡터다. 첫 부재를 기준으로, 각 부재의 변위만 보낸다.
+        """
+        from collections import OrderedDict
+        groups: "OrderedDict[str, list]" = OrderedDict()
+        for it in keyed:
+            groups.setdefault(it['form_key'], []).append(it)
+        forms = []
+        for key, lst in groups.items():
+            ref_v = np.asarray(lst[0]['vertices'], dtype=np.float64)
+            insts = []
+            for it in lst:
+                v = np.asarray(it['vertices'], dtype=np.float64)
+                if v.shape == ref_v.shape and v.size:
+                    d = v - ref_v
+                    t = d[0]               # 평행이동(모든 정점 동일)
+                else:
+                    t = np.zeros(3)
+                insts.append({'id': it['comp_id'],
+                              't': [float(t[0]), float(t[1]), float(t[2])]})
+            forms.append({
+                'key': str(key),
+                'verts': lst[0]['vertices'],
+                'faces': lst[0]['faces'],
+                'colors': lst[0]['face_colors'],
+                'capacity': len(lst),
+                'instances': insts,
+            })
+        return _to_json({'forms': forms})
 
     def add_component_visual(self, comp_id: int, vertices: np.ndarray,
-                             faces: np.ndarray, face_colors: np.ndarray) -> None:
-        """부재 메쉬 추가. Viewer3D.add_component_visual 와 동일 시그너처.
+                             faces: np.ndarray, face_colors: np.ndarray,
+                             form_key=None) -> None:
+        """부재 메쉬 추가. Viewer3D.add_component_visual 와 동일 시그너처(+form_key).
 
-        묶음 모드(begin_batch~end_batch)면 즉시 전송하지 않고 큐에 적재한다.
+        묶음 모드면 큐에 적재(form_key 포함). form_key 가 있으면 end_batch 에서
+        같은 형상끼리 InstancedMesh 로 묶인다. 비묶음/None 이면 기존 독립 메시.
         """
         item = {
             'comp_id': int(comp_id),
             'vertices': _ndarray_to_list(vertices),
             'faces': _ndarray_to_list(faces),
             'face_colors': _ndarray_to_list(face_colors),
+            'form_key': (str(form_key) if form_key is not None else None),
         }
         if self._batching:
             self._batch_items.append(item)
             return
-        self._run_js(f'window.addComponent({_to_json(item)});')
+        # 비묶음 경로는 인스턴싱하지 않고 기존 독립 메시로(개별 배치/이동 안전).
+        self._run_js(f'window.addComponent({_to_json({k: item[k] for k in ("comp_id","vertices","faces","face_colors")})});')
 
     def remove_component_visual(self, comp_id: int) -> None:
         self._run_js(f'window.removeComponent({int(comp_id)});')

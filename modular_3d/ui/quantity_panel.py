@@ -82,16 +82,10 @@ class QuantityPanel(QWidget):
         lay.setContentsMargins(12, 12, 12, 12)
         lay.setSpacing(10)
 
-        # 패널 헤더 라벨(Paperlogy) — 다른 탭과 동일한 제목 톤.
-        _hdr = QLabel('물량 산출')
-        _hdr.setStyleSheet(
-            f"font-family:'{F_HEAD}','Malgun Gothic',sans-serif;"
-            f" font-size:20px; font-weight:800; color:{_HEAD_FG};"
-            " background:transparent; padding:2px;")
-        lay.addWidget(_hdr)
+        # [2026-06-07] '물량 산출' 헤더 라벨 제거 — 탭 제목과 중복이라 삭제.
 
         # 1) 타입별 비용 트리
-        lay.addWidget(QLabel("타입별 물량·비용 (행 클릭 → 3D 강조):"))
+        lay.addWidget(QLabel("타입별 물량·비용"))
         self._tree = QTreeWidget()
         # [2026-06-02] 정렬을 직접 그리는 전용 헤더(구조해석과 공유) — 스타일시트가
         #   적용된 기본 헤더는 setTextAlignment 를 무시해 헤더가 늘 왼쪽으로 그려진다.
@@ -105,9 +99,11 @@ class QuantityPanel(QWidget):
         tf.setPointSize(11)   # 구조해석 부재 트리와 동일 크기(가독성)
         self._tree.setFont(tf)
         hdr = self._tree.header()
-        # [2026-06-01] 텍스트 안 짤리게 — 모든 컬럼 내용 폭에 맞춰 확장 + 가로 스크롤 허용.
-        for c in range(3):
-            hdr.setSectionResizeMode(c, QHeaderView.ResizeToContents)
+        # [2026-06-07] 패널 너비를 꽉 채우도록 — 항목(이름) 컬럼을 Stretch 로 늘려
+        #   남는 폭을 흡수(좌측 쏠림 해소). 물량·금액은 내용 폭에 맞춤.
+        hdr.setSectionResizeMode(0, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         hdr.setStretchLastSection(False)
         # 헤더 정렬: 항목=왼쪽, 물량=가운데(셀 값 중심과 정렬), 금액=오른쪽(통화).
         if isinstance(hdr, _AlignedHeader):
@@ -130,7 +126,9 @@ class QuantityPanel(QWidget):
         self._steel_table.setHorizontalHeaderLabels(
             ["단면", "길이(mm)", "본수", "총 길이(m)", "총 중량(ton)", "금액(원)"])
         sh = self._steel_table.horizontalHeader()
+        # [2026-06-07] 단면(이름) 컬럼을 Stretch 로 늘려 표가 패널 너비를 채우게 한다.
         sh.setSectionResizeMode(QHeaderView.ResizeToContents)
+        sh.setSectionResizeMode(0, QHeaderView.Stretch)
         sh.setStretchLastSection(False)
         self._steel_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._steel_table.setMaximumHeight(220)

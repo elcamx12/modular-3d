@@ -856,17 +856,22 @@
   letter-spacing: 0;
   }
   .input-row input {
-  width: 90px;
-  padding: 4px 6px;
+  /* [2026-06-07] 직접 숫자 입력 박스 축소 — 폭/높이 모두 더 작게(셀렉트는 유지).
+     height 를 명시해 패딩/줌과 무관하게 확실히 낮춘다. */
+  width: 64px;
+  height: 18px;
+  padding: 0 5px;
+  line-height: 18px;
   border: 1px solid #ABADB3;
   border-radius: 2px;
   background: #FFFFFF;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 400;
   color: #202020;
   text-align: right;
   font-family: 'Consolas', 'Courier New', monospace;
   transition: border-color 0.15s;
+  box-sizing: border-box;
   }
   .input-row input:focus {
   border-color: #0078D7;
@@ -885,11 +890,13 @@
   color: #202020;
   font-weight: 600;
   font-family: 'Consolas', monospace;
-  padding: 4px 6px;
+  /* [2026-06-07] 자동계산 값 박스도 입력칸과 동일하게 축소. */
+  padding: 2px 5px;
+  min-width: 68px;
   }
   .input-row .unit { color: #606060; font-size: 11px; }
   .input-row select {
-  padding: 4px 6px;
+  padding: 3px 6px;
   border: 1px solid #ABADB3;
   border-radius: 2px;
   background: #FFFFFF;
@@ -897,7 +904,11 @@
   font-weight: 400;
   color: #202020;
   font-family: 'Segoe UI', 'Malgun Gothic', sans-serif;
+  /* [2026-06-07] 선택(셀렉트) 박스 너비를 4/5 로 — 기존 200px → 160px. */
+  min-width: 160px;
+  max-width: 160px;
   }
+  .input-row select.region-select { min-width: 144px; max-width: 144px; }
   .input-row select:focus { border-color: #0078D7; }
   .note-text { color: #707070; }
   .note-toggle-btn {
@@ -1187,10 +1198,8 @@
   <!-- 입력 검증 경고 -->
   <div id="inputWarn" style="display:none; margin-bottom:14px; padding:12px 16px; background:#FFEBEE; border:1px solid #EF9A9A; border-radius:8px; color:#B71C1C; font-weight:700; font-size:13px;"></div>
 
-  <!-- [2026-05-30 레이아웃 재편] 3컬럼(INPUT·바차트·경제성). 공기산정표 버튼은 바차트 범례 옆으로 이동. -->
-  <div style="display:flex; gap:10px; margin-bottom:12px; align-items:center;">
-  <button class="note-toggle-btn" id="noteToggleBtn" onclick="toggleNotes()" style="margin-left:auto;">설명 보기</button>
-  </div>
+  <!-- [2026-06-07] 상단 '설명 보기' 버튼 줄 제거 — 세로 공간 확보.
+       버튼은 우측 '경제성 산출' 카드 헤더 오른쪽으로 이동(아래 참조). -->
 
   <!-- ── 탭1: 변수입력 ── -->
   <div class="tab-panel active" id="tab-inputs">
@@ -1207,7 +1216,9 @@
        덜 커졌다. 차감을 실제 여백(+여유 6px)인 80px 로 줄여 3컬럼이 viewport
        바닥까지 채우게 한다 → 좌·우 박스 하단 확장, 가운데 공정표 세로 확대,
        그 아래 280px 마일스톤 카드는 자연히 더 아래로 내려간다. -->
-  <div style="display:grid; grid-template-columns: minmax(220px, 0.55fr) minmax(560px, 2.25fr) minmax(280px, 1.05fr); grid-template-rows: minmax(0, 1fr); gap:10px; align-items:stretch; height: max(600px, calc(100vh - 80px)); min-height: 600px;">
+  <!-- [2026-06-07] 좌측 '설정' 컬럼을 4/5 로 좁히고(셀렉트 폭 축소와 함께), 그만큼
+       우측 '경제성 산출' 컬럼을 넓힌다. (가운데 공정바는 그대로) -->
+  <div style="display:grid; grid-template-columns: minmax(176px, 0.42fr) minmax(560px, 2.25fr) minmax(360px, 1.35fr); grid-template-rows: minmax(0, 1fr); gap:10px; align-items:stretch; height: max(600px, calc(100vh - 80px)); min-height: 600px;">
 
   <!-- A. 건물 기본정보 — [2026-05-29 레이아웃] 화면 숨김. moduleTypeBody·hidden input 보존용. -->
   <div class="card" style="display:none">
@@ -1619,20 +1630,18 @@
   </div>
   </div>
 
-  <!-- [2026-06-01] 주요 마일스톤 — 중앙 컬럼 wrapper 안 (공정바 카드 바로 아래).
-       세로 나열 + max-height 도달 시 우측 열로 wrap. -->
-  <div class="card" style="flex: 0 0 280px; min-height: 0; display:flex; flex-direction:column; overflow:hidden;">
-  <div class="card-header">주요 마일스톤</div>
-  <div class="card-body" style="flex: 1 1 auto; min-height: 0; overflow: hidden;">
-  <div class="milestone-list" id="milestoneList"></div>
-  </div>
-  </div>
+  <!-- [2026-06-07] '주요 마일스톤' 카드 제거 — 공정바(간트) 카드가 가운데 컬럼
+       전체 높이를 쓰도록. (milestoneList 가 사라지므로 renderMilestones 는 가드로 skip.) -->
 
   </div><!-- /가운데 컬럼 wrapper -->
 
   <!-- F. 경제성 (노무비 + 경비) — [2026-05-30] 3컬럼 우측 -->
   <div class="card">
-  <div class="card-header">경제성 산출 (노무비 + 경비)</div>
+  <div class="card-header" style="display:flex; align-items:center; gap:8px;">
+  <span>경제성 산출 (노무비 + 경비)</span>
+  <!-- [2026-06-07] 상단에서 옮겨온 '설명 보기' 버튼 — 헤더 텍스트 오른쪽. -->
+  <button class="note-toggle-btn" id="noteToggleBtn" onclick="toggleNotes()" style="margin-left:auto;">설명 보기</button>
+  </div>
   <!-- [2026-05-31] 표가 card-body 의 남은 높이를 모두 차지하도록 flex 부여. -->
   <div class="card-body" style="gap: 10px;">
   <button type="button" onclick="openCrew()" style="padding:6px 14px; background:#F0F0F0; border:1px solid #ABADB3; border-radius:2px; color:#202020; font-size:11px; font-weight:600; cursor:pointer; position:relative; z-index:5; pointer-events:auto; flex: 0 0 auto;">공종별 작업조(인부) 구성 보기</button>
@@ -3846,6 +3855,8 @@ function renderGantt(tasks, totalDays, v, startDate) {
 // ── 마일스톤 렌더 ───────────────────────────────────────────────────────
 function renderMilestones(tasks, totalDays, startDate) {
   const list = $('milestoneList');
+  // [2026-06-07] '주요 마일스톤' 카드 제거됨 — 목록 요소가 없으면 아무것도 안 함.
+  if (!list) return;
   list.innerHTML = '';
 
   // 이름·속성 기반 탐색 (동적 태스크 번호 대응)

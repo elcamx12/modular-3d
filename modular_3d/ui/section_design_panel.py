@@ -50,8 +50,8 @@ _SECTION_QSS = (
     f" font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
     f" font-size: 17px; font-weight: 800; color: {_HEAD_FG};"
     f" background: {_CARD_BG}; border: 1px solid {_CARD_BORDER};"
-    " border-radius: 10px; margin-top: 14px;"
-    " padding: 14px 12px 12px 12px; }"
+    " border-radius: 10px; margin-top: 9px;"
+    " padding: 8px 10px 6px 10px; }"
     "QGroupBox::title { subcontrol-origin: margin; left: 12px;"
     f" padding: 0 6px; background: {_CARD_BG};"
     " }"
@@ -62,7 +62,7 @@ _SECTION_QSS = (
     "QRadioButton {"
     f" font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
     f" font-size: 15px; color: {_BODY_FG}; background: transparent;"
-    " padding: 3px 0; }"
+    " padding: 1px 0; }"
     "QComboBox, QSpinBox {"
     f" font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
     f" font-size: 15px; color: {_BODY_FG};"
@@ -102,16 +102,12 @@ class SectionDesignPanel(QWidget):
         ensure_fonts_loaded()
         self.setStyleSheet(_SECTION_QSS)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(12, 12, 12, 12)
-        lay.setSpacing(12)
+        # [2026-06-07] 옵션 박스를 최대한 위로 — 상단 여백·항목 간격을 축소.
+        lay.setContentsMargins(10, 4, 10, 8)
+        lay.setSpacing(6)
 
-        # 패널 헤더 라벨(Paperlogy) — 다른 탭과 동일한 제목 톤.
-        _hdr = QLabel('단면 설계')
-        _hdr.setStyleSheet(
-            f"font-family:'{F_HEAD}','Malgun Gothic',sans-serif;"
-            f" font-size:20px; font-weight:800; color:{_HEAD_FG};"
-            " background:transparent; padding:2px 2px 2px 2px;")
-        lay.addWidget(_hdr)
+        # [2026-06-07] 창 크기 고정으로 우측 패널 세로 공간이 부족해져
+        # '단면 설계' 헤더 라벨을 제거(공간 절약).
 
         # ── 옵션 3열 동시 배치: [통일 범위] [묶음 입도] [기둥 층분할 구간 수(+적용)] ──
         opt_row = QHBoxLayout()
@@ -120,6 +116,7 @@ class SectionDesignPanel(QWidget):
         # 1열: 단면 공유 범위(스코프)
         scope_box = QGroupBox('단면 공유 범위')
         sv = QVBoxLayout(scope_box)
+        sv.setSpacing(2); sv.setContentsMargins(8, 2, 8, 2)
         self._scope_group = QButtonGroup(self)
         self._scope_radios = []
         for i, (label, _val) in enumerate((
@@ -138,6 +135,7 @@ class SectionDesignPanel(QWidget):
         # 2열: 부재 구분(입도)
         gran_box = QGroupBox('부재 구분')
         gv = QVBoxLayout(gran_box)
+        gv.setSpacing(2); gv.setContentsMargins(8, 2, 8, 2)
         self._gran_group = QButtonGroup(self)
         self._gran_radios = []
         for i, (label, _val) in enumerate((
@@ -157,6 +155,7 @@ class SectionDesignPanel(QWidget):
         # [7-1] K 스핀박스(1=분할 없음). 기둥을 층 기준 K 구간으로 DP 최적 분할.
         seg_box = QGroupBox('기둥 층분할 구간 수')
         c3 = QVBoxLayout(seg_box)
+        c3.setSpacing(2); c3.setContentsMargins(8, 2, 8, 2)
         self._col_seg_spin = QSpinBox()
         self._col_seg_spin.setMinimum(1)
         self._col_seg_spin.setMaximum(50)   # 설정 층수까지 — 수렴이 층수로 자동 클램프.
@@ -170,32 +169,32 @@ class SectionDesignPanel(QWidget):
         # 3열 + 자연어 요약 + 적용 버튼을 하나의 바깥 박스로 묶음.
         self._option_box = QGroupBox('단면 설계 옵션')
         ob = QVBoxLayout(self._option_box)
+        ob.setSpacing(4); ob.setContentsMargins(8, 2, 8, 4)
         ob.addLayout(opt_row)
-        # [자연어 요약] 선택한 옵션을 사람이 읽기 쉬운 문장으로. 적용 버튼을 그 오른쪽에.
-        sum_row = QHBoxLayout()
+        # [자연어 요약] 선택한 옵션을 사람이 읽기 쉬운 문장으로.
         self._opt_summary = QLabel('')
         self._opt_summary.setWordWrap(True)
         self._opt_summary.setStyleSheet(f'color:{_SUB_FG}; padding:2px;')
-        sum_row.addWidget(self._opt_summary, stretch=1)
-        self._apply_btn = QPushButton('적용 (재수렴)')
-        self._apply_btn.setObjectName('applyBtn')   # accent 채움(스타일시트)
-        self._apply_btn.clicked.connect(lambda: self.apply_requested.emit())
-        sum_row.addWidget(self._apply_btn, alignment=Qt.AlignBottom)
-        ob.addLayout(sum_row)
-        lay.addWidget(self._option_box)
-        # 라디오 변경 시 요약 갱신.
-        self._scope_group.buttonClicked.connect(self._update_option_summary)
-        self._gran_group.buttonClicked.connect(self._update_option_summary)
-        self._update_option_summary()
-
-        # ── 상태 라벨(수렴 결과 요약) ─────────────────────
+        ob.addWidget(self._opt_summary)
+        # [2026-06-07] 수렴 상태(수렴 완료·NG 개수)를 '적용(재수렴)' 버튼 *왼쪽*에 둔다.
+        sum_row = QHBoxLayout()
         self._status_label = QLabel('')
         self._status_label.setWordWrap(True)
         # 수렴 결과 요약은 값/숫자 → Freesentation.
         self._status_label.setStyleSheet(
             f"font-family:'{F_BODY}','Malgun Gothic',sans-serif;"
             f" font-size:14px; color:{_SUB_FG}; background:transparent;")
-        lay.addWidget(self._status_label)
+        sum_row.addWidget(self._status_label, stretch=1)
+        self._apply_btn = QPushButton('적용 (재수렴)')
+        self._apply_btn.setObjectName('applyBtn')   # accent 채움(스타일시트)
+        self._apply_btn.clicked.connect(lambda: self.apply_requested.emit())
+        sum_row.addWidget(self._apply_btn, alignment=Qt.AlignVCenter)
+        ob.addLayout(sum_row)
+        lay.addWidget(self._option_box)
+        # 라디오 변경 시 요약 갱신.
+        self._scope_group.buttonClicked.connect(self._update_option_summary)
+        self._gran_group.buttonClicked.connect(self._update_option_summary)
+        self._update_option_summary()
 
         # ── 단면 변경 (9-7) — 콤보 바꾸면 즉시 적용·전파 ──
         self._change_box = QGroupBox('단면 변경')
@@ -207,8 +206,10 @@ class SectionDesignPanel(QWidget):
         from modular_3d.카탈로그.steel_sections import SHS_CATALOG
         self._suppress_combo = False   # prefill 중 신호 억제(자동 재적용 방지)
         self._lock_combos = {}
+        # [2026-06-07] 기둥·천장보·바닥보를 한 줄에: 기둥 [콤보] 천장보 [콤보] 바닥보 [콤보].
+        #   세로 공간 절약(3줄 → 1줄). 각 라벨+콤보를 같은 가로 줄에 순서대로 배치.
+        row = QHBoxLayout()
         for cc, kr in (('column', '기둥'), ('ceil', '천장보'), ('floor', '바닥보')):
-            row = QHBoxLayout()
             row.addWidget(QLabel(kr))
             cb = QComboBox()
             cb.addItem('(자동)', None)          # 변경 안 함(자동 설계)
@@ -216,8 +217,8 @@ class SectionDesignPanel(QWidget):
                 cb.addItem(s.name, s.name)
             cb.currentIndexChanged.connect(self._on_combo_changed)
             row.addWidget(cb, stretch=1)
-            lv.addLayout(row)
             self._lock_combos[cc] = cb
+        lv.addLayout(row)
         lay.addWidget(self._change_box)
 
         # ── 타입 목록 (P4a, -1-1 로컬 파생) ───────────────
@@ -225,12 +226,11 @@ class SectionDesignPanel(QWidget):
         tv = QVBoxLayout(type_box)
         self._type_list = QListWidget()
         self._type_list.currentRowChanged.connect(self._on_type_row_changed)
-        # [UI] 약 10줄로 *고정*(min=max) — 더 늘어나 아래 상세·3D 를 밀어내지 않게.
+        # [2026-06-07] 10줄 고정(min=max) 해제 — 사용 가능한 세로 공간에 맞춰
+        # 늘었다 줄었다 하도록 최소 높이만 두고(약 4줄) 스트레치로 확장.
         _rh = self._type_list.fontMetrics().height() + 6
-        _h10 = _rh * 10 + 8
-        self._type_list.setMinimumHeight(_h10)
-        self._type_list.setMaximumHeight(_h10)
-        tv.addWidget(self._type_list)
+        self._type_list.setMinimumHeight(_rh * 4 + 8)
+        tv.addWidget(self._type_list, stretch=1)
         # 선택 타입 상세(단면/응력비/OK·NG).
         self._type_detail = QLabel('')
         self._type_detail.setWordWrap(True)
@@ -246,10 +246,16 @@ class SectionDesignPanel(QWidget):
         self._comp_viewer = None
         try:
             from modular_3d.render.viewer_three import ViewerThree
+            from PyQt5.QtWidgets import QSizePolicy
             self._comp_viewer = ViewerThree()
             w = self._comp_viewer.get_native_widget()
-            w.setMinimumHeight(240)
-            tv.addWidget(w, stretch=1)
+            # [2026-06-07] 3D 뷰가 타입 목록과 세로 공간을 반씩 나눠 세로로 길어지면
+            #   모듈이 아래로 잘린 것처럼 보였다. stretch 를 빼고(목록이 남는 공간을
+            #   가져감) 높이를 가로형(약 4:3)으로 고정해 안정적으로 보이게 한다.
+            w.setMinimumHeight(300)
+            w.setMaximumHeight(340)
+            w.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            tv.addWidget(w)
         except Exception:
             self._comp_viewer = None
         lay.addWidget(type_box, stretch=1)

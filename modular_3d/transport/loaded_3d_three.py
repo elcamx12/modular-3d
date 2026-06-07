@@ -33,8 +33,14 @@ from .packer_types import Placement, PlacementSlot, Posture
 # 다른 그룹은 *진행 방향 (X)* 으로 일렬 (사이드뷰에서 가로로)
 # 같은 그룹은 *폭 방향 (Y, Python -Y = Three.js -Z = 사이드뷰 화면 깊이)*
 #   으로 겹쳐 누적 — 사용자 표현: "사이드뷰에서 뒤쪽 = 트럭 오른쪽"
-INTER_TRUCK_GAP_M: float = 4.0   # 다른 그룹 사이 (X 방향)
-INTRA_GROUP_GAP_M: float = 1.5   # 같은 그룹 사이 (Y 방향 — 좁게, 시각 정체성)
+INTER_TRUCK_GAP_M: float = 6.0   # 다른 묶음 사이 (X 방향 — 넓게, 묶음 구분)
+INTRA_GROUP_GAP_M: float = 4.0   # 같은 묶음 회차 사이 (Y 방향 — 겹침 방지)
+# [2026-06-07] 같은 그룹 회차가 많으면 -Y 로 끝없이 길어진다. 한 줄당 최대
+# 대수를 두고 초과분은 *같은 평면에서 다음 줄*(진행 방향 +X)로 접는다. 같은
+# 묶음(그룹)의 줄 간격은 좁게(TRUCK_ROW_GAP_M), 다른 묶음과는 넓게
+# (INTER_TRUCK_GAP_M)두어 묶음이 시각적으로 구분된다. 예) 50대 = 20/20/10.
+TRUCK_ROW_LIMIT: int = 20         # 한 줄당 최대 회차 수
+TRUCK_ROW_GAP_M: float = 4.0      # 같은 묶음의 줄 사이 X 여유(겹침 방지)
 
 
 def _trip_signature(trip) -> tuple:
@@ -373,14 +379,17 @@ def serialize_pack_for_three(
         sp = SpacingParams()
     trip_costs = trip_costs or {}
 
-    # 1차 패스 — 시그니처 + 그룹 ID 할당
+    # 1차 패스 — 시그니처 + 그룹 ID 할당 + 그룹별 회차 수(줄 수 산정용)
     group_id_for_trip: Dict[int, int] = {}
     sig_to_group: Dict[tuple, int] = {}
+    group_trip_count: Dict[int, int] = {}
     for trip in trips:
         sig = _trip_signature(trip)
         if sig not in sig_to_group:
             sig_to_group[sig] = len(sig_to_group)
-        group_id_for_trip[trip.trip_no] = sig_to_group[sig]
+        gid0 = sig_to_group[sig]
+        group_id_for_trip[trip.trip_no] = gid0
+        group_trip_count[gid0] = group_trip_count.get(gid0, 0) + 1
 
     n_groups = len(sig_to_group)
 
@@ -399,17 +408,22 @@ def serialize_pack_for_three(
         truck_length_m = truck.max_length / 1000.0
         veh_h_m = truck.vehicle_height_offset / 1000.0
 
-        # 새 그룹 — X 방향으로 새 자리
+        # 새 그룹 — X 방향으로 새 자리. 그룹이 차지하는 X 폭은 *줄 수* 만큼
+        # (한 줄당 TRUCK_ROW_LIMIT 대). 다음 그룹은 그 폭 + 묶음 간격만큼 뒤로.
+        row_pitch_mm = truck.max_length + TRUCK_ROW_GAP_M * 1000.0
         if gid not in group_x_offset_mm:
             group_x_offset_mm[gid] = next_x_mm
             group_count_so_far[gid] = 0
-            next_x_mm += truck.max_length + INTER_TRUCK_GAP_M * 1000.0
-        # 같은 그룹 내 N 번째 회차 — *폭 방향 (-Y)* 으로 누적
-        # Python -Y = Three.js -Z = 사이드뷰 카메라(기본 +Z 쪽) 의 *화면 깊이*
-        # 사용자 표현: "사이드뷰에서 뒤쪽 = 트럭 오른쪽"
+            n_rows = -(-group_trip_count[gid] // TRUCK_ROW_LIMIT)  # ceil
+            next_x_mm += n_rows * row_pitch_mm + INTER_TRUCK_GAP_M * 1000.0
+        # 같은 그룹 내 N 번째 회차 — *폭 방향 (-Y)* 으로 한 줄에 TRUCK_ROW_LIMIT
+        # 대까지 누적하고, 초과분은 *같은 평면에서 다음 줄*(진행 방향 +X)로 접는다.
+        # 각 줄은 같은 -Y 시작점에서 다시 시작. 높이(z)는 쓰지 않는다.
         n_in_group = group_count_so_far[gid]
-        x_off_mm = group_x_offset_mm[gid]
-        y_off_mm = -n_in_group * (
+        pos_in_row = n_in_group % TRUCK_ROW_LIMIT     # 줄 내 위치(0..19)
+        row = n_in_group // TRUCK_ROW_LIMIT           # 0,1,2,... 번째 줄
+        x_off_mm = group_x_offset_mm[gid] + row * row_pitch_mm
+        y_off_mm = -pos_in_row * (
             truck.max_width + INTRA_GROUP_GAP_M * 1000.0
         )
         group_count_so_far[gid] += 1
@@ -739,7 +753,8 @@ function buildTruckGroup(trip) {
   const g = new THREE.Group();
   g.userData.trip_no = trip.trip_no;
   g.userData.cargoLabels = [];
-  // [그룹화] Y 오프셋 (폭 방향 = Three.js Z) 적용
+  // [그룹화] Y 오프셋 (폭 방향 = Three.js Z) 적용. 줄바꿈은 평면 +X(x_offset_m)
+  //   로 처리하므로 높이(Three.js Y)는 건드리지 않는다.
   if (trip.y_offset_m) {
     g.position.z = trip.y_offset_m;
   }
@@ -836,10 +851,13 @@ function buildTruckGroup(trip) {
   }
   }  // end if(!hideTruck)
 
-  // ⑥ 화물 — placements
+  // ⑥ 화물 — placements. [2026-06-07] 이 회차(뭉탱이) 안의 부재를 색별 버킷에
+  //   모았다가 하나로 병합 → 드로우콜을 부재수 N 에서 색종류(~수개)로 줄인다.
+  const cargoBucket = {};
   for (const p of trip.placements || []) {
-    buildPlacement(g, trip, p);
+    buildPlacement(g, trip, p, cargoBucket);
   }
+  _flushBucket(g, cargoBucket);
 
   // 회차 라벨은 *그룹별 1 개* 로 buildScene 에서 별도 배치 — 여기선 안 넣음.
   return g;
@@ -1007,6 +1025,16 @@ function _addBeamHsection(g, trip, x_m, y_m, z_m, L_m, W_m, H_m, webDirPy, color
   const flangeVec = new THREE.Vector3().crossVectors(webVec, lenVec).normalize();
   const basis = new THREE.Matrix4().makeBasis(flangeVec, webVec, lenVec);
 
+  // [병합 경로] bucket 이 있으면 회전(basis)+위치를 geometry 에 직접 적용해 모은다.
+  //   mesh.setRotationFromMatrix(basis)+position 과 동일한 모델변환을 geometry 에 굽는다.
+  if (opts.bucket) {
+    geom.applyMatrix4(basis);
+    geom.translate(cx, cy, cz);
+    const edge = (opts.withEdges !== false) ? new THREE.EdgesGeometry(geom) : null;
+    _bucketAdd(opts.bucket, color, geom, edge);
+    return null;
+  }
+
   // [개편] 평면 단색 — 조명·광택 무시(배치설계 vispy shading=None 과 동일 느낌).
   const mat = new THREE.MeshBasicMaterial({
     color: color,
@@ -1046,14 +1074,74 @@ function _addPartMesh(g, trip, part, color, opts) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────
+// [2026-06-07 렌더 렉 개선] 메시 병합 — 회차/타입(뭉탱이) 안에서 같은 색 부재의
+//   geometry 를 하나로 합쳐 드로우콜을 부재수 N → 색종류(~수개)로 줄인다.
+//   조명을 쓰지 않는 단색(MeshBasicMaterial)이라 position 만 이어붙이면 된다
+//   (normal/uv 불필요) → 외부 BufferGeometryUtils 의존 없이 경량 구현.
+//   bucket = { colorHex: { fills:[BufferGeometry...], edges:[BufferGeometry...] } }
+// ─────────────────────────────────────────────────────────────
+function _mergePositions(geoms) {
+  const ng = geoms.map(g => (g.index ? g.toNonIndexed() : g));
+  let total = 0;
+  for (const g of ng) total += g.attributes.position.array.length;
+  const arr = new Float32Array(total);
+  let off = 0;
+  for (const g of ng) {
+    arr.set(g.attributes.position.array, off);
+    off += g.attributes.position.array.length;
+  }
+  const m = new THREE.BufferGeometry();
+  m.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+  return m;
+}
+
+function _bucketAdd(bucket, color, fillGeom, edgeGeom) {
+  let b = bucket[color];
+  if (!b) { b = { fills: [], edges: [] }; bucket[color] = b; }
+  b.fills.push(fillGeom);
+  if (edgeGeom) b.edges.push(edgeGeom);
+}
+
+function _flushBucket(g, bucket) {
+  for (const colorStr in bucket) {
+    const b = bucket[colorStr];
+    if (b.fills.length) {
+      const merged = _mergePositions(b.fills);
+      const mesh = new THREE.Mesh(
+        merged, new THREE.MeshBasicMaterial({ color: Number(colorStr) })
+      );
+      mesh.userData.role = 'cargo';
+      g.add(mesh);
+      allCargoMeshes.push(mesh);   // 클릭 raycast 후보(회차 강조 — 부모 trip_no)
+    }
+    if (b.edges.length) {
+      const mergedE = _mergePositions(b.edges);
+      const line = new THREE.LineSegments(
+        mergedE, new THREE.LineBasicMaterial({ color: 0x222222 })
+      );
+      g.add(line);
+    }
+  }
+}
+
 // Python(x=길이,y=폭,z=높이,m) 좌표의 박스 → Three.js mesh (Y=높이, Z=폭).
 // trip.x_offset_m 은 *그룹 X 오프셋* (회차마다 다름) — 본 함수는 *trip 로컬* 좌표
 // (즉 트럭 좌측 끝 기준) 의 좌하단을 받아 trip.x_offset_m 만 더해 배치.
+// opts.bucket 이 있으면 개별 mesh 대신 그 색 버킷에 geometry 를 모은다(병합용).
 function _addPyBox(g, trip, x_m, y_m, z_m, L_m, W_m, H_m, color, opts) {
   opts = opts || {};
   const cx = trip.x_offset_m + x_m + L_m / 2;
   const cy = z_m + H_m / 2;
   const cz = y_m + W_m / 2;
+  // [병합 경로] bucket 이 있으면 geometry 만 만들어 색 버킷에 모은다.
+  if (opts.bucket) {
+    const geo = new THREE.BoxGeometry(L_m, H_m, W_m);
+    geo.translate(cx, cy, cz);
+    const edge = (opts.withEdges !== false) ? new THREE.EdgesGeometry(geo) : null;
+    _bucketAdd(opts.bucket, color, geo, edge);
+    return null;
+  }
   // [개편] 평면 단색 — 조명·광택 무시(배치설계 vispy shading=None 과 동일 느낌).
   const mat = new THREE.MeshBasicMaterial({
     color: color,
@@ -1131,7 +1219,7 @@ function _stylePart(part, parent, source) {
 }
 
 
-function buildPlacement(g, trip, p) {
+function buildPlacement(g, trip, p, bucket) {
   const cx_t = p.center_x_m + trip.x_offset_m;
   const cy_t = p.z_bottom_m + p.height_m / 2;
   const cz_t = p.center_y_m;
@@ -1145,6 +1233,7 @@ function buildPlacement(g, trip, p) {
   if (bodyParts.length > 0) {
     for (const bp of bodyParts) {
       const styled = _stylePart(bp, p, 'own');
+      styled.opts.bucket = bucket;   // 색별 병합 버킷에 모음
       _addPartMesh(g, trip, bp, styled.color, styled.opts);
     }
   } else {
@@ -1152,7 +1241,7 @@ function buildPlacement(g, trip, p) {
     const baseColor = COLORS[p.kind] || 0x999999;
     _addPyBox(g, trip, x0, y0, z0,
               p.length_m, p.width_m, p.height_m,
-              baseColor, { label: `${p.name} (${p.kind})`, roughness: 0.7, opacity: 0.92 });
+              baseColor, { label: `${p.name} (${p.kind})`, roughness: 0.7, opacity: 0.92, bucket: bucket });
   }
 
   // 화물 라벨 (모든 placement 공통 — 박스 위)
@@ -1167,32 +1256,19 @@ function buildPlacement(g, trip, p) {
   // ── attached_parts — 종속 컴포넌트의 *모든 부재* (보·기둥·슬래브 별도) ─
   for (const ap of (p.attached_parts || [])) {
     const styled = _stylePart(ap, p, ap.source_kind || 'own');
+    styled.opts.bucket = bucket;   // 색별 병합 버킷에 모음
     _addPartMesh(g, trip, ap, styled.color, styled.opts);
   }
 
-  // wall_segments — 종속 floor 의 솟은 벽
+  // wall_segments — 종속 floor 의 솟은 벽 (병합 버킷으로)
   for (const ws of p.wall_segments) {
     const wsx = trip.x_offset_m + ws.x_m + ws.dx_m / 2;
     const wsy = ws.z_m + ws.dz_m / 2;  // Y = 높이
     const wsz = ws.y_m + ws.dy_m / 2;  // Z = 폭
-    const wsMesh = new THREE.Mesh(
-      new THREE.BoxGeometry(ws.dx_m, ws.dz_m, ws.dy_m),
-      new THREE.MeshBasicMaterial({
-        color: COLORS.wall_seg,
-      })
-    );
-    wsMesh.position.set(wsx, wsy, wsz);
-    wsMesh.userData.label = `wall side=${ws.side}`;
-    wsMesh.userData.baseOpacity = 0.92;
-    wsMesh.userData.role = 'cargo';
-    g.add(wsMesh);
-
-    const wsEdges = new THREE.EdgesGeometry(wsMesh.geometry);
-    const wsLine = new THREE.LineSegments(
-      wsEdges, new THREE.LineBasicMaterial({ color: 0x3a2818 })
-    );
-    wsLine.position.copy(wsMesh.position);
-    g.add(wsLine);
+    const wsGeo = new THREE.BoxGeometry(ws.dx_m, ws.dz_m, ws.dy_m);
+    wsGeo.translate(wsx, wsy, wsz);
+    const wsEdge = new THREE.EdgesGeometry(wsGeo);
+    _bucketAdd(bucket, COLORS.wall_seg, wsGeo, wsEdge);
   }
 }
 
@@ -1253,27 +1329,31 @@ function highlightTrip(tripNo) {
     }
   }
 
-  // ③ 선택 trip — 빨간 outline
-  const g = truckGroups[tripNo];
-  if (!g) return;
-  const yo = clickedTrip.y_offset_m || 0;
-  const tw = clickedTrip.truck_width_m;
-  const tl = clickedTrip.truck_length_m;
-  const xo = clickedTrip.x_offset_m;
-  const veh_h = clickedTrip.vehicle_height_offset_m;
-  const inner_h = clickedTrip.truck_height_m - veh_h;
-  const hlGeo = new THREE.BoxGeometry(tl + 0.1, inner_h + 0.1, tw + 0.1);
-  const hlEdges = new THREE.EdgesGeometry(hlGeo);
-  const hlLine = new THREE.LineSegments(
-    hlEdges,
-    new THREE.LineBasicMaterial({ color: 0xf85149, transparent: false })
-  );
-  // truckGroup 의 position.z (y_offset_m) 가 자식에 적용되므로 outline 도 그룹 안에 넣어야
-  // [물량탭] hide_truck 이면 화물이 -Z(뒤) 범위(-tw~0)에 배치되므로 outline 도 -tw/2 로.
-  const hlZ = (PACK_DATA && PACK_DATA.hide_truck) ? (-tw / 2) : (tw / 2);
-  hlLine.position.set(xo + tl / 2, veh_h + inner_h / 2, hlZ);
-  g.add(hlLine);
-  highlightOutlines[tripNo] = hlLine;
+  // ③ 선택 묶음(그룹) 전체 — 같은 그룹의 *모든 회차*에 빨간 outline.
+  //   [2026-06-07] 한 묶음(같은 종류)을 선택하면 줄바꿈으로 나뉜 회차들이
+  //   한꺼번에 강조된다(사용자 요청). 물량탭은 타입당 1 회차라 그대로 호환.
+  const groupTrips = groupTripsCache[String(clickedGid)] || [clickedTrip];
+  for (const t of groupTrips) {
+    const g = truckGroups[t.trip_no];
+    if (!g) continue;
+    const tw = t.truck_width_m;
+    const tl = t.truck_length_m;
+    const xo = t.x_offset_m;
+    const veh_h = t.vehicle_height_offset_m;
+    const inner_h = t.truck_height_m - veh_h;
+    const hlGeo = new THREE.BoxGeometry(tl + 0.1, inner_h + 0.1, tw + 0.1);
+    const hlEdges = new THREE.EdgesGeometry(hlGeo);
+    const hlLine = new THREE.LineSegments(
+      hlEdges,
+      new THREE.LineBasicMaterial({ color: 0xf85149, transparent: false })
+    );
+    // truckGroup 의 position.z (y_offset_m) 가 자식에 적용되므로 outline 도 그룹 안에.
+    // [물량탭] hide_truck 이면 화물이 -Z(뒤) 범위(-tw~0)에 배치되므로 outline 도 -tw/2 로.
+    const hlZ = (PACK_DATA && PACK_DATA.hide_truck) ? (-tw / 2) : (tw / 2);
+    hlLine.position.set(xo + tl / 2, veh_h + inner_h / 2, hlZ);
+    g.add(hlLine);
+    highlightOutlines[t.trip_no] = hlLine;
+  }
 }
 
 window.highlightTrip = highlightTrip;  // Qt runJavaScript 에서 호출
@@ -1434,6 +1514,12 @@ def build_loaded_3d_three_html(
 # - vehicle_height_offset=0 인 가짜 Truck → 화물이 바닥(z=0)에 놓임.
 QTY_INTRA_TYPE_GAP_M: float = 1.5   # 같은 타입 인스턴스 사이 (-Y)
 QTY_INTER_TYPE_GAP_M: float = 3.0   # 다른 타입 사이 (+X, 외곽 끝과 끝)
+# [2026-06-07] 한 줄에 인스턴스가 너무 많으면 -Y 로 끝없이 길어져 화면 밖으로
+# 뻗어나간다. 한 줄당 최대 개수를 두고 초과분은 *같은 평면에서 다음 줄*(+X)로
+# 접는다. 같은 타입(묶음)의 줄 간격은 좁게, 다른 타입과는 넓게 두어 구분한다.
+# 예) 50개 = 20/20/10 (3줄).
+QTY_ROW_LIMIT: int = 20             # 한 줄당 최대 인스턴스 수
+QTY_ROW_GAP_M: float = 1.5          # 같은 타입의 줄 사이 X 여유(부재 길이에 더해짐)
 
 
 def _qty_fake_truck(items_in_type: List, gap_y_mm: float) -> Truck:
@@ -1514,17 +1600,25 @@ def serialize_quantity_for_three(
         # placements — 같은 타입 인스턴스를 -Y(폭 방향 뒤) 로 누적.
         # [방향 — 2026-06-01] 화물은 -Y(뒤)에 배치(원래 의도). 강조 outline 도 같은
         #   -Y 범위에 맞춰 그린다(highlightTrip 에서 hide_truck 시 화물 쪽으로 보정).
+        # [2026-06-07] 한 줄당 QTY_ROW_LIMIT 개까지만 -Y 로 늘어놓고, 초과분은
+        # *같은 평면에서 다음 줄*(진행 방향 +X)로 접는다. 각 줄은 같은 -Y 시작점
+        # 에서 다시 시작. 높이(z)는 쓰지 않는다.
         placements_json: List[Dict] = []
+        row_pitch_mm = type_len_mm + QTY_ROW_GAP_M * 1000.0   # 줄 간 X(부재 길이+여유)
         y_cursor_mm = 0.0
-        for it in items:
+        for idx, it in enumerate(items):
+            if idx > 0 and idx % QTY_ROW_LIMIT == 0:
+                y_cursor_mm = 0.0          # 새 줄 — Y 시작점으로 리셋
+            row = idx // QTY_ROW_LIMIT      # 0,1,2,... 번째 줄
             W = float(getattr(it, "width", 0.0) or 0.0)
             center_y_mm = -y_cursor_mm - W / 2.0   # -Y 누적(뒤로)
-            # _serialize_placement 가 center_y = (max_width/2 + truck_xyz[1]) 로 계산 →
-            # truck_xyz[1] = center_y_mm - max_width/2.
+            # _serialize_placement 가 center_x = (max_length/2 + truck_xyz[0]),
+            # center_y = (max_width/2 + truck_xyz[1]) 로 계산.
             ty = center_y_mm - truck.max_width / 2.0
+            tx = row * row_pitch_mm         # 줄마다 +X 로
             p = Placement(
                 item=it, slot=PlacementSlot.FLOOR, posture=Posture.LYING,
-                truck_xyz=(0.0, ty, 0.0),
+                truck_xyz=(tx, ty, 0.0),
             )
             placements_json.append(_serialize_placement(p, truck))
             y_cursor_mm += W + gap_y_mm
@@ -1551,7 +1645,10 @@ def serialize_quantity_for_three(
             "instance_count": len(items),
         }
         data["trips"].append(trip_data)
-        next_x_mm += type_len_mm + gap_x_mm
+        # 이 타입(묶음)이 차지하는 X 폭 = 줄 수 × 줄 간격. 다음 타입은 그만큼 +
+        # 묶음 간격(gap_x_mm)만큼 뒤로 → 묶음끼리 넓게 구분.
+        n_rows = -(-len(items) // QTY_ROW_LIMIT)   # ceil
+        next_x_mm += n_rows * row_pitch_mm + gap_x_mm
 
     return data
 

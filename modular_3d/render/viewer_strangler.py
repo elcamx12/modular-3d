@@ -49,9 +49,10 @@ _VISPY_ONLY_METHODS = frozenset({
     'set_rooms_visible',
 })
 
-# 두 뷰어 모두 정의된 *broadcast* 메서드 — M2 단계의 핵심 시각 갱신
+# 두 뷰어 모두 정의된 *broadcast* 메서드 — M2 단계의 핵심 시각 갱신.
+# [성능] add/remove_component_visual 은 _BROADCAST 에서 빼고 명시 메서드로 둔다
+# (vispy 가 화면에 없는 탭에선 vispy 메시 생성을 건너뛰기 위함 — set_vispy_enabled).
 _BROADCAST_METHODS = frozenset({
-    'add_component_visual', 'remove_component_visual',
     'add_room_visual', 'remove_room_visual',
     'update_ghost', 'clear_ghost', 'set_ghost_enabled',
     'update_opening_ghost', 'clear_opening_ghost',
@@ -84,6 +85,40 @@ class ViewerStrangler:
     def __init__(self):
         self.vispy = Viewer3D()
         self.three = ViewerThree()
+        # [성능] vispy 부재 메시 생성 on/off. 배치설계·정의 탭은 three.js 만
+        # 보이므로 False 로 두어 vispy 메시 생성을 건너뛴다(렉 제거). vispy 가
+        # 실제 보이는 탭(접합/해석/단면) 진입 시 True 로 켜고 한 번 채운다.
+        self._vispy_enabled = True
+        # vispy 가 꺼진 동안 부재 변경이 있었으면 True — 다음 켤 때 다시 채워야 함.
+        self._vispy_dirty = True
+
+    # ── vispy 메시 생성 토글 + 명시 broadcast ────────────────
+    def set_vispy_enabled(self, on: bool) -> None:
+        """vispy 부재 메시 생성 여부. False 면 add/remove_component_visual 이
+        three.js 에만 반영된다(vispy 화면 미표시 탭에서 비용 0)."""
+        self._vispy_enabled = bool(on)
+
+    def is_vispy_enabled(self) -> bool:
+        return self._vispy_enabled
+
+    def is_vispy_dirty(self) -> bool:
+        return self._vispy_dirty
+
+    def mark_vispy_clean(self) -> None:
+        self._vispy_dirty = False
+
+    def add_component_visual(self, *args, **kwargs):
+        # three 는 항상, vispy 는 켜진 경우에만. 꺼져 있으면 stale 표시.
+        self.three.add_component_visual(*args, **kwargs)
+        if self._vispy_enabled:
+            return self.vispy.add_component_visual(*args, **kwargs)
+        self._vispy_dirty = True
+
+    def remove_component_visual(self, *args, **kwargs):
+        self.three.remove_component_visual(*args, **kwargs)
+        if self._vispy_enabled:
+            return self.vispy.remove_component_visual(*args, **kwargs)
+        self._vispy_dirty = True
 
     # ── Qt 위젯 접근 (main_3d 의 좌 3D 영역 마운트용) ──
     def get_native_widget(self):

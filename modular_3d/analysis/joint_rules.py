@@ -73,9 +73,22 @@ def _cell_of(coord) -> Tuple[int, int]:
     return (int(coord[0] // _GRID_CELL), int(coord[1] // _GRID_CELL))
 
 
+def _cell_of3(coord) -> Tuple[int, int, int]:
+    """xyz 좌표 → 3D 격자 칸. 코너 매칭은 z 정렬(≤_Z_TOL)만 결합하므로 z 도
+    칸으로 나눠 같은 층 후보만 보게 한다(다층에서 같은 xy 칸에 모든 층 코너가
+    몰려 O(N×층) 으로 폭증하던 것을 막음). 층 간격(3420) ≫ 셀(225)."""
+    return (int(coord[0] // _GRID_CELL), int(coord[1] // _GRID_CELL),
+            int(coord[2] // _GRID_CELL))
+
+
 def _build_corner_grid(om, corners: Dict[int, List[int]]
                        ) -> Dict[Tuple[int, int], List[Tuple[int, int]]]:
-    """{cid: [nid]} → {(ix, iy): [(cid, nid), ...]}. 코너의 xy 격자 버킷."""
+    """{cid: [nid]} → {(ix, iy): [(cid, nid), ...]}. 코너의 xy 격자 버킷.
+
+    [주의] 2D(z 무시) — _apply_vstack_rule 처럼 *위아래 층*(z 다름) 코너를
+    수직 결합하는 룰이 이 격자를 직접 순회하므로 z 를 칸으로 나누면 안 된다.
+    z 정렬(같은 층)만 보는 코너-엣지 룰은 _build_corner_grid_z(3D)를 쓴다.
+    """
     grid: Dict[Tuple[int, int], List[Tuple[int, int]]] = {}
     for cid, nids in corners.items():
         for nid in nids:
@@ -83,6 +96,20 @@ def _build_corner_grid(om, corners: Dict[int, List[int]]
             if c is None:
                 continue
             grid.setdefault(_cell_of(c), []).append((cid, nid))
+    return grid
+
+
+def _build_corner_grid_z(om, corners: Dict[int, List[int]]
+                         ) -> Dict[Tuple[int, int, int], List[Tuple[int, int]]]:
+    """{cid: [nid]} → {(ix, iy, iz): [(cid, nid), ...]}. 코너의 xyz 격자 버킷.
+    z 정렬(≤_Z_TOL)만 결합하는 룰(코너-엣지) 전용 — 같은 층 후보만 본다."""
+    grid: Dict[Tuple[int, int, int], List[Tuple[int, int]]] = {}
+    for cid, nids in corners.items():
+        for nid in nids:
+            c = om.node_tags.get(nid)
+            if c is None:
+                continue
+            grid.setdefault(_cell_of3(c), []).append((cid, nid))
     return grid
 
 
@@ -100,6 +127,24 @@ def _neighbor_cids(grid: Dict[Tuple[int, int], List[Tuple[int, int]]],
             for cid, _nid in grid.get((ix + dx, iy + dy), ()):
                 if cid != self_cid:
                     out.add(cid)
+    return out
+
+
+def _neighbor_cids_z(grid: Dict[Tuple[int, int, int], List[Tuple[int, int]]],
+                     coord, self_cid: int) -> Set[int]:
+    """coord 주변 3×3×3 칸의, self_cid 가 아닌 컴포넌트 ID 집합(z 분리).
+
+    _build_corner_grid_z 와 쌍 — z 정렬(같은 층)만 보는 코너-엣지 룰 전용.
+    같은 xy 다른 층 코너가 한 칸에 몰리지 않아 다층에서 O(N) 으로 동작한다.
+    """
+    ix, iy, iz = _cell_of3(coord)
+    out: Set[int] = set()
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                for cid, _nid in grid.get((ix + dx, iy + dy, iz + dz), ()):
+                    if cid != self_cid:
+                        out.add(cid)
     return out
 
 
@@ -435,14 +480,16 @@ def _apply_corner_edge_rule(
     matched_pc: Set[Tuple[int, int]] = set()
 
     # ── (a) 꼭지점-꼭지점 매칭 ──────────────────────────────
-    # [성능 2026-06-05] cid_b 후보를 격자로 제한 — nP 주변 3×3 칸에 코너를 둔
+    # [성능 2026-06-05] cid_b 후보를 격자로 제한 — nP 주변 칸에 코너를 둔
     # 컴포넌트만 본다. cid_b 순회 순서(corners 삽입 순서)와 best_per_module 선택·
     # 등록 순서는 그대로라 결과 100% 보존(회귀 0).
-    grid_a = _build_corner_grid(om, corners)
+    # [성능 추가] (a)는 z차 ≤5(같은 층)만 매칭하므로 z 분리 격자(3×3×3)를 써서
+    # 같은 xy 다른 층 코너가 한 칸에 몰리지 않게 한다(다층 O(N×층)→O(N)).
+    grid_a = _build_corner_grid_z(om, corners)
     for cid_a in corners:
         for nP in corners[cid_a]:
             cP = om.node_tags[nP]
-            cand_a = _neighbor_cids(grid_a, cP, cid_a)
+            cand_a = _neighbor_cids_z(grid_a, cP, cid_a)
             best_per_module: Dict[int, Tuple[float, int]] = {}
             for cid_b in corners:
                 if cid_b == cid_a or cid_b not in cand_a:
@@ -2070,59 +2117,76 @@ def apply_core_joint(
             best[key] = (dist, kind, payload)
 
     # (a) 외부 노드 ↔ 코어 노드 직접 매칭 후보.
+    # [성능] z 정렬(≤_Z_TOL=5)만 결합되므로, 코어 노드를 z 버킷(정수 mm)으로
+    # 색인해 같은 높이 후보만 본다. 외부노드×코어 전수 O(N^2) → O(N). z 레벨
+    # 간격(층 3420) ≫ _Z_TOL 이라 버킷이 층을 정확히 가른다. 결과 동일.
+    from collections import defaultdict as _dd
+    _dz = int(_Z_TOL) + 2
+    _core_by_z = _dd(list)
+    for _nQ in core_nids:
+        _cQ = om.node_tags[_nQ]
+        _core_by_z[round(_cQ[2])].append((_nQ, _cQ))
     for nP in external_nids:
         cP = om.node_tags[nP]
-        for nQ in core_nids:
-            cQ = om.node_tags[nQ]
-            if abs(cP[2] - cQ[2]) > _Z_TOL:
-                continue
-            dx = abs(cP[0] - cQ[0])
-            dy = abs(cP[1] - cQ[1])
-            # 정렬 임계 _CORE_ALIGN_TOL(=55mm), 결합 거리 _CORE_LATERAL_MAX(=275mm).
-            cond_x = dx <= _CORE_ALIGN_TOL and (_Z_TOL < dy <= _CORE_LATERAL_MAX)
-            cond_y = dy <= _CORE_ALIGN_TOL and (_Z_TOL < dx <= _CORE_LATERAL_MAX)
-            if not (cond_x or cond_y):
-                continue
-            # 결합선 축 = 큰 성분 (cond_x→dy 큼→'y' / cond_y→dx 큼→'x')
-            axis_c = 'x' if dx > dy else 'y'
-            _consider(nP, axis_c, float(np.hypot(dx, dy)), 'node', nQ)
+        _zc = round(cP[2])
+        for _zk in range(_zc - _dz, _zc + _dz + 1):
+            for nQ, cQ in _core_by_z.get(_zk, ()):
+                if abs(cP[2] - cQ[2]) > _Z_TOL:
+                    continue
+                dx = abs(cP[0] - cQ[0])
+                dy = abs(cP[1] - cQ[1])
+                # 정렬 임계 _CORE_ALIGN_TOL(=55mm), 결합 거리 _CORE_LATERAL_MAX(=275mm).
+                cond_x = dx <= _CORE_ALIGN_TOL and (_Z_TOL < dy <= _CORE_LATERAL_MAX)
+                cond_y = dy <= _CORE_ALIGN_TOL and (_Z_TOL < dx <= _CORE_LATERAL_MAX)
+                if not (cond_x or cond_y):
+                    continue
+                # 결합선 축 = 큰 성분 (cond_x→dy 큼→'y' / cond_y→dx 큼→'x')
+                axis_c = 'x' if dx > dy else 'y'
+                _consider(nP, axis_c, float(np.hypot(dx, dy)), 'node', nQ)
 
     # (b) 외부 노드 ↔ 코어 축평행 선 사영점 후보.
+    # [성능] 선의 z(c1[2]) 버킷으로 같은 높이만 비교(O(N)). axis=='z'(코어 column
+    # 사영)는 정책상 비활성이라 색인에서 아예 제외. 결과 동일.
+    _lines_by_z = _dd(list)
+    for (mid, n1, n2, axis) in core_lines:
+        if axis == 'z':
+            # [2026-05-28 사용자 정책] 코어 column (z 평행) 사영 비활성 —
+            # n1.z ≠ 사영점.z 라 시공에 없는 수직 결합(모델링 인공물)이 됨.
+            continue
+        _lines_by_z[round(om.node_tags[n1][2])].append((mid, n1, n2, axis))
     for nP in external_nids:
         cP = om.node_tags[nP]
-        for mid, n1, n2, axis in core_lines:
-            c1 = om.node_tags[n1]
-            c2 = om.node_tags[n2]
-            if axis == 'z':
-                # [2026-05-28 사용자 정책] 코어 column (z 평행) 사영 비활성 —
-                # n1.z ≠ 사영점.z 라 시공에 없는 수직 결합(모델링 인공물)이 됨.
-                continue
-            elif axis == 'x':
-                # 수평보 (x 평행). 사영점 = (P.x, 선.y, 선.z), 결합선은 y 방향.
-                if abs(cP[2] - c1[2]) > _Z_TOL:
-                    continue
-                x_lo = min(c1[0], c2[0])
-                x_hi = max(c1[0], c2[0])
-                if not (x_lo + _Z_TOL < cP[0] < x_hi - _Z_TOL):
-                    continue
-                dy = abs(cP[1] - c1[1])
-                if not (_Z_TOL < dy <= _CORE_LATERAL_MAX):
-                    continue
-                proj = np.array([cP[0], c1[1], c1[2]], dtype=float)
-                axis_c, dist = 'y', dy
-            else:   # axis == 'y' — 결합선은 x 방향.
-                if abs(cP[2] - c1[2]) > _Z_TOL:
-                    continue
-                y_lo = min(c1[1], c2[1])
-                y_hi = max(c1[1], c2[1])
-                if not (y_lo + _Z_TOL < cP[1] < y_hi - _Z_TOL):
-                    continue
-                dx = abs(cP[0] - c1[0])
-                if not (_Z_TOL < dx <= _CORE_LATERAL_MAX):
-                    continue
-                proj = np.array([c1[0], cP[1], c1[2]], dtype=float)
-                axis_c, dist = 'x', dx
-            _consider(nP, axis_c, float(dist), 'edge', (mid, proj))
+        _zc = round(cP[2])
+        for _zk in range(_zc - _dz, _zc + _dz + 1):
+            for mid, n1, n2, axis in _lines_by_z.get(_zk, ()):
+                c1 = om.node_tags[n1]
+                c2 = om.node_tags[n2]
+                if axis == 'x':
+                    # 수평보 (x 평행). 사영점 = (P.x, 선.y, 선.z), 결합선은 y 방향.
+                    if abs(cP[2] - c1[2]) > _Z_TOL:
+                        continue
+                    x_lo = min(c1[0], c2[0])
+                    x_hi = max(c1[0], c2[0])
+                    if not (x_lo + _Z_TOL < cP[0] < x_hi - _Z_TOL):
+                        continue
+                    dy = abs(cP[1] - c1[1])
+                    if not (_Z_TOL < dy <= _CORE_LATERAL_MAX):
+                        continue
+                    proj = np.array([cP[0], c1[1], c1[2]], dtype=float)
+                    axis_c, dist = 'y', dy
+                else:   # axis == 'y' — 결합선은 x 방향.
+                    if abs(cP[2] - c1[2]) > _Z_TOL:
+                        continue
+                    y_lo = min(c1[1], c2[1])
+                    y_hi = max(c1[1], c2[1])
+                    if not (y_lo + _Z_TOL < cP[1] < y_hi - _Z_TOL):
+                        continue
+                    dx = abs(cP[0] - c1[0])
+                    if not (_Z_TOL < dx <= _CORE_LATERAL_MAX):
+                        continue
+                    proj = np.array([c1[0], cP[1], c1[2]], dtype=float)
+                    axis_c, dist = 'x', dx
+                _consider(nP, axis_c, float(dist), 'edge', (mid, proj))
 
     # 채택 — 외부노드별·축별 최소거리 후보만 등록.
     # [함정 — 옛 단순화의 버그] (b) 사영 결합은 과거엔 사영점에 새 노드를 만들어

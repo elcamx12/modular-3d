@@ -475,7 +475,9 @@ class Viewer3D:
         """묶음 전송 종료 — vispy no-op."""
         pass
 
-    def add_component_visual(self, comp_id: int, vertices, faces, face_colors):
+    def add_component_visual(self, comp_id: int, vertices, faces, face_colors,
+                             form_key=None):
+        # form_key 는 three.js 인스턴싱 전용 — vispy 는 무시(broadcast 호환).
         # [2026-05-25 버그수정] 같은 comp_id 의 기존 메시를 먼저 scene 에서 제거.
         # 안 하면 dict 만 덮어쓰고 옛 메시가 parent 채로 화면에 잔류(유령 메시) →
         # ops 뷰 디밍(dict 순회)에서 빠져 면으로 보이고, 삭제/되돌리기로도 안

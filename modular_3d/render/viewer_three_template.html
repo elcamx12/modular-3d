@@ -31,7 +31,7 @@
 </head>
 <body>
 <div id="container">
-  <div id="empty-msg">three.js 뷰 — 부재 로딩 대기 중 (M2-a 골격)</div>
+  <div id="empty-msg">three.js 뷰 — 부재 로딩 대기</div>
   <div id="info">왼클릭=회전 · 우클릭=이동 · 휠=줌</div>
   <div id="member-tip" style="position:absolute; display:none; z-index:20;
     pointer-events:none; background:rgba(20,24,28,0.92); color:#fff;
@@ -163,17 +163,14 @@ function animate() {
 // 메쉬 빌더 헬퍼 — vertices/faces/face_colors → BufferGeometry
 // (M2-b 구현 대상. 현재는 골격만)
 // ─────────────────────────────────────────────────────────
-function _buildMeshFromMeshData(verticesList, facesList, faceColorsList) {
+function _buildGeomFromMeshData(verticesList, facesList, faceColorsList) {
   // verticesList: (N, 3) — 꼭짓점 좌표
   // facesList:    (M, 3) — 삼각형 face 의 꼭짓점 인덱스
   // faceColorsList: (M, 4) — face 별 (R,G,B,A), 0~1
-
-  // per-face 색을 per-vertex 로 풀기 위해 non-indexed BufferGeometry 사용:
-  // 각 face 의 3 꼭짓점을 그대로 늘어놓고, 같은 색을 3 번 반복.
+  // per-face 색을 per-vertex 로 풀기 위해 non-indexed BufferGeometry 사용.
   const M = facesList.length;
   const positions = new Float32Array(M * 9);   // 3 verts × 3 coords
   const colors = new Float32Array(M * 9);      // 3 verts × 3 RGB
-
   for (let i = 0; i < M; i++) {
     const face = facesList[i];
     const col = faceColorsList[i];
@@ -187,19 +184,26 @@ function _buildMeshFromMeshData(verticesList, facesList, faceColorsList) {
       colors[i*9 + k*3 + 2] = col[2];
     }
   }
-
   const geom = new THREE.BufferGeometry();
   geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   geom.computeVertexNormals();
+  return geom;
+}
 
-  // [2026-06-01] z·y 두 평면 모두 클리핑에 적용 — 각각 1e9 면 사실상 무한
+// 현재 단면 클리핑 평면 목록 — 재질 생성 시 참조(전역 평면이라 constant 만 바뀜).
+function _currentClipPlanes() {
   const _planes = [];
   if (window.sectionPlane) _planes.push(window.sectionPlane);
   if (window.sectionPlaneY) _planes.push(window.sectionPlaneY);
+  return _planes;
+}
+
+function _buildMeshFromMeshData(verticesList, facesList, faceColorsList) {
+  const geom = _buildGeomFromMeshData(verticesList, facesList, faceColorsList);
   const mat = new THREE.MeshLambertMaterial({
     vertexColors: true, side: THREE.DoubleSide,
-    clippingPlanes: _planes,
+    clippingPlanes: _currentClipPlanes(),
   });
   return new THREE.Mesh(geom, mat);
 }
@@ -308,7 +312,147 @@ window.captureSectionFront = function(cut_y) {
   return url;
 };
 
+// ─────────────────────────────────────────────────────────
+// [3D 복제 최적화 3단계] 형상 인스턴싱 — 같은 형상(formKey)을 InstancedMesh
+// 하나로 묶어 GPU 업로드·드로우콜을 형상 종류 수만큼으로 줄인다.
+//   instForms[key] = { geom, mesh(InstancedMesh), capacity, count,
+//                      idToIdx{comp_id:idx}, idxToId[idx]=comp_id }
+//   compForm[comp_id] = key  (인스턴스로 관리되는 부재 → 그 형상키)
+// 인스턴스 i 의 월드정점 = geom(기준부재 절대좌표) + translation_i.
+// 기준부재는 translation=(0,0,0) 이라 geom 위치 그대로 그려진다.
+// ─────────────────────────────────────────────────────────
+const instForms = {};
+const compForm = {};
+
+window.registerInstForm = function(key, verts, faces, colors, capacity) {
+  if (instForms[key]) return;
+  const geom = _buildGeomFromMeshData(verts, faces, colors);
+  const mat = new THREE.MeshLambertMaterial({
+    vertexColors: true, side: THREE.DoubleSide,
+    clippingPlanes: _currentClipPlanes(),
+  });
+  const inst = new THREE.InstancedMesh(geom, mat, Math.max(1, capacity|0));
+  inst.count = 0;
+  inst.frustumCulled = false;   // 인스턴스 분산 배치 → 컬링 오판 방지
+  scene.add(inst);
+  instForms[key] = { geom: geom, mesh: inst, capacity: Math.max(1, capacity|0),
+                     count: 0, idToIdx: {}, idxToId: [] };
+};
+
+function _growInstForm(form) {
+  const newCap = form.capacity * 2;
+  const oldMesh = form.mesh;
+  const inst = new THREE.InstancedMesh(form.geom, oldMesh.material, newCap);
+  inst.count = form.count;
+  inst.frustumCulled = false;
+  const m = new THREE.Matrix4();
+  for (let i = 0; i < form.count; i++) {
+    oldMesh.getMatrixAt(i, m);
+    inst.setMatrixAt(i, m);
+  }
+  scene.remove(oldMesh);   // geom·material 은 공유라 dispose 안 함
+  scene.add(inst);
+  form.mesh = inst;
+  form.capacity = newCap;
+  inst.instanceMatrix.needsUpdate = true;
+}
+
+window.addInstance = function(key, comp_id, tx, ty, tz) {
+  const form = instForms[key];
+  if (!form) return;
+  const m = new THREE.Matrix4().makeTranslation(tx, ty, tz);
+  if (comp_id in form.idToIdx) {           // 이미 있으면 위치만 갱신
+    form.mesh.setMatrixAt(form.idToIdx[comp_id], m);
+    form.mesh.instanceMatrix.needsUpdate = true;
+    return;
+  }
+  if (form.count >= form.capacity) _growInstForm(form);
+  const idx = form.count;
+  form.idToIdx[comp_id] = idx;
+  form.idxToId[idx] = comp_id;
+  form.mesh.setMatrixAt(idx, m);
+  form.count++;
+  form.mesh.count = form.count;
+  form.mesh.instanceMatrix.needsUpdate = true;
+  compForm[comp_id] = key;
+};
+
+// 여러 형상·인스턴스를 1회 호출로 일괄 등록(묶음 전송).
+window.addInstanceBatch = function(payload) {
+  const forms = (payload && payload.forms) || [];
+  for (let i = 0; i < forms.length; i++) {
+    const f = forms[i];
+    window.registerInstForm(f.key, f.verts, f.faces, f.colors, f.capacity);
+    const insts = f.instances || [];
+    for (let j = 0; j < insts.length; j++) {
+      const it = insts[j];
+      window.addInstance(f.key, it.id, it.t[0], it.t[1], it.t[2]);
+    }
+  }
+  _hideEmptyMsg();
+};
+
+window.removeInstance = function(comp_id) {
+  const key = compForm[comp_id];
+  if (key === undefined) return false;
+  const form = instForms[key];
+  if (!form) { delete compForm[comp_id]; return false; }
+  const idx = form.idToIdx[comp_id];
+  const last = form.count - 1;
+  if (idx !== last) {                      // 마지막 인스턴스를 빈자리로 이동(swap-remove)
+    const m = new THREE.Matrix4();
+    form.mesh.getMatrixAt(last, m);
+    form.mesh.setMatrixAt(idx, m);
+    const lastId = form.idxToId[last];
+    form.idToIdx[lastId] = idx;
+    form.idxToId[idx] = lastId;
+  }
+  form.count--;
+  form.mesh.count = form.count;
+  form.idxToId.length = form.count;
+  delete form.idToIdx[comp_id];
+  delete compForm[comp_id];
+  form.mesh.instanceMatrix.needsUpdate = true;
+  return true;
+};
+
+// 모든 인스턴스 폼 제거(대량 재구성 시작 시).
+window.clearAllInstances = function() {
+  for (const key in instForms) {
+    const form = instForms[key];
+    scene.remove(form.mesh);
+    form.geom.dispose();
+    form.mesh.material.dispose();
+  }
+  for (const k in instForms) delete instForms[k];
+  for (const k in compForm) delete compForm[k];
+};
+
+// [검증용] 부재의 화면상 월드정점을 그대로 회수(독립 메시 / 인스턴스 공통).
+window.getCompWorldVerts = function(comp_id) {
+  if (componentMeshes[comp_id]) {
+    const a = componentMeshes[comp_id].geometry.getAttribute('position');
+    return Array.from(a.array);
+  }
+  const key = compForm[comp_id];
+  if (key === undefined) return null;
+  const form = instForms[key];
+  const idx = form.idToIdx[comp_id];
+  const m = new THREE.Matrix4();
+  form.mesh.getMatrixAt(idx, m);
+  const a = form.geom.getAttribute('position');
+  const out = [];
+  const v = new THREE.Vector3();
+  for (let i = 0; i < a.count; i++) {
+    v.fromBufferAttribute(a, i); v.applyMatrix4(m);
+    out.push(v.x, v.y, v.z);
+  }
+  return out;
+};
+
 window.removeComponent = function(comp_id) {
+  // 인스턴스로 관리되는 부재면 인스턴스에서 제거(swap-remove).
+  if (window.removeInstance(comp_id)) return;
   const mesh = componentMeshes[comp_id];
   if (!mesh) return;
   scene.remove(mesh);

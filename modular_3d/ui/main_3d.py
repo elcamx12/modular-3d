@@ -107,7 +107,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self.setWindowTitle('모듈러 설계 프로그램')
-        self.resize(1600, 900)
+        self.resize(1536, 864)   # 1920×1080 의 4/5
 
         # ── 모델 ─────────────────────────────────────────
         self._scene = Scene()
@@ -255,6 +255,17 @@ class MainWindow(QMainWindow):
 
         # 캔버스에 포커스
         self._canvas_widget.setFocus()
+
+    # ── 창 크기 고정 (1536×864 = 1920×1080 의 4/5, 리사이즈 불가) ────
+    # [2026-06-07] 1920×1080 의 4/5(=1536×864)로 픽셀 고정. setFixedSize 는
+    # min/max 를 같은 값으로 묶으므로 사용자가 창 크기를 바꾸거나 최대화할 수
+    # 없게 된다. 최초 1회만 적용(_size_locked 가드).
+    def showEvent(self, event):
+        super().showEvent(event)
+        if getattr(self, '_size_locked', False):
+            return
+        self._size_locked = True
+        self.setFixedSize(1536, 864)   # 1920×1080 의 4/5
 
     # ── 메인 탭 위젯 구성 (1864→1700 다이어트, 2026-05-27) ────
     def _setup_tabs(self) -> None:
@@ -1242,24 +1253,16 @@ class MainWindow(QMainWindow):
             # 타입별 분해(코어 제외)와 합계 일치. 코어는 RC 라 강재 물량서 제외(사용자 확정).
             # [2026-06-04] 단, 코어 RC(콘크리트+이형철근)는 별도 행으로 자재비에 포함
             #   (include_core=True). 강재 본수표 일관성과 무관 — 코어 RC 는 강재가 아님.
-            from modular_3d.analysis.quantity_by_component import (
-                design_result_without_core)
-            dr_no_core = design_result_without_core(self._scene, am, dr)
-            report = build_quantity_report(self._scene, am, dr_no_core)
-            # [2026-06-04] 코어 보강강재(트러스·러너) ton = 전체 강재 − 코어제외 강재.
-            #   강재 본수표는 코어 제외(타입별 분해 일치) 유지하되, 자재비 '코어' 행에
-            #   이 강재를 합쳐 종합(코어 강재를 강재 행에 포함)과 합계를 일치시킨다.
-            _full_steel = aggregate_steel(am, dr)
-            _full_ton = _full_steel[-1].total_weight_ton if _full_steel else 0.0
-            _nocore_ton = (report.steel_items[-1].total_weight_ton
-                           if report.steel_items else 0.0)
-            _core_steel_ton = max(0.0, _full_ton - _nocore_ton)
+            # [2026-06-07 사용자 확정] 코어는 콘크리트+철근만 — 강재 일절 제외.
+            #   build_quantity_report 가 이미 코어를 강재 집계에서 빼므로 별도
+            #   dr_no_core 래핑 불필요. 자재비 '코어' 행에도 강재를 더하지 않는다
+            #   (core_steel_ton=0) → 코어 행은 콘크리트+철근만 표기.
+            report = build_quantity_report(self._scene, am, dr)
             mc = compute_material_cost(report, up.steel_shs, up.deck, up.concrete,
                                        steel_h_unit_per_ton=up.steel_h,
                                        rebar_unit_per_ton=up.rebar,
                                        include_core=True,
-                                       core_steel_ton=_core_steel_ton,
-                                       core_steel_unit_per_ton=up.steel_shs)
+                                       core_steel_ton=0.0)
 
             # 우측 패널 갱신.
             if hasattr(self, '_quantity_panel'):
@@ -1428,6 +1431,22 @@ class MainWindow(QMainWindow):
         if idx in (TAB_DESIGN, TAB_DEFINE):
             if hasattr(self._controller, 'set_section_design_result'):
                 self._controller.set_section_design_result(None)
+
+        # [성능] vispy 부재 풀메시는 '부재 형상을 색으로 칠해 보여주는' 단면 설계
+        # 탭에서만 필요하다. 다른 탭은 풀메시 불필요:
+        #  · 배치/정의 : three.js 단독(vispy 안 보임)
+        #  · 접합/해석/물량 : ops 와이어프레임만 — 흐린 부재 배경 제거(2026-06-07).
+        #    풀메시를 만들지/두지 않으면 show_ops_view 의 디밍 루프가 0회라 18층
+        #    에서도 와이어만 빠르게 그려진다(진입 60초+ → 수 초).
+        if idx == TAB_SECTION:
+            self._viewer.set_vispy_enabled(True)
+            if self._viewer.is_vispy_dirty():
+                self._rebuild_vispy()
+        else:
+            self._viewer.set_vispy_enabled(False)
+            if idx in (TAB_JOINT_EDIT, TAB_ANALYSIS, TAB_QUANTITY):
+                # ops 와이어만 — 남아 있던 풀메시(단면 탭 경유 등)를 치운다.
+                self._clear_vispy_meshes()
 
         if idx == TAB_DEFINE:
             # 모듈 정의 탭 — 자체 작업공간(별도 인스턴스)이라 공유 위젯 reparent
@@ -1943,6 +1962,42 @@ class MainWindow(QMainWindow):
         except Exception as e:
             dprint('VIEW', f'[VIEW] 디자인 복귀 정리 중 경고: {type(e).__name__}: {e}')
 
+    def _clear_vispy_meshes(self):
+        """vispy 부재 풀메시 전체 제거 — 접합/해석/물량(ops 와이어만) 진입 시.
+        풀메시가 없으면 show_ops_view 의 디밍(흐린 배경) 루프가 0회가 되어
+        와이어프레임만 빠르게 그려진다. 비웠으므로 단면 탭 재진입 시 다시 채운다.
+        """
+        v = self._viewer.vispy
+        for cid in list(getattr(v, '_component_visuals', {}).keys()):
+            try:
+                v.remove_component_visual(cid)
+            except Exception:
+                pass
+        self._viewer._vispy_dirty = True
+
+    def _rebuild_vispy(self):
+        """vispy 에만 현재 씬 부재 메시를 채운다 — vispy 미표시 탭(배치/정의)에서
+        밀린(dirty) 변경을 vispy 사용 탭 진입 시 한 번에 복구한다. three.js 는
+        이미 최신이므로 건드리지 않고 self._viewer.vispy 를 직접 갱신한다.
+        """
+        try:
+            from modular_3d.render.mesh_builder import build_component_mesh
+        except Exception:
+            return
+        v = self._viewer.vispy
+        for cid in list(getattr(v, '_component_visuals', {}).keys()):
+            try:
+                v.remove_component_visual(cid)
+            except Exception:
+                pass
+        for cid, comp in self._scene.components.items():
+            try:
+                verts, faces, colors = build_component_mesh(comp)
+                v.add_component_visual(cid, verts, faces, colors)
+            except Exception as e:
+                dprint('VIEW', f'[VIEW] vispy 재빌드 실패 id={cid}: {e}')
+        self._viewer.mark_vispy_clean()
+
     def _rebuild_all_component_visuals(self):
         """Scene 의 모든 부재 메쉬를 viewer 에서 완전히 제거 후 재빌드.
 
@@ -1950,7 +2005,7 @@ class MainWindow(QMainWindow):
         그대로이므로 SnapManager 등의 다른 상태는 건드리지 않는다.
         """
         try:
-            from modular_3d.render.mesh_builder import build_component_mesh
+            from modular_3d.render.mesh_builder import build_component_mesh, _shape_key
         except Exception as e:
             dprint('VIEW', f'[VIEW] mesh_builder import 실패: {e}')
             return
@@ -1967,7 +2022,8 @@ class MainWindow(QMainWindow):
             for cid, comp in self._scene.components.items():
                 try:
                     verts, faces, colors = build_component_mesh(comp)
-                    v.add_component_visual(cid, verts, faces, colors)
+                    v.add_component_visual(cid, verts, faces, colors,
+                                           form_key=_shape_key(comp))
                 except Exception as e:
                     dprint('VIEW', f'[VIEW] id={cid} 재빌드 실패: {type(e).__name__}: {e}')
         finally:
@@ -2008,23 +2064,22 @@ class MainWindow(QMainWindow):
             )
 
     def _run_section_design_if_needed(self):
-        """단면 설계 탭 진입 — 와이어프레임 확보 후 '모두 통일' 자동 수렴 → 응력비 색.
+        """단면 설계 탭 진입 — [2026-06-07 성능] 진입 시 자동 계산 제거.
 
-        [2026-05-31 P2] 절차:
-          1) _run_analysis_if_needed 로 ops 와이어프레임 뷰 + om 확보(컨트롤러
-             _last_ops_analysis).
-          2) converge_sections(모두 통일)로 단면을 수렴시켜 부재별 응력비 산출.
-          3) 그 om 에 5단계 응력비 색(show_member_ratio_bands, 빨강=NG) 적용.
-        수렴은 코어 포함 씬이 필요하고 무거우므로(최대 ~60 해석) 실패는 경고만.
-        결과는 self._section_result 에 보관(P3·P4 에서 옵션/3D 가 소비).
+        [변경 사유] 기존엔 진입할 때마다 구조해석 와이어프레임 확보(약 22초) +
+        '모두 통일' 자동 단면 수렴(약 54초)을 돌려 진입 한 번에 ~76초가 걸렸고,
+        들어간 뒤 옵션을 바꿔 '적용'하면 같은 무거운 수렴을 또 돌려야 했다.
+        → 진입 시엔 어떤 무거운 계산도 하지 않는다. 이미 떠 있는 ops
+        와이어프레임(구조해석 탭에서 먼저 돌렸다면)은 그대로 보이고, 실제
+        단면 수렴은 사용자가 '적용'(_apply_section_design)을 눌렀을 때만 수행한다.
         """
         if not self._scene.components:
             return
-        # 1) 와이어프레임 + om 확보 (기존 구조해석 경로 재사용)
-        self._run_analysis_if_needed()
-        # 2) 현재 패널 옵션(기본=모두 통일)으로 수렴 + 색.
-        opts = self._section_panel.current_options()
-        self._converge_and_color(opts)
+        # 진입 시 무거운 계산 없음 — 안내만 표시(이전 결과/와이어프레임은 보존).
+        try:
+            self._section_panel.set_status("‘적용’을 눌러 단면을 수렴하세요.")
+        except Exception:
+            pass
 
     def _apply_section_design(self):
         """단면 설계 패널 '적용' — 현재 옵션으로 재수렴 + 색 갱신.

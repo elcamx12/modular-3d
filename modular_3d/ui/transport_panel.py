@@ -223,6 +223,10 @@ class TransportTab(QWidget):
         _lock_spin('_lowbed_per_km_spin', int(settings.lowbed_per_km_krw))
         _lock_spin('_extend_per_km_spin', int(settings.extendable_per_km_krw))
         _lock_spin('_aframe_per_km_spin', int(settings.aframe_per_km_krw))
+        # [2026-06-07] 트레일러별 1회 고정비도 프로젝트 설정값으로 잠금.
+        _lock_spin('_lowbed_fixed_spin', int(getattr(settings, 'lowbed_fixed_krw', 1_000_000)))
+        _lock_spin('_extend_fixed_spin', int(getattr(settings, 'extendable_fixed_krw', 1_200_000)))
+        _lock_spin('_aframe_fixed_spin', int(getattr(settings, 'aframe_fixed_krw', 800_000)))
         # [2026-06-02] 벽 단위중량 입력은 운송 탭에서 제거됨 — 잠금 대상 아님.
         #   값은 _read_options 가 self._proj_settings 에서 직접 읽는다.
 
@@ -233,6 +237,8 @@ class TransportTab(QWidget):
                 combo.setCurrentIndex(idx)
             combo.setEnabled(False)
             combo.setToolTip(tip)
+        # [2026-06-07] 운임 방식이 설정값으로 바뀌었으니 노출 행을 다시 맞춘다.
+        self._update_cost_mode_rows()
 
         # 현장 운송 제한 — 프로젝트 설정 값으로 SiteLimit 구성 + 읽기전용 표시.
         gvw = (getattr(settings, 'site_limit_gvw_kg', 45000.0)
@@ -289,8 +295,9 @@ class TransportTab(QWidget):
         right_lay.addWidget(_hdr)
         right_lay.addWidget(self._build_area_options())      # ② 옵션 + [▷ 실행]
         right_lay.addWidget(self._build_area_metrics())      # ③ 결과 요약
-        right_lay.addWidget(self._build_area_subtabs(), stretch=1)  # ④ 회차표/적재율/경제성
-        right_lay.addWidget(self._build_area_overrides())    # ⑤ 회차별 트럭 변경
+        right_lay.addWidget(self._build_area_subtabs(), stretch=1)  # ④ 회차표
+        # [2026-06-07] ⑤ '회차별 트럭 변경' 표 제거 — 회차표 공간 확보.
+        #   (override 표를 만들지 않으므로 _render_override_table 은 가드로 skip.)
         right_lay.addWidget(self._build_area_references())   # ⑦ 참고자료 (최하단)
 
         root.addWidget(right_scroll, stretch=1)
@@ -356,6 +363,7 @@ class TransportTab(QWidget):
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setHorizontalSpacing(8)
         lay.setVerticalSpacing(4)
+        self._opt_form = lay   # [2026-06-07] 운임 방식별 행 표시/숨김에 사용
 
         # 현장 운송 제한 — 프로젝트 설정 값(읽기전용 표시). 도로 등급 콤보 폐지.
         self._site_limit_label = QLabel("(프로젝트 설정에서 관리)")
@@ -403,6 +411,29 @@ class TransportTab(QWidget):
         self._aframe_per_km_spin.setSuffix(" 원/km")
         lay.addRow("A-frame km단가:", self._aframe_per_km_spin)
 
+        # [2026-06-07] 트레일러별 1회 고정비 (fixed_per_trip 방식에서 사용).
+        #   값은 프로젝트 설정에서 관리 → apply_project_settings 가 잠그고 채운다.
+        self._lowbed_fixed_spin = QSpinBox()
+        self._lowbed_fixed_spin.setRange(0, 100_000_000)
+        self._lowbed_fixed_spin.setSingleStep(100_000)
+        self._lowbed_fixed_spin.setValue(1_000_000)
+        self._lowbed_fixed_spin.setSuffix(" 원/회")
+        lay.addRow("저상 1회 고정비:", self._lowbed_fixed_spin)
+
+        self._extend_fixed_spin = QSpinBox()
+        self._extend_fixed_spin.setRange(0, 100_000_000)
+        self._extend_fixed_spin.setSingleStep(100_000)
+        self._extend_fixed_spin.setValue(1_200_000)
+        self._extend_fixed_spin.setSuffix(" 원/회")
+        lay.addRow("광폭 1회 고정비:", self._extend_fixed_spin)
+
+        self._aframe_fixed_spin = QSpinBox()
+        self._aframe_fixed_spin.setRange(0, 100_000_000)
+        self._aframe_fixed_spin.setSingleStep(100_000)
+        self._aframe_fixed_spin.setValue(800_000)
+        self._aframe_fixed_spin.setSuffix(" 원/회")
+        lay.addRow("A-frame 1회 고정비:", self._aframe_fixed_spin)
+
         # (2026-05-27 Phase 1) 캔틸 처리 라디오 폐지 — 캔틸레버는 항상 부모
         # 화물에 기하학적 종속 상태로 같은 회차에 운송된다.
 
@@ -430,7 +461,41 @@ class TransportTab(QWidget):
 
         # 옵션 위젯 변경 → 캐시 무효화 배선(자동 실행은 제거됨).
         self._wire_auto_recompute()
+        # [2026-06-07] 운임 방식에 따라 필요한 입력 행만 보이게 한다.
+        self._cost_mode_combo.currentIndexChanged.connect(
+            lambda *_: self._update_cost_mode_rows())
+        self._update_cost_mode_rows()
         return box
+
+    def _set_form_row_visible(self, field, visible: bool) -> None:
+        """QFormLayout 의 한 행(라벨+입력)을 통째로 표시/숨김."""
+        field.setVisible(visible)
+        form = getattr(self, '_opt_form', None)
+        if form is not None:
+            lbl = form.labelForField(field)
+            if lbl is not None:
+                lbl.setVisible(visible)
+
+    def _update_cost_mode_rows(self) -> None:
+        """[2026-06-07] 선택된 운임 방식에 필요한 입력만 노출.
+
+        - 요금표(freight_table): 운송 거리만(요금표가 거리로 조회). km단가·고정비 숨김.
+        - 트레일러별 km단가(per_km): 운송 거리 + 종류별 km단가. 고정비 숨김.
+        - 트레일러별 1회 고정비(fixed_per_trip): 종류별 1회 고정비만(거리 무관).
+        """
+        mode = self._cost_mode_combo.currentData() or 'fixed_per_trip'
+        is_per_km = (mode == 'per_km')
+        is_fixed = (mode == 'fixed_per_trip')
+        # 운송 거리 — 고정비 방식은 거리 무관이라 숨김.
+        self._set_form_row_visible(self._distance_spin, not is_fixed)
+        # 종류별 km단가 — per_km 일 때만.
+        for s in (self._lowbed_per_km_spin, self._extend_per_km_spin,
+                  self._aframe_per_km_spin):
+            self._set_form_row_visible(s, is_per_km)
+        # 종류별 1회 고정비 — fixed_per_trip 일 때만.
+        for s in (self._lowbed_fixed_spin, self._extend_fixed_spin,
+                  self._aframe_fixed_spin):
+            self._set_form_row_visible(s, is_fixed)
 
     def _wire_auto_recompute(self) -> None:
         """옵션 위젯 변경을 무효화 단계와 함께 연결.
@@ -451,6 +516,10 @@ class TransportTab(QWidget):
             (self._lowbed_per_km_spin.valueChanged, 7),
             (self._extend_per_km_spin.valueChanged, 7),
             (self._aframe_per_km_spin.valueChanged, 7),
+            # [2026-06-07] 1회 고정비 입력도 변경 시 패킹부터 무효화.
+            (self._lowbed_fixed_spin.valueChanged, 7),
+            (self._extend_fixed_spin.valueChanged, 7),
+            (self._aframe_fixed_spin.valueChanged, 7),
             # [2026-06-02] 단위중량 입력 제거 — 변경 시 무효화 배선 대상 아님.
         ]
         for sig, step in wiring:
@@ -479,7 +548,7 @@ class TransportTab(QWidget):
             ("module_trips", "모듈 회차"),
             ("panel_trips", "패널 회차"),
             ("total_trips", "총 회차"),
-            ("avg_util", "평균 적재율"),
+            # [2026-06-07] '평균 적재율' 카드 제거 — 사용자 요청.
             ("total_distance", "총 거리"),
             ("total_freight", "총 운임"),
         ]:
@@ -630,10 +699,10 @@ class TransportTab(QWidget):
             lowbed_per_km_krw=float(self._lowbed_per_km_spin.value()),
             extendable_per_km_krw=float(self._extend_per_km_spin.value()),
             aframe_per_km_krw=float(self._aframe_per_km_spin.value()),
-            # [2026-06-04] 폴백 기본값 = 사용자 확정값(저상420만/광폭440만/A-frame400만).
-            lowbed_fixed_krw=float(getattr(ps, 'lowbed_fixed_krw', 4200000.0)),
-            extendable_fixed_krw=float(getattr(ps, 'extendable_fixed_krw', 4400000.0)),
-            aframe_fixed_krw=float(getattr(ps, 'aframe_fixed_krw', 4000000.0)),
+            # [2026-06-07] 1회 고정비는 전용 입력칸(프로젝트 설정값으로 잠김)에서 읽는다.
+            lowbed_fixed_krw=float(self._lowbed_fixed_spin.value()),
+            extendable_fixed_krw=float(self._extend_fixed_spin.value()),
+            aframe_fixed_krw=float(self._aframe_fixed_spin.value()),
         )
 
     # ── 메인 실행 ─────────────────────────────────────────
@@ -734,7 +803,7 @@ class TransportTab(QWidget):
         self._metric_labels["module_trips"].setText(f"{pack.module_trips}")
         self._metric_labels["panel_trips"].setText(f"{pack.panel_trips}")
         self._metric_labels["total_trips"].setText(f"{pack.total_trips}")
-        self._metric_labels["avg_util"].setText(f"{pack.avg_utilization:.1f}%")
+        # [2026-06-07] '평균 적재율' 카드 제거 — 갱신 대상 아님.
         # 총 거리 = 편도거리 × 회차 × 2 (운임 모델이 항상 왕복 기준이므로 일치시킴).
         # (2026-05-24 운임 개편으로 왕복 토글 제거 — 항상 왕복으로 계산.)
         dist = self._distance_spin.value() * pack.total_trips * 2
@@ -746,6 +815,26 @@ class TransportTab(QWidget):
         else:
             self._metric_labels["total_freight"].setText("—")
 
+    def _item_type_label(self, item, type_labels: Dict[int, str]) -> str:
+        """화물 item → 타입 분류 라벨('모듈A-1' 등). 못 찾으면 원래 name."""
+        name = getattr(item, "name", "?")
+        ti = getattr(self, "_last_ti", None)
+        if ti is not None and type_labels:
+            for cid in ti.source_index.get(name, []):
+                lbl = type_labels.get(cid)
+                if lbl:
+                    return lbl
+        return name
+
+    def _format_trip_items(self, items, type_labels: Dict[int, str]) -> str:
+        """회차 아이템 목록을 타입 라벨로 표기(같은 라벨은 '×n' 으로 묶음)."""
+        from collections import Counter
+        counts = Counter(self._item_type_label(i, type_labels) for i in items)
+        parts = []
+        for lbl, n in counts.items():
+            parts.append(f"{lbl} ×{n}" if n > 1 else lbl)
+        return ", ".join(parts)
+
     def _render_trip_table(self, pack: PackResult) -> None:
         self._trip_table.setRowCount(len(pack.trips))
         # 회차 번호는 좌측 행 헤더(1·2·3…)와 중복이라 컬럼에서 제거.
@@ -754,11 +843,21 @@ class TransportTab(QWidget):
         cost_by_no: Dict[int, float] = (
             {tc.trip_no: tc.cost_krw for tc in eco.trips} if eco is not None else {}
         )
+        # [2026-06-07] 아이템 표기를 단면설계·물량 탭과 동일한 "모듈A-1" 식 타입
+        #   분류 라벨로 통일. item.name(예: 'a모듈-1F#42') → source_index 로 원본
+        #   컴포넌트 cid 복원 → classify_component_types 라벨 조회.
+        type_labels: Dict[int, str] = {}
+        try:
+            if self._scene is not None:
+                from modular_3d.model.type_naming import classify_component_types
+                type_labels = classify_component_types(self._scene) or {}
+        except Exception:
+            type_labels = {}
         for row, trip in enumerate(pack.trips):
-            items_str = ", ".join(getattr(i, "name", "?") for i in trip.items)
+            items_str = self._format_trip_items(trip.items, type_labels)
             stacked = [s for s in trip.stacked_items if s is not None]
             if stacked:
-                items_str += " + 적층: " + ", ".join(getattr(s, "name", "?") for s in stacked)
+                items_str += " + 적층: " + self._format_trip_items(stacked, type_labels)
             # 화물중량/최대화물중량 — 분모는 트럭 적재 한도(truck.max_weight).
             cargo_max = f"{trip.cargo_weight:,.0f} / {trip.truck.max_weight:,.0f}"
             fare = cost_by_no.get(trip.trip_no)
@@ -1042,6 +1141,9 @@ class TransportTab(QWidget):
 
     def _render_override_table(self) -> None:
         """영역 ⑤ override 표 갱신 — 매 _run_transport 후 호출."""
+        # [2026-06-07] override 표 UI 제거 → 표가 없으면 아무것도 안 함(가드).
+        if getattr(self, '_override_table', None) is None:
+            return
         trips = self._displayed_trips
         self._override_table.setRowCount(len(trips))
         for row, trip in enumerate(trips):

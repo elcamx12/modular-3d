@@ -179,11 +179,16 @@ def _opening_key_raw(o, width: float, depth: float) -> tuple:
     return ('other', face, u, v, w, h)
 
 
-def _descriptor(comp, scene) -> dict:
+def _descriptor(comp, scene, group_subs=None, rooms_by_floor=None) -> dict:
     """모듈 구성을 raw(비양자화)로 모은 기술자 — 기준-거리 비교용.
 
     deps: 모듈 로컬(회전 풀림) 상대좌표·치수. openings: 로컬 불변키(raw).
     rooms: (실종류, 면적비%, 활하중, 고정하중). 의미는 _signature 와 동일.
+
+    [성능] group_subs(gid→sub부재 리스트), rooms_by_floor(floor→실 리스트)를
+    넘기면 scene 전체 순회를 피해 부재당 O(1)~O(자기그룹) 으로 동작한다(없으면
+    scene 전체 순회 폴백). classify_component_types 가 이 인덱스를 1회 만들어
+    전달하므로 전체 분류가 O(N^2)→O(N) 이 된다.
     """
     px = float(comp.position[0])
     py = float(comp.position[1])
@@ -193,11 +198,14 @@ def _descriptor(comp, scene) -> dict:
 
     deps = []
     if gid:
-        for c2 in scene.components.values():
-            if int(getattr(c2, 'group_id', 0) or 0) != gid:
-                continue
-            if int(getattr(c2, 'sub_index', 0)) == 0:
-                continue
+        if group_subs is not None:
+            sub_list = group_subs.get((gid, fi), ())
+        else:
+            sub_list = [c2 for c2 in scene.components.values()
+                        if int(getattr(c2, 'group_id', 0) or 0) == gid
+                        and int(getattr(c2, 'sub_index', 0)) != 0
+                        and int(getattr(c2, 'floor_index', 0) or 0) == fi]
+        for c2 in sub_list:
             dd = c2.dimensions
             lx, ly = _rot2d_int(float(c2.position[0]) - px,
                                 float(c2.position[1]) - py, -rot)
@@ -232,9 +240,12 @@ def _descriptor(comp, scene) -> dict:
         xmin = xmax = ymin = ymax = None
         module_area = 1.0
     if xmin is not None:
-        for room in (getattr(scene, 'rooms', {}) or {}).values():
-            if int(getattr(room, 'floor_index', 0)) != fi:
-                continue
+        if rooms_by_floor is not None:
+            room_iter = rooms_by_floor.get(fi, ())
+        else:
+            room_iter = [r for r in (getattr(scene, 'rooms', {}) or {}).values()
+                         if int(getattr(r, 'floor_index', 0)) == fi]
+        for room in room_iter:
             try:
                 cx, cy = room.centroid()
             except Exception:
@@ -460,6 +471,19 @@ def classify_component_types(scene) -> Dict[int, str]:
         indep.append((cid, c))
 
     labels: Dict[int, str] = {}
+    # [성능] _descriptor 가 scene 전체를 순회하지 않도록 인덱스 1회 구축 → O(N).
+    # [성능·정확] (그룹, 층) 별로 종속을 모은다. 라벨은 '한 모듈(=한 층)의 구성'
+    # 으로 판정하므로 deps 가 층수에 비례해 커지지 않는다(예전엔 그룹의 모든 층
+    # 종속을 한 모듈 deps 로 봐서, 층수↑ → deps↑ → 백트래킹 매칭이 N! 로 폭발).
+    group_subs: Dict[tuple, list] = defaultdict(list)
+    for _cid, _c in scene.components.items():
+        if int(getattr(_c, 'sub_index', 0)) != 0:
+            group_subs[(int(getattr(_c, 'group_id', 0) or 0),
+                        int(getattr(_c, 'floor_index', 0) or 0))].append(_c)
+    rooms_by_floor: Dict[int, list] = defaultdict(list)
+    for _room in (getattr(scene, 'rooms', {}) or {}).values():
+        rooms_by_floor[int(getattr(_room, 'floor_index', 0))].append(_room)
+
     by_type: Dict[object, list] = defaultdict(list)
     for cid, c in indep:
         by_type[c.comp_type].append((cid, c))
@@ -483,7 +507,7 @@ def classify_component_types(scene) -> Dict[int, str]:
             # 이후 부재는 본보기와 실제 거리가 유격 이내면 같은 번호로 묶는다.
             reps = []   # [(descriptor, number)]
             for cid, c in sorted(group, key=lambda t: t[0]):
-                desc = _descriptor(c, scene)
+                desc = _descriptor(c, scene, group_subs, rooms_by_floor)
                 num = None
                 for rdesc, rnum in reps:
                     if _same_composition(rdesc, desc):

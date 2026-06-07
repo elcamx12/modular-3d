@@ -317,7 +317,7 @@ class F5Mixin:
             return
 
         from modular_3d.model.multi_floor import create_multi_floor_group
-        from modular_3d.render.mesh_builder import build_component_mesh
+        from modular_3d.render.mesh_builder import build_component_mesh, _shape_key
         import copy as _copy
 
         # 1. 1층 메타정보 수집 — 본체와 종속 분리
@@ -465,7 +465,8 @@ class F5Mixin:
             for cid in ids:
                 comp = self._scene.components[cid]
                 v, f, c = build_component_mesh(comp)
-                self._viewer.add_component_visual(cid, v, f, c)
+                self._viewer.add_component_visual(cid, v, f, c,
+                                                  form_key=_shape_key(comp))
                 self._snap.add_component(cid, comp)
             # [정책 2026-05-12] 코어 슬래브 자동 생성 폐지 — 더 이상 슬래브가
             # 동반 생성되지 않으므로 viewer/snap 청소·등록 분기 불필요.
@@ -524,7 +525,8 @@ class F5Mixin:
             for cid in ids:
                 comp = self._scene.components[cid]
                 v, f, c = build_component_mesh(comp)
-                self._viewer.add_component_visual(cid, v, f, c)
+                self._viewer.add_component_visual(cid, v, f, c,
+                                                  form_key=_shape_key(comp))
                 self._snap.add_component(cid, comp)
 
         # 4-b. 코어 슬래브 재복제 — 층 변경에도 슬래브 + 코어벽 종속관계 유지.
@@ -546,10 +548,11 @@ class F5Mixin:
                     if c is None:
                         continue
                     v, f, cl = build_component_mesh(c)
-                    self._viewer.add_component_visual(cid, v, f, cl)
+                    self._viewer.add_component_visual(cid, v, f, cl,
+                                                      form_key=_shape_key(c))
                     self._snap.add_component(cid, c)
 
-        # [3D 복제 최적화 2단계] 묶음 전송 종료 — 모인 부재를 1회로 올린다.
+        # [3D 복제 최적화 2·3단계] 묶음 전송 종료 — 형상별 인스턴싱으로 1회 올림.
         self._viewer.end_batch()
 
         self._status.update_count(self._scene.component_count)

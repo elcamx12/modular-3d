@@ -721,18 +721,8 @@ class EvaluationPanel(QWidget):
         policy = mat.get("current_policy", "—")
         self._c_policy_lbl.setText(f"정책: {policy}")
 
-        # ① 채택 단면 — 맨 위
-        groups = mat.get("groups") or []
-        if groups:
-            gtxt = " · ".join(f"{g['group']}:{g['section']}" for g in groups)
-            gl = QLabel(f"채택 단면 — {gtxt}")
-            gl.setStyleSheet(
-                f"font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
-                f" color: {_HEADLINE_BORDER}; font-size: 13px; font-weight: 700;"
-                " padding: 2px 0 4px 0; background: transparent;"
-            )
-            gl.setWordWrap(True)
-            self._c_inner.addWidget(gl)
+        # [2026-06-07] ① '채택 단면 — …' 한 줄 라벨 제거 — 아래 강재 본수표에
+        # 이미 단면명이 나오는데 이 라벨이 표 위 공간을 다 차지해서 삭제.
 
         # ② 강재 본수표 — 가운데, stretch=1 로 빈 공간 흡수
         rows = mat.get("steel_rows") or []
@@ -750,10 +740,13 @@ class EvaluationPanel(QWidget):
                     f"{total_row['total_length_m']:,.2f}",
                     f"{total_row['total_weight_ton']:.3f}",
                 ])
+            # [2026-06-07] 단면 컬럼이 stretch 로 남는 폭을 다 먹어 너무 넓었다.
+            #   stretch 를 빼서 단면을 내용 너비로 줄이고(약 1/3), 표 전체 폭도 축소.
+            #   길이·본수 등 나머지 수치 컬럼은 그대로 내용 폭 유지.
             tbl = self._table(
                 ["단면", "길이(mm)", "본수", "총길이(m)", "총중량(t)"],
                 tbl_rows,
-                stretch_col=0,
+                stretch_col=None,
             )
             # 표 max-height 풀어서 카드 안 빈 공간 흡수.
             tbl.setMaximumHeight(16777215)

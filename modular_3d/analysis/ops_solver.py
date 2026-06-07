@@ -51,6 +51,14 @@ from modular_3d._utils.debug import dprint
 # 세 솔버(수직·지진·풍) 모두 동일 값 사용. 한 곳에서 조정하도록 헬퍼화.
 _PENALTY_ALPHA = 1.0e14
 
+# 선형 방정식 솔버 — 세 솔버(수직·지진·풍) 공통.
+# [2026-06-07 성능] 기존 'BandGen'(밴드 직접솔버)은 대규모 모델에서 분해가 느렸다
+# (18층 2947부재 기준 1케이스 약 4.9초). 희소 직접솔버 'UmfPack' 으로 교체하면
+# 같은 방정식을 풀면서 1케이스 약 1.6초로 약 3배 빨라진다. 결과 동일성은
+# _verify_solver_swap.py 로 전 하중조합(지진·풍 포함) 검증 — 변위차 3e-5mm,
+# 부재력차 6e1 N·mm 수준의 순수 수치오차.
+_LINEAR_SOLVER = 'UmfPack'
+
 
 def _apply_penalty_constraints() -> None:
     """OpenSees constraints handler 를 Penalty(α, α) 로 설정."""
@@ -505,7 +513,7 @@ def solve_vertical(om: OpsModel, scene,
     # 일부 노드 반력에 미세 오차(0.5~2%)가 누적되는 경우가 있으므로 Penalty 사용.
     _apply_penalty_constraints()
     ops.numberer('RCM')
-    ops.system('BandGen')
+    ops.system(_LINEAR_SOLVER)
     ops.test('NormDispIncr', 1.0e-6, 50)
     ops.algorithm('Linear')
     ops.integrator('LoadControl', 1.0)
@@ -904,7 +912,7 @@ def solve_seismic(om: OpsModel, scene, direction: str = 'X',
     # 수직(D+L) 케이스는 외력이 elemental load 라 Penalty 가 정상 작동, 그대로 유지.
     _apply_penalty_constraints()
     ops.numberer('RCM')
-    ops.system('BandGen')
+    ops.system(_LINEAR_SOLVER)
     ops.test('NormDispIncr', 1.0e-6, 50)
     ops.algorithm('Linear')
     ops.integrator('LoadControl', 1.0)
@@ -930,7 +938,7 @@ def solve_wind(om: OpsModel, scene, direction: str = 'X') -> OpsResults:
     # solve_seismic 과 동일 사유로 Transformation 사용.
     _apply_penalty_constraints()
     ops.numberer('RCM')
-    ops.system('BandGen')
+    ops.system(_LINEAR_SOLVER)
     ops.test('NormDispIncr', 1.0e-6, 50)
     ops.algorithm('Linear')
     ops.integrator('LoadControl', 1.0)
