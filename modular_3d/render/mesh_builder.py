@@ -626,6 +626,8 @@ def set_wall_fill_visible(show: bool) -> None:
     """배치설계 벽 채움면 표시 토글. 변경 후 부재 재빌드는 호출측 책임."""
     global _SHOW_WALL_FILL
     _SHOW_WALL_FILL = bool(show)
+    # 형상(벽 표시 유무)이 바뀌므로 형상 캐시를 무효화.
+    clear_mesh_cache()
 
 
 def build_struct_wall_mesh(wall, outer_anchor=False) -> MeshData:
@@ -764,10 +766,58 @@ _MESH_BUILDERS = {
 }
 
 
+# ── 형상 캐시 (3D 복제 최적화 1단계) ───────────────────────
+# [함정] 같은 형상의 부재는 메시 정점 = (부재 position) + (형상 오프셋) 이 성립한다
+# (A/B/C 전수검증으로 확인: 같은 형상지문이면 z뿐 아니라 xy 평행이동만 다름).
+# 그래서 '위치를 뺀 로컬 형상'을 캐시해 두고, 다음 같은 형상 부재는 그 부재
+# position 만 더해 돌려준다. 형상에 영향을 주는 모든 속성을 키에 넣어야 한다 —
+# 하나라도 빠지면 다른 형상이 같은 키로 잘못 공유된다. 특히 _SHOW_WALL_FILL
+# (벽체 표시 전역 토글)은 메시 구성을 바꾸므로 키에 포함하고, 토글 변경 시에는
+# set_wall_fill_visible 에서 캐시를 비운다.
+_MESH_CACHE: dict = {}
+
+
+def clear_mesh_cache() -> None:
+    """형상 캐시 비우기 — 전역 표시 옵션 변경 등으로 형상이 달라질 때 호출."""
+    _MESH_CACHE.clear()
+
+
+def _shape_key(comp):
+    """형상에 영향을 주는 속성만으로 캐시 키 구성(위치는 제외)."""
+    dims = dict(getattr(comp, 'dimensions', {}))
+    ops = getattr(comp, 'openings', None) or []
+    return (
+        comp.comp_type.value,
+        int(getattr(comp, 'rotation', 0)),
+        int(getattr(comp, 'anchor', 0)),
+        str(getattr(comp, 'beam_section_type', 'shs')),
+        bool(getattr(comp, 'merge_with_panel', False)),
+        repr(sorted((k, str(v)) for k, v in dims.items())),
+        repr(ops),
+        bool(_SHOW_WALL_FILL),
+    )
+
+
 def build_component_mesh(comp) -> MeshData:
-    """부재 타입에 따라 적절한 메쉬 빌더 호출. 미지의 타입은 module 폴백."""
+    """부재 타입에 따라 적절한 메쉬 빌더 호출. 미지의 타입은 module 폴백.
+
+    [3D 복제 최적화] 같은 형상은 한 번만 빌드하고, 이후엔 캐시된 로컬 형상에
+    부재 position 을 더해 재사용한다. 첫 빌드 결과는 원본 그대로 반환(비트 동일),
+    이후 재사용분은 부동소수 한계(좌표 크기 대비 ~0.005mm) 내에서 동일하다.
+    """
+    key = _shape_key(comp)
+    pos = np.asarray(comp.position, dtype=np.float64)
+    cached = _MESH_CACHE.get(key)
+    if cached is not None:
+        local_v, faces, colors = cached
+        verts = (local_v + pos).astype(np.float32)
+        return verts, faces, colors
     builder = _MESH_BUILDERS.get(comp.comp_type, build_module_mesh)
-    return builder(comp)
+    verts, faces, colors = builder(comp)
+    # 위치를 뺀 로컬 형상 저장 — 다음 같은 형상 부재가 재사용.
+    local_v = verts.astype(np.float64) - pos
+    _MESH_CACHE[key] = (local_v, faces, colors)
+    return verts, faces, colors
 
 
 def build_ghost_component_mesh(comp) -> MeshData:

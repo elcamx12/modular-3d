@@ -416,6 +416,11 @@ class F5Mixin:
         self._scene.components.clear()
         self._scene.undo_stack.clear()
 
+        # [3D 복제 최적화 2단계] 본체·종속·코어슬래브 재생성의 add_component_visual
+        # 을 묶음 전송으로 모은다(아래 end_batch 까지). three.js 로의 직렬화·IPC 가
+        # 부재 수만큼 → 1회로 줄어든다. vispy 는 no-op 이라 영향 없음.
+        self._viewer.begin_batch()
+
         # 3. 본체 N층 재생성 + group_id 매핑(원본 → 새)
         gid_map = {}
         # (벽패널 본체 시드 → 합체할 FP 의 새 그룹 ID) 보관 — FP 재생성 후 매칭.
@@ -543,6 +548,9 @@ class F5Mixin:
                     v, f, cl = build_component_mesh(c)
                     self._viewer.add_component_visual(cid, v, f, cl)
                     self._snap.add_component(cid, c)
+
+        # [3D 복제 최적화 2단계] 묶음 전송 종료 — 모인 부재를 1회로 올린다.
+        self._viewer.end_batch()
 
         self._status.update_count(self._scene.component_count)
         self._auto_regen_core_slabs()

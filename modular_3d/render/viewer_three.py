@@ -69,6 +69,12 @@ class ViewerThree:
         self._loaded = False
         self._pending_calls: list[str] = []
 
+        # [3D 복제 최적화 2단계] 묶음 전송 모드. begin_batch()~end_batch() 사이의
+        # add_component_visual 은 즉시 전송하지 않고 _batch_items 에 모았다가
+        # end_batch 에서 window.addComponents 로 한 번에 보낸다(직렬화·IPC 1회).
+        self._batching = False
+        self._batch_items: list[dict] = []
+
         # WebChannel 브리지 — JS → Python (M4 이후 사용)
         self._channel = QWebChannel()
         self._bridge = _ViewerThreeBridge()
@@ -116,16 +122,39 @@ class ViewerThree:
     # ────────────────────────────────────────────────────────
     # M2-b 대상 — 부재·실 메쉬 (현재는 골격, 본문 비어 있음)
     # ────────────────────────────────────────────────────────
+    def begin_batch(self) -> None:
+        """묶음 전송 시작 — 이후 add_component_visual 은 큐에 모인다."""
+        self._batching = True
+        self._batch_items = []
+
+    def end_batch(self) -> None:
+        """묶음 전송 종료 — 모인 부재를 window.addComponents 로 1회 전송."""
+        if not self._batching:
+            return
+        self._batching = False
+        items = self._batch_items
+        self._batch_items = []
+        if not items:
+            return
+        payload = _to_json({'items': items})
+        self._run_js(f'window.addComponents({payload});')
+
     def add_component_visual(self, comp_id: int, vertices: np.ndarray,
                              faces: np.ndarray, face_colors: np.ndarray) -> None:
-        """부재 메쉬 추가. Viewer3D.add_component_visual 와 동일 시그너처."""
-        payload = _to_json({
+        """부재 메쉬 추가. Viewer3D.add_component_visual 와 동일 시그너처.
+
+        묶음 모드(begin_batch~end_batch)면 즉시 전송하지 않고 큐에 적재한다.
+        """
+        item = {
             'comp_id': int(comp_id),
             'vertices': _ndarray_to_list(vertices),
             'faces': _ndarray_to_list(faces),
             'face_colors': _ndarray_to_list(face_colors),
-        })
-        self._run_js(f'window.addComponent({payload});')
+        }
+        if self._batching:
+            self._batch_items.append(item)
+            return
+        self._run_js(f'window.addComponent({_to_json(item)});')
 
     def remove_component_visual(self, comp_id: int) -> None:
         self._run_js(f'window.removeComponent({int(comp_id)});')

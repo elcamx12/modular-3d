@@ -1961,13 +1961,17 @@ class MainWindow(QMainWindow):
                 v.remove_component_visual(cid)
             except Exception:
                 pass
-        # 새로 빌드
-        for cid, comp in self._scene.components.items():
-            try:
-                verts, faces, colors = build_component_mesh(comp)
-                v.add_component_visual(cid, verts, faces, colors)
-            except Exception as e:
-                dprint('VIEW', f'[VIEW] id={cid} 재빌드 실패: {type(e).__name__}: {e}')
+        # 새로 빌드 — 묶음 전송으로 한 번에 올림(3D 복제 최적화 2단계).
+        v.begin_batch()
+        try:
+            for cid, comp in self._scene.components.items():
+                try:
+                    verts, faces, colors = build_component_mesh(comp)
+                    v.add_component_visual(cid, verts, faces, colors)
+                except Exception as e:
+                    dprint('VIEW', f'[VIEW] id={cid} 재빌드 실패: {type(e).__name__}: {e}')
+        finally:
+            v.end_batch()
 
     # ── 접합부 조정 탭 — 와이어프레임 프리뷰 (solve 미실행) ──
 

@@ -466,6 +466,15 @@ class Viewer3D:
 
     # ── 부재 비주얼 관리 ─────────────────────────────────────
 
+    def begin_batch(self):
+        """[3D 복제 최적화 2단계] 묶음 전송 — vispy 는 즉시 그리므로 no-op.
+        ViewerThree 만 묶음 모드로 동작(Strangler broadcast 안전용)."""
+        pass
+
+    def end_batch(self):
+        """묶음 전송 종료 — vispy no-op."""
+        pass
+
     def add_component_visual(self, comp_id: int, vertices, faces, face_colors):
         # [2026-05-25 버그수정] 같은 comp_id 의 기존 메시를 먼저 scene 에서 제거.
         # 안 하면 dict 만 덮어쓰고 옛 메시가 parent 채로 화면에 잔류(유령 메시) →

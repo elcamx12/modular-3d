@@ -60,6 +60,8 @@ _BROADCAST_METHODS = frozenset({
     'show_selection_box', 'hide_selection_box',
     'highlight_member', 'clear_member_highlight',
     'set_dof_color_mode',
+    # [3D 복제 최적화 2단계] 묶음 전송 — three 만 모았다가 1회 전송, vispy 는 no-op.
+    'begin_batch', 'end_batch',
 })
 
 # Viewer3D 에서만 응답하는 *조회* 메서드 — 카메라·픽킹·상태 등

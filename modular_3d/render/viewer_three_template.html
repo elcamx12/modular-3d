@@ -209,7 +209,8 @@ function _buildMeshFromMeshData(verticesList, facesList, faceColorsList) {
 // M2-a: 시그너처 + 빈 본문. M2-b 에서 실 동작 구현.
 // ─────────────────────────────────────────────────────────
 
-window.addComponent = function(payload) {
+// 부재 1개를 scene 에 추가/교체 (window.addComponent / addComponents 공용 본문).
+function _addOneComponent(payload) {
   // payload = { comp_id, vertices, faces, face_colors }
   const id = payload.comp_id;
   if (componentMeshes[id]) {
@@ -223,7 +224,21 @@ window.addComponent = function(payload) {
   mesh.userData.comp_id = id;
   scene.add(mesh);
   componentMeshes[id] = mesh;
+}
+
+window.addComponent = function(payload) {
+  _addOneComponent(payload);
   _hideEmptyMsg();
+};
+
+// [3D 복제 최적화 2단계] 여러 부재를 한 번의 호출로 추가 — 직렬화·IPC 1회.
+// 결과는 부재별 addComponent 를 N 번 부른 것과 완전히 동일(같은 본문 사용).
+window.addComponents = function(payload) {
+  const items = (payload && payload.items) || [];
+  for (let i = 0; i < items.length; i++) {
+    _addOneComponent(items[i]);
+  }
+  if (items.length) _hideEmptyMsg();
 };
 
 // [2026-05-30 B3] z축 단면 절단 — enabled 면 z(높이) 위를 잘라 평면을 본다.
