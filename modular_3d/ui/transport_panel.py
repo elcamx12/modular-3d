@@ -286,13 +286,7 @@ class TransportTab(QWidget):
         right_lay = QVBoxLayout(self._right_pane_wrap)
         right_lay.setContentsMargins(12, 12, 12, 12)
         right_lay.setSpacing(10)
-        # 패널 헤더 라벨(Paperlogy) — 다른 탭과 동일한 제목 톤.
-        _hdr = QLabel('운송 계획')
-        _hdr.setStyleSheet(
-            f"font-family:'{F_HEAD}','Malgun Gothic',sans-serif;"
-            f" font-size:20px; font-weight:800; color:{_HEAD_FG};"
-            " background:transparent; padding:2px;")
-        right_lay.addWidget(_hdr)
+        # [2026-06-07] '운송 계획' 헤더 라벨 제거 — 탭 제목과 중복, 세로 공간 확보.
         right_lay.addWidget(self._build_area_options())      # ② 옵션 + [▷ 실행]
         right_lay.addWidget(self._build_area_metrics())      # ③ 결과 요약
         right_lay.addWidget(self._build_area_subtabs(), stretch=1)  # ④ 회차표
@@ -352,6 +346,11 @@ class TransportTab(QWidget):
         self._ref_btn = QPushButton("📖 참고자료")
         self._ref_btn.setToolTip("운송 도메인 참고문서 (references/*.md 자동 탭)")
         self._ref_btn.clicked.connect(self._open_references_dialog)
+        # [2026-06-07] 참고자료 버튼 절반 크기(높이·폭) — 회차표에 공간 양보.
+        self._ref_btn.setFixedHeight(20)
+        self._ref_btn.setMaximumWidth(90)
+        self._ref_btn.setStyleSheet(
+            "QPushButton { font-size: 11px; padding: 1px 6px; }")
         row.addWidget(self._ref_btn)
         row.addStretch(1)
         return wrap
@@ -496,6 +495,10 @@ class TransportTab(QWidget):
         for s in (self._lowbed_fixed_spin, self._extend_fixed_spin,
                   self._aframe_fixed_spin):
             self._set_form_row_visible(s, is_fixed)
+        # [2026-06-07] 결과 요약 '총 거리' 카드 — km단가 방식에서만 표시(거리 기반 운임).
+        card = getattr(self, '_metric_cards', {}).get('total_distance')
+        if card is not None:
+            card.setVisible(is_per_km)
 
     def _wire_auto_recompute(self) -> None:
         """옵션 위젯 변경을 무효화 단계와 함께 연결.
@@ -544,6 +547,7 @@ class TransportTab(QWidget):
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(8)
         self._metric_labels: Dict[str, QLabel] = {}
+        self._metric_cards: Dict[str, QFrame] = {}   # 카드별 표시/숨김용
         for key, title in [
             ("module_trips", "모듈 회차"),
             ("panel_trips", "패널 회차"),
@@ -575,6 +579,7 @@ class TransportTab(QWidget):
             cl.addWidget(v)
             lay.addWidget(card)
             self._metric_labels[key] = v
+            self._metric_cards[key] = card
         lay.addStretch(1)
         return box
 
@@ -712,6 +717,18 @@ class TransportTab(QWidget):
             return
         site = self._site_limit
         self.set_state("Computing")
+        # [2026-06-08] 진행 표시 콜백 — 모듈은 타입 하나 끝날 때마다, 패널은 1회
+        #   완료 시 실행 버튼 텍스트에 표시. processEvents 로 즉시 다시 그린다
+        #   (% 단위로 매번 갱신하지 않고 단계 단위로만).
+        from PyQt5.QtWidgets import QApplication
+
+        def _progress(msg: str) -> None:
+            try:
+                self._run_btn.setText(f"⏳ {msg}")
+                QApplication.processEvents()
+            except Exception:
+                pass
+
         try:
             options = self._read_options()
             spacing = self._read_spacing()
@@ -720,7 +737,7 @@ class TransportTab(QWidget):
             pack = self._cache.get_or_compute_pack(
                 self._scene, self._model, design, self._current_policy,
                 options, self._trucks, site, spacing,
-                economics=economics,
+                economics=economics, progress=_progress,
             )
         except TransportError as e:
             self.set_state("Error")
@@ -733,6 +750,28 @@ class TransportTab(QWidget):
 
         self._last_pack = pack
         self._last_ti = self._cache.transport_input
+
+        # [2026-06-08] 패킹 실패(못 실은 부재 blocked) 있으면 바로 중단 + 경고창.
+        blocked = getattr(pack, "blocked", None) or []
+        if blocked:
+            lines = []
+            for entry in blocked[:8]:
+                try:
+                    item, reason = entry
+                    nm = getattr(item, "name", "?")
+                except Exception:
+                    nm, reason = "?", str(entry)
+                lines.append(f"· {nm} — {reason}")
+            more = f"\n… 외 {len(blocked) - 8}건" if len(blocked) > 8 else ""
+            self._run_btn.setText("▷ 운송 계산 실행 (재시도)")
+            self.set_state("Error")
+            self.transport_blocked.emit(len(blocked))
+            QMessageBox.warning(
+                self, "운송 패킹 실패",
+                f"운송에 실을 수 없는 부재 {len(blocked)}건이 있어 계산을 중단했습니다.\n\n"
+                + "\n".join(lines) + more
+                + "\n\n트럭 카탈로그·현장 제한(GVW/폭/높이)·부재 치수를 확인하세요.")
+            return
 
         # [2026-06-03 진단] 모듈 0회차 버그 추적 — 모듈은 추출됐는데 회차가 0인
         #   경우, 어디서 막혔는지(블록/적재실패/캐시) 콘솔에 한 줄 남긴다.

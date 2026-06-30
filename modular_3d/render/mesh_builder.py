@@ -19,7 +19,11 @@ COLOR_CEIL_BEAM     = np.array([0.333, 0.600, 0.867, 1.0], dtype=np.float32)  # 
 COLOR_CEIL_BEAM_IN  = np.array([0.250, 0.450, 0.650, 1.0], dtype=np.float32)  # 천장보 내부면
 COLOR_SLAB          = np.array([0.824, 0.824, 0.745, 1.0], dtype=np.float32)  # 0xD2D2BE 슬래브
 COLOR_WALL_NL       = np.array([0.467, 0.600, 0.667, 1.0], dtype=np.float32)  # 0x7799AA 비내력 벽체
-COLOR_WALL_NL_PARTITION = np.array([0.467, 0.600, 0.667, 0.35], dtype=np.float32)  # 반투명
+# [2026-06-11] 내벽·모듈 외피 벽 채움 색 — 반투명 파란회색에서 '밝은 회색 솔리드'로
+#   변경. 3D 뷰는 face 색의 RGB만 쓰고 alpha 는 무시하므로(불투명 렌더) 단면을
+#   잘라도 어둡게 비쳐 보이던 문제를 없애고, 배경과 구분되도록 밝게 한다. 이 색은
+#   three.js 측 윤곽선(WALL_RGB) 매칭 기준이기도 하므로 다른 부재 색과 충분히 구분됨.
+COLOR_WALL_NL_PARTITION = np.array([0.860, 0.870, 0.900, 1.0], dtype=np.float32)  # 밝은 회색 솔리드
 COLOR_WINDOW        = np.array([0.533, 0.800, 0.933, 1.0], dtype=np.float32)  # 0x88CCEE 창호
 
 MeshData = Tuple[np.ndarray, np.ndarray, np.ndarray]  # (vertices, faces, face_colors)
@@ -531,6 +535,11 @@ def build_component_class_meshes(comp, outer_anchor=False) -> dict:
         return out
 
     cols = _flat(getattr(comp, 'columns', []))
+    # [2026-06-08] 중간기둥(MidColumn)은 단수 'column' 에 기둥을 담는다(복수 'columns'
+    #   없음). 일반 기둥과 동일하게 'column' 색 클래스로 그려지도록 단수도 수집한다.
+    _single_col = getattr(comp, 'column', None)
+    if _single_col is not None and hasattr(_single_col, 'base'):
+        cols = list(cols) + [_single_col]
     ceil_beams = _flat(getattr(comp, 'top_beams', []))
     floor_beams = _flat(getattr(comp, 'bottom_beams', [])) + _flat(getattr(comp, 'edge_beams', []))
     tr = getattr(comp, 'top_runner', None)

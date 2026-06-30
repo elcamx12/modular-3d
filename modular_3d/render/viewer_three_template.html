@@ -64,6 +64,9 @@ let roomGhostMesh = null;
 let snapMarker = null;
 let selectionBox = null;
 
+// 벽 채움 색(mesh_builder COLOR_WALL_NL_PARTITION) — 벽 전용 재질·윤곽선 판별 기준.
+const WALL_RGB = [0.860, 0.870, 0.900];
+
 // ─────────────────────────────────────────────────────────
 // 초기화
 // ─────────────────────────────────────────────────────────
@@ -148,7 +151,14 @@ function init() {
 function onResize() {
   const container = document.getElementById('container');
   const w = container.clientWidth, h = container.clientHeight;
-  camera.aspect = w / h;
+  if (camera.isOrthographicCamera) {
+    // 직교: 세로 범위(top/bottom)는 유지하고 가로만 종횡비에 맞춰 갱신.
+    const aspect = w / Math.max(1, h);
+    camera.left = -camera.top * aspect;
+    camera.right = camera.top * aspect;
+  } else {
+    camera.aspect = w / h;
+  }
   camera.updateProjectionMatrix();
   renderer.setSize(w, h);
 }
@@ -158,6 +168,74 @@ function animate() {
   controls.update();
   renderer.render(scene, camera);
 }
+
+// ─────────────────────────────────────────────────────────
+// [2026-06-11] 카메라 프리셋 — 아이소메트릭 / 위에서 보기(정확히 90°).
+// 장면 bounding box 로 중심·반경을 구해 전체가 화면에 들어오게 맞춘다.
+// ─────────────────────────────────────────────────────────
+function _sceneFit() {
+  const box = new THREE.Box3().setFromObject(scene);
+  if (box.isEmpty()) return { ctr: new THREE.Vector3(3000, 3000, 1500), radius: 20000 };
+  const ctr = new THREE.Vector3(); box.getCenter(ctr);
+  const size = new THREE.Vector3(); box.getSize(size);
+  const radius = 0.5 * Math.max(size.x, size.y, size.z, 1000);
+  return { ctr: ctr, radius: radius };
+}
+
+// 직교(Orthographic) 카메라로 전환 — 소실점 없는 진짜 아이소메트릭/평면 뷰.
+//   원근 카메라로 각도만 맞추면 멀리 있는 부재가 작아지는 왜곡이 남으므로,
+//   두 프리셋 버튼은 투영 자체를 직교로 바꾼다. 이후 마우스 회전·줌도 직교 유지.
+let orthoCamera = null;
+
+function _applyOrthoView(pos, ctr, up, radius) {
+  const container = document.getElementById('container');
+  const w = container.clientWidth, h = container.clientHeight;
+  const aspect = w / Math.max(1, h);
+  const half = radius * 1.15;                     // 전체가 들어오게 약간 여유
+  if (!orthoCamera) {
+    orthoCamera = new THREE.OrthographicCamera(
+      -half * aspect, half * aspect, half, -half, 10, 4000000);
+  } else {
+    orthoCamera.left = -half * aspect; orthoCamera.right = half * aspect;
+    orthoCamera.top = half;            orthoCamera.bottom = -half;
+  }
+  orthoCamera.zoom = 1;
+  orthoCamera.up.copy(up);
+  orthoCamera.position.copy(pos);
+  orthoCamera.lookAt(ctr);
+  orthoCamera.updateProjectionMatrix();
+  camera = orthoCamera;
+  // OrbitControls 는 카메라에 묶이므로 새 카메라로 재생성(target 유지).
+  if (controls) controls.dispose();
+  controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.target.copy(ctr);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.screenSpacePanning = false;
+  controls.minZoom = 0.05;                        // 직교는 거리 대신 zoom 으로 줌
+  controls.maxZoom = 50;
+  controls.update();
+}
+
+window.setViewIso = function () {
+  const f = _sceneFit();
+  const dist = f.radius * 3 + 10000;              // 직교라 거리는 깊이 여유용
+  const elev = 35.264 * Math.PI / 180;            // 정 아이소메트릭 앙각
+  const azim = (-60 - 90) * Math.PI / 180;        // 초기 시점과 같은 방위감
+  const pos = new THREE.Vector3(
+    f.ctr.x + dist * Math.cos(elev) * Math.sin(azim),
+    f.ctr.y + dist * Math.cos(elev) * Math.cos(azim),
+    f.ctr.z + dist * Math.sin(elev));
+  _applyOrthoView(pos, f.ctr, new THREE.Vector3(0, 0, 1), f.radius);
+};
+
+window.setViewTop = function () {
+  const f = _sceneFit();
+  const dist = f.radius * 3 + 10000;
+  const pos = new THREE.Vector3(f.ctr.x, f.ctr.y, f.ctr.z + dist);
+  // +y 가 화면 위(평면도 방향), 정확히 90° 수직 내려보기 — 직교라 진짜 평면도.
+  _applyOrthoView(pos, f.ctr, new THREE.Vector3(0, 1, 0), f.radius);
+};
 
 // ─────────────────────────────────────────────────────────
 // 메쉬 빌더 헬퍼 — vertices/faces/face_colors → BufferGeometry
@@ -218,21 +296,168 @@ function _addOneComponent(payload) {
   // payload = { comp_id, vertices, faces, face_colors }
   const id = payload.comp_id;
   if (componentMeshes[id]) {
-    scene.remove(componentMeshes[id]);
-    componentMeshes[id].geometry.dispose();
-    componentMeshes[id].material.dispose();
+    const old = componentMeshes[id];
+    scene.remove(old);
+    old.geometry.dispose();
+    old.material.dispose();
+    old.children.forEach(function (ch) {         // 벽 윤곽선 자식 정리
+      if (ch.geometry) ch.geometry.dispose();
+      if (ch.material) ch.material.dispose();
+    });
     delete componentMeshes[id];
   }
   const mesh = _buildMeshFromMeshData(
     payload.vertices, payload.faces, payload.face_colors);
   mesh.userData.comp_id = id;
+  _applyWallSolidMaterial(mesh, payload.face_colors);
+  _maybeAddWallOutline(mesh, payload.face_colors);
   scene.add(mesh);
   componentMeshes[id] = mesh;
+}
+
+// 전 face 가 벽 채움 색인 메쉬(내벽 등 벽 단독 부재)인가.
+function _allWallColor(fc) {
+  if (!fc || !fc.length) return false;
+  for (let i = 0; i < fc.length; i++) if (!_isWallColor(fc[i])) return false;
+  return true;
+}
+
+// 벽 단독 메쉬는 조명 영향이 없는 단색(밝은 회색) 재질로 교체.
+//   조명 음영(Lambert)을 받으면 보는 방향·잘린 안쪽 면에 따라 어둡게 보여
+//   '속 빈 테두리' 느낌이 났다. 무음영 단색이면 단면으로 잘라 안쪽 면이
+//   드러나도 바깥과 똑같은 밝은 회색 → 항상 속이 찬 솔리드로 보인다.
+function _applyWallSolidMaterial(mesh, fc) {
+  if (!_allWallColor(fc)) return;
+  mesh.userData.isWall = true;
+  mesh.geometry.computeBoundingBox();   // 단면 교차 윤곽선 계산용
+  mesh.material.dispose();
+  mesh.material = new THREE.MeshBasicMaterial({
+    color: new THREE.Color(WALL_RGB[0], WALL_RGB[1], WALL_RGB[2]),
+    side: THREE.DoubleSide,
+    clippingPlanes: _currentClipPlanes(),
+  });
+}
+
+// ─────────────────────────────────────────────────────────
+// [2026-06-11] 단면 교차 윤곽선 — 벽이 단면 평면에 잘리면, 잘린 자리(벽 AABB 와
+//   평면의 교차 사각형)에 검은 윤곽선을 그린다. 벽은 모두 축정렬 박스이므로
+//   교차선은 사각형 4변. 슬라이더 이동·부재 추가/제거 때마다 재계산.
+// ─────────────────────────────────────────────────────────
+let sectionOutlineMesh = null;
+
+function _ensureSectionOutline() {
+  if (sectionOutlineMesh) return;
+  sectionOutlineMesh = new THREE.LineSegments(
+    new THREE.BufferGeometry(),
+    new THREE.LineBasicMaterial({ color: 0x222222 }));  // 클리핑 없음 — 절단면 위에 그림
+  sectionOutlineMesh.frustumCulled = false;
+  scene.add(sectionOutlineMesh);
+}
+
+// 비인덱스 position 배열의 모든 삼각형을 절단 평면과 교차시켜 절단선 세그먼트를
+//   pts 에 수집 — 벽의 '실제 형상'(개구부 구멍 포함)으로 계산하므로 개구부 구간은
+//   선이 끊기고, 개구부 양옆(문설주) 자리엔 짧은 마감선이 정확히 생긴다.
+//   axisIdx: 절단축(1=y, 2=z), cut: 월드 절단값, (tx,ty,tz): 인스턴스 평행이동.
+function _collectCutSegments(pos, axisIdx, cut, tx, ty, tz, pts) {
+  const off = (axisIdx === 2) ? tz : ty;
+  // +0.5mm 미세 이동 — 정점이 평면 위에 정확히 놓이는 경우(좌표·슬라이더 모두
+  //   정수라 흔함)의 교차 누락을 피한다. 시각 차이는 없음.
+  const cutL = cut - off + 0.5;
+  for (let t = 0; t + 8 < pos.length; t += 9) {
+    const d0 = pos[t + axisIdx] - cutL;
+    const d1 = pos[t + 3 + axisIdx] - cutL;
+    const d2 = pos[t + 6 + axisIdx] - cutL;
+    if ((d0 > 0 && d1 > 0 && d2 > 0) || (d0 < 0 && d1 < 0 && d2 < 0)) continue;
+    const ds = [d0, d1, d2];
+    const found = [];
+    for (let e = 0; e < 3; e++) {
+      const i = e, j = (e + 1) % 3;
+      const di = ds[i], dj = ds[j];
+      if ((di > 0 && dj < 0) || (di < 0 && dj > 0)) {
+        const s = di / (di - dj);
+        const bi = t + i * 3, bj = t + j * 3;
+        found.push([
+          pos[bi]     + s * (pos[bj]     - pos[bi])     + tx,
+          pos[bi + 1] + s * (pos[bj + 1] - pos[bi + 1]) + ty,
+          pos[bi + 2] + s * (pos[bj + 2] - pos[bi + 2]) + tz,
+        ]);
+      }
+    }
+    if (found.length === 2) {
+      pts.push(found[0][0], found[0][1], found[0][2],
+               found[1][0], found[1][1], found[1][2]);
+    }
+  }
+}
+
+function _updateSectionOutlines() {
+  _ensureSectionOutline();
+  const pts = [];
+  // 단면 활성 판정 — 비활성 시 constant=1e9(사실상 무한대).
+  const zOn = window.sectionPlane && Math.abs(window.sectionPlane.constant) < 1e8;
+  const yOn = window.sectionPlaneY && Math.abs(window.sectionPlaneY.constant) < 1e8;
+  if (zOn || yOn) {
+    const zc = zOn ? window.sectionPlane.constant : 0;
+    const yc = yOn ? -window.sectionPlaneY.constant : 0;
+    // 독립 벽 메쉬 — bbox 로 교차 후보만 거른 뒤 실제 형상으로 절단선 계산.
+    for (const k in componentMeshes) {
+      const m = componentMeshes[k];
+      if (!m.userData.isWall || !m.geometry.boundingBox) continue;
+      const bb = m.geometry.boundingBox;
+      const pos = m.geometry.getAttribute('position').array;
+      if (zOn && bb.min.z < zc && zc < bb.max.z)
+        _collectCutSegments(pos, 2, zc, 0, 0, 0, pts);
+      if (yOn && bb.min.y < yc && yc < bb.max.y)
+        _collectCutSegments(pos, 1, yc, 0, 0, 0, pts);
+    }
+    // 인스턴스 벽 — 같은 형상을 인스턴스별 평행이동으로 반복 계산.
+    const mat = new THREE.Matrix4();
+    for (const k in instForms) {
+      const f = instForms[k];
+      if (!f.isWall) continue;
+      if (!f.geom.boundingBox) f.geom.computeBoundingBox();
+      const b = f.geom.boundingBox;
+      const pos = f.geom.getAttribute('position').array;
+      for (let i = 0; i < f.count; i++) {
+        f.mesh.getMatrixAt(i, mat);
+        const tx = mat.elements[12], ty = mat.elements[13], tz = mat.elements[14];
+        if (zOn && b.min.z + tz < zc && zc < b.max.z + tz)
+          _collectCutSegments(pos, 2, zc, tx, ty, tz, pts);
+        if (yOn && b.min.y + ty < yc && yc < b.max.y + ty)
+          _collectCutSegments(pos, 1, yc, tx, ty, tz, pts);
+      }
+    }
+  }
+  const g = sectionOutlineMesh.geometry;
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pts), 3));
+  g.attributes.position.needsUpdate = true;
+  g.computeBoundingSphere();
+}
+
+// face 색이 벽 채움 색(WALL_RGB)이면 적당한 회색 윤곽선(EdgesGeometry)을 자식으로 추가.
+//   (내벽 채움 메쉬처럼 단일 색 박스면 매칭됨. 기둥·보가 섞인 외피벽 메쉬는
+//    첫 face 색이 달라 매칭 안 되며, 그쪽은 프레임선이 이미 윤곽 역할을 한다.)
+function _isWallColor(c) {
+  return c && Math.abs(c[0] - WALL_RGB[0]) < 0.03 &&
+              Math.abs(c[1] - WALL_RGB[1]) < 0.03 &&
+              Math.abs(c[2] - WALL_RGB[2]) < 0.03;
+}
+function _maybeAddWallOutline(mesh, faceColorsList) {
+  if (!faceColorsList || !faceColorsList.length) return;
+  if (!_isWallColor(faceColorsList[0])) return;
+  const eg = new THREE.EdgesGeometry(mesh.geometry, 30);
+  const lm = new THREE.LineBasicMaterial({
+    color: 0x222222, clippingPlanes: _currentClipPlanes(),
+  });
+  const ls = new THREE.LineSegments(eg, lm);
+  ls.userData.isWallOutline = true;
+  mesh.add(ls);
 }
 
 window.addComponent = function(payload) {
   _addOneComponent(payload);
   _hideEmptyMsg();
+  _updateSectionOutlines();
 };
 
 // [3D 복제 최적화 2단계] 여러 부재를 한 번의 호출로 추가 — 직렬화·IPC 1회.
@@ -243,6 +468,7 @@ window.addComponents = function(payload) {
     _addOneComponent(items[i]);
   }
   if (items.length) _hideEmptyMsg();
+  _updateSectionOutlines();
 };
 
 // [2026-05-30 B3] z축 단면 절단 — enabled 면 z(높이) 위를 잘라 평면을 본다.
@@ -250,6 +476,7 @@ window.setSectionZ = function(z, enabled) {
   if (window.sectionPlane) {
     window.sectionPlane.constant = enabled ? z : 1e9;
   }
+  _updateSectionOutlines();   // 잘린 자리 벽 윤곽선 재계산
 };
 
 // [2026-06-01] y축 단면 절단 — 반대 방향(작은 y 쪽부터 잘림).
@@ -258,6 +485,7 @@ window.setSectionY = function(y, enabled) {
   if (window.sectionPlaneY) {
     window.sectionPlaneY.constant = enabled ? -y : 1e9;
   }
+  _updateSectionOutlines();   // 잘린 자리 벽 윤곽선 재계산
 };
 
 // [2026-06-02] 거실 단면 정보 — 카메라를 외벽 정면 시점으로 이동 + Y축
@@ -337,7 +565,52 @@ window.registerInstForm = function(key, verts, faces, colors, capacity) {
   scene.add(inst);
   instForms[key] = { geom: geom, mesh: inst, capacity: Math.max(1, capacity|0),
                      count: 0, idToIdx: {}, idxToId: [] };
+  const form = instForms[key];
+  // 벽 단독 형상이면: ① 무음영 단색 재질로 교체(독립 메쉬와 동일 — 솔리드 외관),
+  //   ② 윤곽선 템플릿(EdgesGeometry 정점)을 만들어 둔다 — 인스턴스별 평행이동을
+  //   더해 하나의 LineSegments 로 합쳐 그린다(드로우콜 1회).
+  form.isWall = _allWallColor(colors);
+  if (form.isWall) {
+    inst.material.dispose();
+    inst.material = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(WALL_RGB[0], WALL_RGB[1], WALL_RGB[2]),
+      side: THREE.DoubleSide,
+      clippingPlanes: _currentClipPlanes(),
+    });
+    const eg = new THREE.EdgesGeometry(geom, 30);
+    form.edgeTpl = Float32Array.from(eg.getAttribute('position').array);
+    eg.dispose();
+    const om = new THREE.LineBasicMaterial({
+      color: 0x222222, clippingPlanes: _currentClipPlanes() });
+    form.outline = new THREE.LineSegments(new THREE.BufferGeometry(), om);
+    form.outline.frustumCulled = false;
+    form.outline.userData.isWallOutline = true;
+    scene.add(form.outline);
+  }
 };
+
+// 인스턴스 폼의 벽 윤곽선을 현재 인스턴스 평행이동에 맞춰 다시 합쳐 그린다.
+function _refreshFormOutline(form) {
+  if (!form || !form.isWall || !form.outline) return;
+  const tpl = form.edgeTpl, L = tpl.length;
+  const out = new Float32Array(L * form.count);
+  const m = new THREE.Matrix4();
+  for (let i = 0; i < form.count; i++) {
+    form.mesh.getMatrixAt(i, m);
+    const tx = m.elements[12], ty = m.elements[13], tz = m.elements[14];
+    const base = i * L;
+    for (let k = 0; k < L; k += 3) {
+      out[base + k]     = tpl[k]     + tx;
+      out[base + k + 1] = tpl[k + 1] + ty;
+      out[base + k + 2] = tpl[k + 2] + tz;
+    }
+  }
+  const g = form.outline.geometry;
+  g.setAttribute('position', new THREE.BufferAttribute(out, 3));
+  g.attributes.position.needsUpdate = true;
+  g.setDrawRange(0, out.length / 3);
+  g.computeBoundingSphere();
+}
 
 function _growInstForm(form) {
   const newCap = form.capacity * 2;
@@ -375,11 +648,14 @@ window.addInstance = function(key, comp_id, tx, ty, tz) {
   form.mesh.count = form.count;
   form.mesh.instanceMatrix.needsUpdate = true;
   compForm[comp_id] = key;
+  if (!_batchingInst) { _refreshFormOutline(form); _updateSectionOutlines(); }
 };
 
+let _batchingInst = false;
 // 여러 형상·인스턴스를 1회 호출로 일괄 등록(묶음 전송).
 window.addInstanceBatch = function(payload) {
   const forms = (payload && payload.forms) || [];
+  _batchingInst = true;
   for (let i = 0; i < forms.length; i++) {
     const f = forms[i];
     window.registerInstForm(f.key, f.verts, f.faces, f.colors, f.capacity);
@@ -389,7 +665,10 @@ window.addInstanceBatch = function(payload) {
       window.addInstance(f.key, it.id, it.t[0], it.t[1], it.t[2]);
     }
   }
+  _batchingInst = false;
+  for (let i = 0; i < forms.length; i++) _refreshFormOutline(instForms[forms[i].key]);
   _hideEmptyMsg();
+  _updateSectionOutlines();
 };
 
 window.removeInstance = function(comp_id) {
@@ -413,6 +692,8 @@ window.removeInstance = function(comp_id) {
   delete form.idToIdx[comp_id];
   delete compForm[comp_id];
   form.mesh.instanceMatrix.needsUpdate = true;
+  _refreshFormOutline(form);
+  _updateSectionOutlines();
   return true;
 };
 
@@ -423,9 +704,15 @@ window.clearAllInstances = function() {
     scene.remove(form.mesh);
     form.geom.dispose();
     form.mesh.material.dispose();
+    if (form.outline) {
+      scene.remove(form.outline);
+      form.outline.geometry.dispose();
+      form.outline.material.dispose();
+    }
   }
   for (const k in instForms) delete instForms[k];
   for (const k in compForm) delete compForm[k];
+  _updateSectionOutlines();
 };
 
 // [검증용] 부재의 화면상 월드정점을 그대로 회수(독립 메시 / 인스턴스 공통).
@@ -458,7 +745,12 @@ window.removeComponent = function(comp_id) {
   scene.remove(mesh);
   mesh.geometry.dispose();
   mesh.material.dispose();
+  mesh.children.forEach(function (ch) {          // 벽 윤곽선 자식 정리
+    if (ch.geometry) ch.geometry.dispose();
+    if (ch.material) ch.material.dispose();
+  });
   delete componentMeshes[comp_id];
+  _updateSectionOutlines();
 };
 
 // [7C-1] 캐드식 치수선 — 우측 컴포넌트 3D 전용. 폭/깊이/높이 3축, 숫자(mm)만(한글 없음).

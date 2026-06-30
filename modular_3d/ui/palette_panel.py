@@ -96,7 +96,7 @@ class PalettePanel(QWidget):
         lay.setSpacing(7)
 
         # 헤더 라벨 — Paperlogy, 종합탭 헤드라인 톤.
-        title = QLabel('부재 팔레트')
+        title = QLabel('팔레트')
         title.setStyleSheet(
             f"font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
             f" color: {_HEAD_FG}; font-size: 17px; font-weight: 800;"
@@ -199,18 +199,7 @@ class PalettePanel(QWidget):
         self._opening_add_btn.setEnabled(False)
         lay.addWidget(self._opening_add_btn)
 
-        # 조작 안내 — 안내문이므로 Paperlogy.
-        detail_hint = QLabel(
-            '  상세 설계 ON → 실 지정/벽/개구부 사용\n'
-            '  실 지정: 좌클릭=점, Enter=완료, 우클릭/Back=취소점 · 실 클릭=선택, Del=삭제\n'
-            '  벽: 부모 클릭 → 길이 입력 → R 방향/V 앵커/클릭 확정\n'
-            '  개구부: "개구부" 후 벽/슬래브 클릭 · 개구부 클릭=선택, Del=삭제')
-        detail_hint.setStyleSheet(
-            f"font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
-            f" color: {_SUB_FG}; font-size: 11px; background: transparent;"
-            " padding-top: 4px;")
-        detail_hint.setWordWrap(True)
-        lay.addWidget(detail_hint)
+        # [2026-06-07] 하단 '상세 설계 ON →…' 조작 안내문 제거 — 패널 간결화.
 
         lay.addStretch(1)
 

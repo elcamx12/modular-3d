@@ -317,9 +317,12 @@ class Controller(F5Mixin, F6Mixin):
 
         if hit is not None:
             self._status.update_coords(hit[0], hit[1])
+            # 격자 스냅 단위 — 단일 진실원천(GRID_SNAP_MM, 현재 5mm). 하드코딩 금지.
+            from modular_3d.카탈로그.tolerances import GRID_SNAP_MM as _GRID
+            _grid = float(_GRID)
 
             if self._state == AppState.MOVING:
-                snapped = np.round(hit / 100.0) * 100.0
+                snapped = np.round(hit / _grid) * _grid
                 snapped[2] = self._move_original_pos[2]  # 원래 z 보존
 
                 # 스냅 시도 (이동 중인 부재 자신은 제외)
@@ -348,8 +351,8 @@ class Controller(F5Mixin, F6Mixin):
                 return
 
             if self._state == AppState.PLACEMENT_PREVIEW:
-                # 100mm 그리드 스냅
-                snapped = np.round(hit / 100.0) * 100.0
+                # 격자 스냅 (GRID_SNAP_MM, 현재 5mm)
+                snapped = np.round(hit / _grid) * _grid
                 snapped[2] = self._preview_z_for_type(self._current_comp_type)
 
                 # 꼭지점 스냅 시도

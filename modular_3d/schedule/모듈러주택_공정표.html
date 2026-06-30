@@ -339,10 +339,11 @@
   }
   .gantt-row:hover { background: #F0F5FF; }
   .gantt-label {
-  width: 220px;
-  min-width: 220px;
+  /* [2026-06-07] 작업명 라벨 폭을 절반으로(220→110) — 텍스트 뒤 빈 공간 축소. */
+  width: 110px;
+  min-width: 110px;
   /* [2026-05-29] 행 축소에 맞춰 패딩 줄임 */
-  padding: 2px 10px;
+  padding: 2px 8px;
   font-size: 11px;
   font-weight: 600;
   display: flex;
@@ -741,10 +742,10 @@
   - 원복 시 이 블록만 삭제하면 됨.
   ════════════════════════════════════════════════════════════════════ */
   html, body {
-  height: auto;
-  min-height: 100%;
-  overflow-y: auto;
-  overflow-x: hidden;
+  /* [2026-06-07] 공정표 탭 자체 스크롤 제거 — 페이지는 뷰포트에 고정하고
+     넘치는 표(경제성 등)는 각 카드 안에서만 스크롤한다. */
+  height: 100%;
+  overflow: hidden;
   margin: 0;
   }
   body {
@@ -781,7 +782,7 @@
   #tab-gantt .gantt-inner { flex: 1 1 auto; display: flex; flex-direction: column; }
   /* 각 작업 행이 남은 세로 공간을 균등 분할 — 막대도 같이 두꺼워짐.
      align-items:stretch 로 트랙이 행 높이만큼 늘어나야 absolute 막대가 보임. */
-  #tab-gantt .gantt-row { flex: 1 1 auto; min-height: 28px; align-items: stretch; }
+  #tab-gantt .gantt-row { flex: 1 1 auto; min-height: 18px; align-items: stretch; }
   #tab-gantt .gantt-track { height: 100%; position: relative; }
   #tab-gantt .gantt-label { align-items: center; }
   /* [2026-06-01] 윗공종 바의 아래 모서리 = 아래공종 바의 윗 모서리.
@@ -830,7 +831,8 @@
   background: #FFFFFF !important;
   color: #1F4E79 !important;
   border-bottom: 1px solid #DDE4ED;
-  padding: 12px 16px 10px 16px;
+  /* [2026-06-07] 카드 헤더 패딩 축소 — 세로 공간 확보(공정바 가시화). */
+  padding: 6px 14px 6px 14px;
   font-family: 'Paperlogy', 'Malgun Gothic', sans-serif;
   font-weight: 800;
   /* [2026-06-02] 모든 카드 헤더 글자 크기 동일하게(공정바가 작던 문제) + 키움. */
@@ -1218,7 +1220,9 @@
        그 아래 280px 마일스톤 카드는 자연히 더 아래로 내려간다. -->
   <!-- [2026-06-07] 좌측 '설정' 컬럼을 4/5 로 좁히고(셀렉트 폭 축소와 함께), 그만큼
        우측 '경제성 산출' 컬럼을 넓힌다. (가운데 공정바는 그대로) -->
-  <div style="display:grid; grid-template-columns: minmax(176px, 0.42fr) minmax(560px, 2.25fr) minmax(360px, 1.35fr); grid-template-rows: minmax(0, 1fr); gap:10px; align-items:stretch; height: max(600px, calc(100vh - 80px)); min-height: 600px;">
+  <!-- [2026-06-07] 창 고정으로 세로 공간이 부족 → 그리드가 뷰포트를 최대한 채우게
+       차감 80→20, 최소높이 600→460 으로 낮춰 좌/중/우 컬럼·공정바를 키운다. -->
+  <div style="display:grid; grid-template-columns: minmax(176px, 0.42fr) minmax(560px, 2.25fr) minmax(360px, 1.35fr); grid-template-rows: minmax(0, 1fr); gap:10px; align-items:stretch; height: calc(100vh - 20px); min-height: 460px;">
 
   <!-- A. 건물 기본정보 — [2026-05-29 레이아웃] 화면 숨김. moduleTypeBody·hidden input 보존용. -->
   <div class="card" style="display:none">
@@ -1613,12 +1617,12 @@
   style="background:#fff; color:#333; border:1px solid #ccc; border-radius:4px; padding:1px 8px; height:22px; cursor:pointer; font-size:11px;">초기화</button>
   </span>
   </div>
-  <div class="card-body" style="padding:10px 12px;">
-  <div class="legend" style="margin-bottom:10px; align-items:center;">
+  <div class="card-body" style="padding:5px 12px;">
+  <div class="legend" style="margin-bottom:5px; align-items:center;">
   <div class="legend-item"><div class="legend-box" style="background:#C00000"></div>크리티컬 패스</div>
   <div class="legend-item"><div class="legend-box" style="background:#4472C4"></div>일반 공종</div>
-  <div class="legend-item"><div class="legend-box" style="background:#FF9900"></div>접합 작업</div>
-  <div class="legend-item"><div style="width:0;height:0;border-left:7px solid transparent;border-right:7px solid transparent;border-top:12px solid #7030A0;display:inline-block;margin-right:4px;"></div>마일스톤</div>
+  <!-- [2026-06-07] '접합 작업(노란색)' 범례 제거 — 실제 노란색 표시가 없어 설명만 남아 혼란. -->
+  <!-- [2026-06-07] '마일스톤' 범례 항목·보라색 삼각형 제거(차트 삼각형도 미표시). -->
   <!-- [2026-05-30] 범례 끝에 공기산정표 토글 버튼 배치 -->
   <button onclick="toggleSchedule()" id="btnToggleSched" style="margin-left:auto; padding:4px 12px; background:#F0F0F0; border:1px solid #ABADB3; border-radius:2px; color:#202020; font-size:11px; font-weight:600; cursor:pointer;">공기 산정표 보기</button>
   </div>
@@ -1636,14 +1640,15 @@
   </div><!-- /가운데 컬럼 wrapper -->
 
   <!-- F. 경제성 (노무비 + 경비) — [2026-05-30] 3컬럼 우측 -->
-  <div class="card">
-  <div class="card-header" style="display:flex; align-items:center; gap:8px;">
+  <!-- [2026-06-07] 카드를 flex 컬럼으로 + min-height:0 → 표가 넘치면 카드 안에서만 스크롤. -->
+  <div class="card" style="display:flex; flex-direction:column; min-height:0; overflow:hidden;">
+  <div class="card-header" style="display:flex; align-items:center; gap:8px; flex:0 0 auto;">
   <span>경제성 산출 (노무비 + 경비)</span>
   <!-- [2026-06-07] 상단에서 옮겨온 '설명 보기' 버튼 — 헤더 텍스트 오른쪽. -->
   <button class="note-toggle-btn" id="noteToggleBtn" onclick="toggleNotes()" style="margin-left:auto;">설명 보기</button>
   </div>
-  <!-- [2026-05-31] 표가 card-body 의 남은 높이를 모두 차지하도록 flex 부여. -->
-  <div class="card-body" style="gap: 10px;">
+  <!-- [2026-06-07] card-body 를 flex 컬럼·min-height:0 으로 → 안쪽 표 영역만 스크롤. -->
+  <div class="card-body" style="gap: 10px; display:flex; flex-direction:column; min-height:0; overflow:hidden;">
   <button type="button" onclick="openCrew()" style="padding:6px 14px; background:#F0F0F0; border:1px solid #ABADB3; border-radius:2px; color:#202020; font-size:11px; font-weight:600; cursor:pointer; position:relative; z-index:5; pointer-events:auto; flex: 0 0 auto;">공종별 작업조(인부) 구성 보기</button>
   <div style="overflow:auto; flex: 1 1 auto; min-height: 0;">
   <table class="schedule-table" id="econTable" style="font-size:12px; width: 100%;">

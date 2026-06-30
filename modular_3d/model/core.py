@@ -894,6 +894,31 @@ class Action:
 
 # ── 씬 관리 ──────────────────────────────────────────────────
 
+# 코어 그룹별 철근 설정 기본값 — 사용자 미입력 시 사용(경계 2%·웹 0.4%·fck27·SD400).
+#   topology(_core_fiber_division)·ops_builder(재료)·UI 가 공유하는 단일 기준.
+CORE_REBAR_DEFAULT = {
+    'rho_boundary': 0.02,   # 경계요소 수직 철근비
+    'rho_web': 0.004,       # 웹 수직 철근비
+    'fck': 27.0,            # 콘크리트 압축강도 (MPa)
+    'fy': 400.0,            # 철근 항복강도 (MPa, SD400)
+    # 슬래브-벽체 격막 연결부 검토용(모델링지침 8장). 미입력(면적 0)이면 강도가 낮아
+    #   검토에서 위험으로 표시되어 입력을 유도한다. 슬래브 fck 는 벽 fck 와 독립(식 요구).
+    'slab_collector_area': 0.0,   # 수집재철근 단면적 As,col1 [mm²]
+    'slab_dowel_area': 0.0,       # 다우얼철근 단면적 As,dw [mm²]
+    'slab_fck': 27.0,             # 슬래브 격막 콘크리트 압축강도 [MPa]
+}
+
+
+def normalize_core_rebar(cfg) -> dict:
+    """부분 입력 dict 를 기본값으로 채워 완전한 철근 설정으로 정규화."""
+    d = dict(CORE_REBAR_DEFAULT)
+    if cfg:
+        for k, v in cfg.items():
+            if v is not None and k in d:
+                d[k] = float(v)
+    return d
+
+
 class Scene:
     """부재 컬렉션 + Undo 스택."""
 
@@ -909,6 +934,12 @@ class Scene:
         # 기록. 부재·실과 별개로 직렬화되며 undo 스택과도 분리(접합 편집은 자체
         # 토글 모드에서만 발생). JointOverride 목록.
         self.joint_overrides: List["object"] = []
+        # 코어 그룹별 철근 설정 — group_id → {rho_boundary, rho_web, fck, fy}.
+        # 부재와 별개 Scene 레벨 컬렉션(joint_overrides 와 같은 패턴 — 다층은 group_id
+        # 공유로 자동 적용되므로 그룹당 1 개만 저장하면 전 층에 반영). 미설정 그룹은
+        # _core_fiber_division 기본값(경계 2%·웹 0.4%·fck27·SD400)을 그대로 사용 →
+        # 기존 저장 파일 하위호환.
+        self.core_rebar: Dict[int, dict] = {}
         # 불러오기 직후 접합 탭 첫 진입 시 "저장본/새 자동계산" 1회 질문 대기
         # 플래그(런타임 전용 — 직렬화 안 함). 불러오기가 True 로 set, 질문 후 clear.
         self._joint_overrides_pending_choice: bool = False

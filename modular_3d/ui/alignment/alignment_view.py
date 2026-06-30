@@ -1354,13 +1354,16 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
             pass
 
     def _room_snap(self, wx, wy):
-        """실 점 스냅: ① 부재 꼭짓점 → ② 부재 모서리(축별)/직교 → ③ 격자(100mm).
+        """실 점 스냅: ① 부재 꼭짓점 → ② 부재 모서리(축별)/직교 → ③ 격자(GRID_SNAP_MM).
 
         반환: (sx, sy, vertex_point_or_None)
         vertex_point: 꼭짓점 스냅 시 (x,y), 아니면 None(마커 표시용).
         """
-        from modular_3d.카탈로그.tolerances import HOVER_SNAP_RADIUS_MM
+        from modular_3d.카탈로그.tolerances import (
+            HOVER_SNAP_RADIUS_MM, GRID_SNAP_MM,
+        )
         thr = float(HOVER_SNAP_RADIUS_MM)
+        _grid = float(GRID_SNAP_MM)
         scene = self._controller._scene.components
         # 후보: 1층 본체 부재의 bbox 꼭짓점 + 모서리 x/y 좌표
         edge_xs, edge_ys = [], []
@@ -1395,8 +1398,8 @@ class AlignmentCanvas(QLabel, AlignmentCanvasPaintMixin, AlignmentCanvasPickMixi
             # ② 직교 스냅(이전 점과 같은 선)
             if prev_v is not None and abs(v - prev_v) <= thr:
                 return float(prev_v)
-            # ③ 격자 폴백
-            return round(v / 100.0) * 100.0
+            # ③ 격자 폴백 (GRID_SNAP_MM, 현재 5mm)
+            return round(v / _grid) * _grid
 
         sx = _snap_axis(wx, edge_xs, prev[0] if prev else None)
         sy = _snap_axis(wy, edge_ys, prev[1] if prev else None)

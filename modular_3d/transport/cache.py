@@ -75,7 +75,13 @@ def compute_scene_fp(scene) -> str:
             "parent": int(getattr(comp, "parent_id", 0) or 0),
             "anchor_edge": int(getattr(comp, "anchor_edge_id", -1) or -1),
         })
-    return _sha256(json.dumps(items, sort_keys=True, default=str))
+    fp_items = json.dumps(items, sort_keys=True, default=str)
+    # 코어 그룹 철근 설정(Scene 레벨)도 지문에 포함 — 철근만 바꿔도 해석모델 캐시가
+    #   무효화되어 재빌드되도록(미포함 시 옛 am 재사용으로 철근 변경이 해석에 미반영).
+    core_rebar = getattr(scene, "core_rebar", None) or {}
+    fp_rebar = json.dumps({str(k): v for k, v in core_rebar.items()},
+                          sort_keys=True, default=str)
+    return _sha256(fp_items + "|core_rebar=" + fp_rebar)
 
 
 def compute_classify_fp(scene_fp: str, classifier_opts) -> str:
@@ -251,6 +257,7 @@ class TransportCache:
         spacing: SpacingParams,
         classifier_opts=None,
         economics: Optional[EconomicsOptions] = None,
+        progress=None,
     ) -> PackResult:
         """파이프라인 [5]→[7] 진입점.
 
@@ -314,7 +321,7 @@ class TransportCache:
             self.pack_result = pack_items(
                 self.transport_input.modules, self.transport_input.panels,
                 trucks, site, spacing,
-                economics=economics,
+                economics=economics, progress=progress,
             )
             self.invalidate_from(8)
         return self.pack_result

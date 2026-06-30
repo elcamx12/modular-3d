@@ -60,6 +60,9 @@ def scene_to_state_dict(scene: Scene, n_floors: int) -> dict:
         # 접합부 오버라이드 — 사용자가 변경/제거/추가한 컴포넌트 간 접합.
         'joint_overrides': [ov.to_dict()
                             for ov in getattr(scene, 'joint_overrides', [])],
+        # 코어 그룹별 철근 설정 — group_id(JSON 키는 문자열) → 설정 dict.
+        'core_rebar': {str(g): dict(cfg)
+                       for g, cfg in getattr(scene, 'core_rebar', {}).items()},
     }
     for cid, comp in scene.components.items():
         data['components'].append({
@@ -118,6 +121,10 @@ def state_dict_to_scene(data: dict) -> Tuple[Scene, int]:
     3. 구버전 호환성 추정 (멱등)
     """
     scene = Scene()
+    # [2026-06-24] 불러오기 격자 재정렬 단위 — 배치/실 그리기와 같은 GRID_SNAP_MM(5mm).
+    #   저장 당시 격자가 달라도(예: 옛 100mm) 로드 시 현재 격자에 맞춰 정렬한다.
+    from modular_3d.카탈로그.tolerances import GRID_SNAP_MM as _GRID
+    _grid = float(_GRID)
     # 스키마 버전 검사 — 현재 version=1. 호환성 미보장 버전은 경고만 출력.
     file_ver = int(data.get('version', 1))
     if file_ver != 1:
@@ -145,6 +152,10 @@ def state_dict_to_scene(data: dict) -> Tuple[Scene, int]:
             dimensions=dict(d.get('dimensions', {})),
             anchor=int(d.get('anchor', 0)),
         )
+        # 본체 xy 를 격자(_grid)에 재정렬 — z(높이)는 보존. generate_sub_components
+        # 전에 해야 종속·자동생성 하위 부재도 정렬된 본체를 따라간다.
+        comp.position[0] = round(float(comp.position[0]) / _grid) * _grid
+        comp.position[1] = round(float(comp.position[1]) / _grid) * _grid
         comp.group_id = int(d.get('group_id', 0))
         comp.floor_index = int(d.get('floor_index', 0))
         comp.sub_index = int(d.get('sub_index', 0))
@@ -199,7 +210,13 @@ def state_dict_to_scene(data: dict) -> Tuple[Scene, int]:
     from modular_3d.model.room import Room
     for r in data.get('rooms', []):
         try:
-            scene.add_room(Room.from_dict(r))
+            room = Room.from_dict(r)
+            # 실 폴리곤 각 꼭짓점도 격자(_grid)에 재정렬 — 부재와 동일 기준.
+            room.polygon = [
+                (round(px / _grid) * _grid, round(py / _grid) * _grid)
+                for (px, py) in room.polygon
+            ]
+            scene.add_room(room)
         except Exception as e:
             dprint('scene_io', f'[scene_io] 실 복원 실패: {e}')
 
@@ -210,6 +227,10 @@ def state_dict_to_scene(data: dict) -> Tuple[Scene, int]:
             scene.joint_overrides.append(JointOverride.from_dict(o))
         except Exception as e:
             dprint('scene_io', f'[scene_io] 접합 오버라이드 복원 실패: {e}')
+
+    # 코어 그룹별 철근 설정 복원 — group_id 정수 키로 환원(JSON 은 문자열 키).
+    scene.core_rebar = {int(g): dict(cfg)
+                        for g, cfg in data.get('core_rebar', {}).items()}
 
     # 구버전 호환성 추정 (멱등 — 새 형식 scene 은 통과만)
     _auto_match_wall_to_fp(scene)
@@ -265,11 +286,16 @@ def _auto_match_wall_to_fp(scene: Scene) -> int:
 
 
 def _auto_estimate_parent_id(scene: Scene) -> int:
-    """구버전 씬: parent_id 가 비어 있는 종속 부재의 부모를 추정.
+    """종속 부재의 부모(parent_id)를 같은 group_id + 같은 floor_index 본체로 보정.
 
-    같은 group_id + 같은 floor_index 안에서 본체(sub_index=0) 부재를 부모로 채움.
-    Returns: 채워진 종속 부재 수.
+    - parent_id 가 비어 있으면 채운다(구버전 씬 호환).
+    - [2026-06-08] 중간기둥·중간보는 parent_id 가 이미 차 있어도 *다른 층 본체*를
+      가리키면(층 복제 시 재매핑 누락 버그) 같은 층 본체로 교정한다. 이 버그는
+      단면설계 3D·타입 분류가 parent_id 기준이라, 1층 모듈에 전 층 중간기둥이 몰리고
+      2·3층 모듈은 비어 다른 타입으로 잘못 분류되는 증상을 일으켰다.
+    Returns: 채우거나 교정한 종속 부재 수.
     """
+    from modular_3d.model.core import MidColumn, MidBeam
     body_by_group_floor: Dict = {}
     for cid_b, comp_b in scene.components.items():
         if (getattr(comp_b, 'sub_index', 0) == 0
@@ -278,18 +304,24 @@ def _auto_estimate_parent_id(scene: Scene) -> int:
             body_by_group_floor[key] = cid_b
     fixed = 0
     for cid_d, comp_d in scene.components.items():
-        if getattr(comp_d, 'parent_id', 0) > 0:
-            continue
         if getattr(comp_d, 'sub_index', 0) <= 0:
             continue
         key = (getattr(comp_d, 'group_id', 0),
                getattr(comp_d, 'floor_index', 0))
         body = body_by_group_floor.get(key)
-        if body is not None and body != cid_d:
-            comp_d.parent_id = body
+        if body is None or body == cid_d:
+            continue
+        cur_pid = int(getattr(comp_d, 'parent_id', 0) or 0)
+        if cur_pid <= 0:
+            comp_d.parent_id = body          # 빈 값 채우기
             fixed += 1
-    if fixed > 0:
-        pass
+        elif cur_pid != body and isinstance(comp_d, (MidColumn, MidBeam)):
+            # 중간기둥·중간보가 다른 층 본체를 가리키면 같은 층 본체로 교정.
+            cur_par = scene.components.get(cur_pid)
+            if (cur_par is not None and getattr(cur_par, 'floor_index', None)
+                    != getattr(comp_d, 'floor_index', None)):
+                comp_d.parent_id = body
+                fixed += 1
     return fixed
 
 

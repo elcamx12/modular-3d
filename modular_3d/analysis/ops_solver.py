@@ -131,6 +131,14 @@ class OpsResults:
     node_disps: Dict[int, np.ndarray] = field(default_factory=dict)        # nid → (6,)
     base_reactions: Dict[int, np.ndarray] = field(default_factory=dict)    # nid → (6,)
     member_forces: Dict[int, MemberForce] = field(default_factory=dict)    # AnalysisMember.id → MF
+    # [2026-06-29 #2] 코어 MVLEM 벽 응답 — wall_id → {shear, fiber_conc, fiber_steel}.
+    #   solve 내부(라이브 도메인)에서만 eleResponse 가 유효하므로 거기서 추출해 저장한다.
+    #   fiber 항복 여부·전단 시각화(응력 다이어그램) 및 연결부 정석 수요(층별) 산정용.
+    wall_responses: Dict[int, dict] = field(default_factory=dict)
+    # [2026-07-01 #2c] 코어 노드(walls 4코너) 수평반력 nid → (Rx, Ry). 다이어프램 제약
+    #   전달력이 자유 코어 노드 reaction 에 나타남(Penalty) — (그룹,층)별 합 = 그 층 격막→
+    #   코어 전달력(상부층 합 = 베이스 반력으로 평형 검증). 연결부 정석 층별 수요 산정용.
+    core_node_reactions: Dict[int, tuple] = field(default_factory=dict)
     # 5 station 분포 단면력 (Phase 5, 설계서_부재호버.md).
     # 각 부재마다 (5, 6) 배열 = [station=0/0.25/0.5/0.75/1.0] × [N, Vy, Vz, T, My, Mz]
     # 단위 N, N·mm. 부호는 OpenSees localForce 규약(인장 +, 압축 −) 그대로.
@@ -234,6 +242,41 @@ def _extract_member_forces(om: 'OpsModel', am: AnalysisModel,
                 f_i=f_first_arr[:6].copy(),
                 f_j=f_last_arr[6:12].copy(),
             )
+        except Exception:
+            pass
+
+    # 3) [2026-06-29 #2] 코어 MVLEM 벽 — fiber 응력·전단 전용 응답(localForce 아님).
+    #    이 함수가 solve 내부 라이브 도메인에서 호출되므로 여기서만 eleResponse 가 유효.
+    for wid in getattr(am, 'walls', {}):
+        et = om.member_to_ele_tag.get(wid)
+        if et is None:
+            continue
+        try:
+            shear = ops.eleResponse(et, 'Shear_Force_Deformation')
+            conc = ops.eleResponse(et, 'Fiber_Stress_Concrete')
+            steel = ops.eleResponse(et, 'Fiber_Stress_Steel')
+            res.wall_responses[wid] = {
+                'shear': [float(x) for x in shear] if shear else [],
+                'fiber_conc': [float(x) for x in conc] if conc else [],
+                'fiber_steel': [float(x) for x in steel] if steel else [],
+            }
+        except Exception:
+            pass
+
+    # 4) [#2c 정석 수요] 코어 노드 수평반력 = 다이어프램이 코어로 전달하는 힘.
+    #    reactions() 는 solve 본체에서 _extract 호출 직전 수행됨 → nodeReaction 유효.
+    #    코어 노드(walls 4코너)의 (Rx, Ry) 저장. (그룹,층)별 합산·층별 수요는
+    #    slab_connection 이 수행. 상부층 합 = 베이스 반력으로 평형 검증됨(벽 내부
+    #    전단과 달리 신뢰 가능).
+    _core_nids = set()
+    for _w in getattr(am, 'walls', {}).values():
+        _core_nids.update((_w.n_bl, _w.n_br, _w.n_tr, _w.n_tl))
+    for _nid in _core_nids:
+        if _nid not in om.node_tags:
+            continue
+        try:
+            _r = ops.nodeReaction(_nid)
+            res.core_node_reactions[_nid] = (float(_r[0]), float(_r[1]))
         except Exception:
             pass
 
@@ -394,6 +437,33 @@ def _apply_eleload_factored(om: OpsModel, mid: int,
     w_factored = (dl_factor * (d_self + d_slab) + ll_factor * live)
     if w_factored < 1e-9:
         return 0.0
+    # [#3 파생] 코어 슬래브/천장 보(core_slab_beam·core_ceiling_runner)는 수직(Uz)
+    #   무지지(다이어프램은 면내만 구속)라, eleLoad 자중을 실으면 무한 처짐 → 행렬
+    #   특이(UmfPack solve 실패, 특정 형상에서 등가정적도 발산). 자중을 보에 싣지 않고
+    #   양끝 노드 위치의 최근접 코어벽 노드에 노드력으로 옮긴다(코어 슬래브=강체
+    #   다이어프램이라 보 휨 무의미). solve_vertical·solve_seismic·solve_pushover 공통.
+    _am = getattr(om, 'analysis_model', None)
+    _m = _am.members.get(mid) if _am is not None else None
+    if (_m is not None
+            and getattr(_m, 'role', None) in ('core_slab_beam', 'core_ceiling_runner')
+            and getattr(_am, 'walls', None)):
+        _wxyz = getattr(om, '_core_wall_xyz_cache', None)
+        if _wxyz is None:
+            _wxyz = [(n, _am.nodes[n].coord) for w in _am.walls.values()
+                     for n in {w.n_bl, w.n_br, w.n_tr, w.n_tl}]
+            try:
+                om._core_wall_xyz_cache = _wxyz
+            except Exception:
+                pass
+        if _wxyz:
+            _L = _am.get_member_length(mid)
+            _P = w_factored * _L / 2.0
+            for _bn in (_m.n1, _m.n2):
+                _bc = _am.nodes[_bn].coord
+                _wn = min(_wxyz, key=lambda nc: (nc[1][0] - _bc[0]) ** 2
+                          + (nc[1][1] - _bc[1]) ** 2 + (nc[1][2] - _bc[2]) ** 2)[0]
+                ops.load(_wn, 0.0, 0.0, -_P, 0.0, 0.0, 0.0)
+            return -w_factored * _L
     # 분할된 보(member_to_split_ele_tags)는 모든 sub-element에 동일 분포하중 적용
     # (단위길이당 같은 wY/wZ 가 길이 segment 합 = 원래 보 자중과 동등)
     split_tags = om.member_to_split_ele_tags.get(mid)
@@ -727,7 +797,8 @@ def _apply_horizontal_loads(om: OpsModel,
                             forces_by_z: Dict[float, float],
                             direction: str,
                             pattern_tag: int = 2,
-                            ts_tag: int = 2) -> Tuple[float, float]:
+                            ts_tag: int = 2,
+                            ts_type: str = 'Constant') -> Tuple[float, float]:
     """층별 횡력을 다이어프램 master 노드에 절점력으로 적용.
 
     [정책 2026-05-13 가상 코어 제거]
@@ -738,7 +809,10 @@ def _apply_horizontal_loads(om: OpsModel,
 
     Returns: (총 적용력 X, 총 적용력 Y) [N]
     """
-    ops.timeSeries('Constant', ts_tag)
+    # [2026-06-24] ts_type: 등가정적(LoadControl)=Constant, pushover(변위제어)=Linear.
+    #   DisplacementControl 은 load factor λ 에 비례하는 하중(Linear)이 있어야 λ 를 풀 수
+    #   있다. Constant 면 하중이 λ 무관 → reduced 시스템 특이(newStep failed).
+    ops.timeSeries(ts_type, ts_tag)
     ops.pattern('Plain', pattern_tag, ts_tag)
 
     # 사용자 진단 (2026-05-18): 같은 z 평면에 컴포넌트별 다이어프램이 여러 개
@@ -925,6 +999,163 @@ def solve_seismic(om: OpsModel, scene, direction: str = 'X',
     res.total_applied_load_y = Vy
     _extract_lateral_results(om, res)
     return res
+
+
+def _find_top_master(om: OpsModel) -> Tuple[Optional[int], float]:
+    """최상층 다이어프램 master 노드 + 그 z — pushover 변위제어 제어점.
+
+    [함정] hidden 다이어프램(천장 등 mechanism 방지용 백엔드 전용)이나 ops 에 미등록
+    master 를 제어점으로 쓰면 강성 0 → DisplacementControl 특이행렬. 실제 등록된
+    비-hidden master 중 최상층만 고른다.
+    """
+    best_node: Optional[int] = None
+    best_z = -1e18
+    for d in om.diaphragms:
+        if getattr(d, 'hidden', False):
+            continue
+        mnode = int(d.master_node)
+        if mnode not in om.node_tags:
+            continue
+        if float(d.z_level) > best_z:
+            best_z = float(d.z_level)
+            best_node = mnode
+    return best_node, best_z
+
+
+def solve_pushover(om: OpsModel, scene, direction: str = 'X',
+                   target_drift: float = 0.02, n_steps: int = 200,
+                   load_result: LoadResult | None = None,
+                   with_gravity: bool = False):
+    """비선형 Pushover (D3: 변위제어·역삼각형·목표 2% drift).
+
+    절차: ① 중력(D) 적용·고정(축력 유지) → ② 역삼각형 횡력 형상(변위제어 reference)
+    → ③ 최상층 master 변위제어로 목표 drift 까지 Newton 점증, 스텝마다 (제어변위,
+    밑면전단) 캡처. 수렴 실패 시 라인서치(NewtonLineSearch) → 그래도 실패면 변위
+    증분을 절반씩 세분(적응 스텝). #8 큰 모델 성능: 공칭 한 스텝이 항복·P-Delta
+    구간서 분해 60+회/스텝으로 폭발하던 것을, 어려운 구간만 잘게 쪼개 반복을 줄인다.
+
+    반환: capacity curve = [(top_disp_mm, base_shear_N), ...]
+    """
+    direction = direction.upper()
+    am = om.analysis_model
+    lr = load_result if load_result is not None else calculate_loads(scene, am)
+
+    # 제어노드 = 최상층 다이어프램 master, 목표 = 2% drift.
+    dof = 1 if direction == 'X' else 2
+    top_master, top_z = _find_top_master(om)
+    if top_master is None:
+        raise RuntimeError('[pushover] 제어노드(최상층 master) 없음')
+    target = float(target_drift) * max(top_z - om.base_z, 1.0)
+    dU = target / max(n_steps, 1)
+    base_nids = [nid for nid in om.fixed_nodes if nid in om.node_tags]
+
+    # ① (옵션) 중력 — 코어 wall 은 '노드 집중력'(eleLoad 가 MVLEM_3D 에 미적용).
+    #   각 wall 의 '자기 자중'만 상단 두 노드에 부여하고, 층간 누적(아래로 전달)은
+    #   수직 노드공유 체인을 통해 해석이 자동으로 한다. 모듈 부재 eleLoad(자중 D)는
+    #   [#3] 보류. D 만(ll=0); D+L 정밀 조합은 solve_vertical 별도.
+    # [함정 #8 2026-06-29] 과거엔 '자기 + 위층 같은 group z≥ 자중'을 수동 합산해 각
+    #   노드에 줬는데, (a) group 이 코어 둘레 여러 벽(ㅁ자 10세그먼트)을 하나로 묶어
+    #   아래벽이 코어 전체 자중을 받고(~10배), (b) 그 노드들이 해석에서 또 아래로
+    #   전달돼 이중 누적까지 겹쳐, 18층 최하부 축력비가 2.19(압축내력 2배)로 치솟아
+    #   MVLEM fiber 압축붕괴 → 변위제어 발산했다. 자기 자중만 주면 해석이 정확히
+    #   누적(체인 깊이 균일 확인) → 18층 축력비 0.07 로 정상화.
+    if with_gravity:
+        from modular_3d.카탈로그.materials import CONCRETE_UNIT_WEIGHT_N_MM3 as _GC
+        ops.timeSeries('Constant', 1)
+        ops.pattern('Plain', 1, 1)
+        for _wid, _w in am.walls.items():
+            _Aw = float(sum(_w.fiber_widths)) * float(_w.thickness)
+            _h = abs(float(am.nodes[_w.n_tl].coord[2] - am.nodes[_w.n_bl].coord[2]))
+            _self = _Aw * _h * _GC
+            for _nid in (_w.n_tl, _w.n_tr):
+                ops.load(_nid, 0.0, 0.0, -_self / 2.0, 0.0, 0.0, 0.0)
+        # [#3 모듈 중력 통합 2026-07-01] 모듈 부재(기둥·보) 자중 D 를 각 부재에 eleLoad
+        #   (dl=1, ll=0). 전도모멘트·기둥 축력 정밀. 코어 wall 은 위에서 노드력.
+        # [함정] 코어 슬래브/천장 보(core_slab_beam·core_ceiling_runner)는 제외해야 한다.
+        #   이들은 코어 슬래브의 면내 강성 표현(다이어프램이 면내만 구속)이라 수직(Uz)
+        #   지지가 없어, 자중을 실으면 무한 처짐 → 중력 정적 평형 발산(노드 Uz 폭발).
+        #   코어 슬래브 자중은 원래도 pushover 미반영(코어 자중은 코어 wall 노드력만).
+        #   코어 슬래브 자중의 정석 반영은 수직 지지 결함 해결과 함께 별도 과제.
+        # [#3] 모듈 부재 + 코어 슬래브 자중. 코어 슬래브/천장 보의 수직 무지지 처리
+        #   (자중을 최근접 코어벽 노드력으로 옮김)는 _apply_eleload_factored 가 공통 수행.
+        #   [함정] 슬래브 노드를 벽에 Uz equalDOF 로 묶는 방식은 코어 박스를 과구속해
+        #   밑면전단을 4배로 키우므로 쓰지 않는다(노드력 방식 채택).
+        _consol = _consolidate_member_loads(am, lr)
+        for _mid, (_ds, _dsl, _lv) in _consol.items():
+            _apply_eleload_factored(om, _mid, _ds, _dsl, _lv, 1.0, 0.0)
+        _apply_penalty_constraints()
+        ops.numberer('RCM')
+        ops.system(_LINEAR_SOLVER)
+        # [함정 #3] 중력은 비선형(KrylovNewton·LoadControl 점증)으로 '제대로 수렴'시킨
+        #   뒤 loadConst. Linear 1회는 모듈 중력(큰 비선형)의 평형을 못 잡아 잔류
+        #   불평형을 안고 변위제어로 넘어가 발산한다.
+        ops.test('NormDispIncr', 1.0e-6, 100)
+        ops.algorithm('KrylovNewton')
+        ops.integrator('LoadControl', 0.1)
+        ops.analysis('Static')
+        if ops.analyze(10) != 0:
+            raise RuntimeError('[pushover] 중력(D) 비선형 수렴 실패')
+        ops.loadConst('-time', 0.0)
+
+    # ② 역삼각형 횡력 형상 (축력 loadConst 후 등록 — Linear pattern 이 축력 LoadControl
+    #   λ=1 에 안 섞이도록). timeSeries='Linear' 라야 변위제어가 load factor 를 푼다.
+    weights = _compute_floor_seismic_weight(om, lr)
+    W = sum(weights.values()) or 1.0
+    forces = _seismic_floor_distribution(weights, om.base_z, W, k=1.0)
+    _apply_horizontal_loads(om, forces, direction, pattern_tag=7, ts_tag=7,
+                            ts_type='Linear')
+
+    # ③ 비선형 변위제어. with_gravity 면 ①에서 analysis 생성됨 → integrator 만 교체
+    #   (wipeAnalysis 금지!). 아니면 신규 설정(Penalty = solve_seismic 동일).
+    if not with_gravity:
+        _apply_penalty_constraints()
+        ops.numberer('RCM')
+        ops.system(_LINEAR_SOLVER)
+    # [함정 #8] maxIter 를 작게(35) 둬야 적응 스텝이 작동한다. 크면(예: 200)
+    #   수렴 불가한 큰 증분이 분해를 200회(A18 은 1회 3.8s → 12분) 다 돌고서야
+    #   실패 판정되어, 세분(쪼개기)으로 넘어가기 전에 시간을 다 버린다. 정상
+    #   수렴은 보통 8회·최대 23회라 35 로 충분 — 어려운 증분은 빨리 접고 세분한다.
+    ops.test('NormDispIncr', 1.0e-3, 35)
+    ops.algorithm('KrylovNewton')
+    ops.integrator('DisplacementControl', top_master, dof, dU)
+    if not with_gravity:
+        ops.analysis('Static')
+
+    # [적응 변위제어 + 라인서치] 변위 증분이 크거나 항복·연화 구간서 한 스텝이
+    #   수렴하지 못하면: (1) KrylovNewton(빠름) → 실패 시 NewtonLineSearch(보폭
+    #   조절로 overshoot 억제) → (2) 그래도 실패면 변위 증분을 절반씩 세분(최소
+    #   dU/_MAX_SUBDIV). 최소 증분까지 실패 = 구조 불안정 → 역량곡선 끝(중단).
+    #   적응/라인서치는 평형 경로 불변(같은 곡선을 안정 추적) → 결과 보존. 연속
+    #   수렴 시 증분 회복(쉬운 구간 큰 보폭으로 가속).
+    _MAX_SUBDIV = 64
+    dU_min = dU / _MAX_SUBDIV
+    curve: List[Tuple[float, float]] = [(0.0, 0.0)]
+    u_done, dU_cur, streak = 0.0, dU, 0
+    while u_done < target - dU_min * 0.5:
+        dU_try = min(dU_cur, target - u_done)
+        ops.integrator('DisplacementControl', top_master, dof, dU_try)
+        ops.algorithm('KrylovNewton')
+        ok = ops.analyze(1)
+        if ok != 0:
+            ops.algorithm('NewtonLineSearch', '-type', 'Bisection')
+            ok = ops.analyze(1)
+        if ok != 0:
+            # 적응 세분: 증분 절반. 최소 증분 도달 시 더 못 줄임 → 불안정, 중단.
+            if dU_cur * 0.5 >= dU_min:
+                dU_cur *= 0.5
+                streak = 0
+                continue
+            break
+        u_done += dU_try
+        ops.reactions()
+        d_top = float(ops.nodeDisp(top_master, dof))
+        V_base = -sum(float(ops.nodeReaction(nid, dof)) for nid in base_nids)
+        curve.append((d_top, V_base))
+        streak += 1
+        if streak >= 2 and dU_cur < dU:
+            dU_cur = min(dU, dU_cur * 2.0)
+            streak = 0
+    return curve
 
 
 def solve_wind(om: OpsModel, scene, direction: str = 'X') -> OpsResults:

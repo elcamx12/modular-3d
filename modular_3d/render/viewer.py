@@ -1513,6 +1513,13 @@ class Viewer3D:
         self._ops_core_lines.order = 19
         self._ops_core_lines.set_gl_state('translucent', depth_test=False)
 
+        # [#2b-2] 코어벽 fiber 응력 컨투어 면 — 항복비(D/C) jet 색칠(상용 프로그램 느낌).
+        #   각 코어벽을 fiber 띠 사각형으로 분할해 면 색을 입힌다(선이 아닌 면 전체).
+        self._ops_core_mesh = visuals.Mesh(parent=self.view.scene)
+        self._ops_core_mesh.visible = False
+        self._ops_core_mesh.order = 17
+        self._ops_core_mesh.set_gl_state('translucent', depth_test=False)
+
         # ShellMITC4 요소 외곽선 (코어벽 / 코어 슬래브 / 일반 슬래브 shell).
         # 4 노드 quad 의 4 변을 모두 그려 사용자에게 면 요소 존재를 시각화.
         self._ops_shell_lines = visuals.Line(parent=self.view.scene)
@@ -1641,6 +1648,10 @@ class Viewer3D:
         regular_segs: List[np.ndarray] = []
         core_segs: List[np.ndarray] = []
         for b in spec.iter_beams():
+            # 코어벽 MVLEM 은 면 요소 — spec 의 BeamRec(하좌-상우 대각 placeholder,
+            #   무결성 검증용)을 선으로 그리지 않고, 아래서 fiber 셀 격자로 그린다.
+            if getattr(b, 'kind', None) == 'mvlem':
+                continue
             n1 = spec.node(b.n1)
             n2 = spec.node(b.n2)
             if n1 is None or n2 is None:
@@ -1674,6 +1685,29 @@ class Viewer3D:
             cs = [x.coord for x in ns]
             for a, c in ((0, 1), (1, 2), (2, 3), (3, 0)):
                 shell_segs.append(cs[a]); shell_segs.append(cs[c])
+        # ── 코어벽(MVLEM) — fiber 셀 격자로 표현 ──
+        #   MVLEM 은 단면을 fiber(경계요소+웹)로 분할한다. 4변 외곽선 + 각 fiber 폭
+        #   경계의 수직선을 그려 그 이산화(셀 단위)를 보여준다. spec 의 대각 BeamRec
+        #   대신 ops_model.analysis_model.walls 4 코너로 그린다(컨투어와 동일 분할 기하).
+        _am = getattr(ops_model, 'analysis_model', None) if ops_model is not None else None
+        _nt = getattr(ops_model, 'node_tags', None) if ops_model is not None else None
+        if _am is not None and _nt is not None:
+            for _w in getattr(_am, 'walls', {}).values():
+                _c = [_nt.get(_w.n_bl), _nt.get(_w.n_br),
+                      _nt.get(_w.n_tr), _nt.get(_w.n_tl)]
+                if any(x is None for x in _c):
+                    continue
+                _bl, _br, _tr, _tl = (np.asarray(p, dtype=np.float32) for p in _c)
+                for _a, _b in ((_bl, _br), (_br, _tr), (_tr, _tl), (_tl, _bl)):
+                    shell_segs.append(_a); shell_segs.append(_b)
+                _ws = list(getattr(_w, 'fiber_widths', []) or [])
+                _tot = float(sum(_ws)) or 1.0
+                _acc = 0.0
+                for _wd in _ws[:-1]:        # 내부 fiber 경계만(양끝은 외곽선과 중복)
+                    _acc += float(_wd)
+                    _x = _acc / _tot
+                    shell_segs.append(_bl + (_br - _bl) * _x)
+                    shell_segs.append(_tl + (_tr - _tl) * _x)
         if shell_segs:
             arr = np.array(shell_segs, dtype=np.float32)
             self._ops_shell_lines.set_data(
@@ -1870,6 +1904,10 @@ class Viewer3D:
         - 고정점: 검정 ▼ (완전 고정 6 DOF 만 표시)
         """
         self._ensure_ops_visuals()
+        # [#2b-2 잔류 정리] 새 모델을 표시할 때 이전 코어 fiber 컨투어 색칠을 끈다.
+        #   해석 재실행·케이스/모델 변경 시 옛 색칠이 새 형상에 잔류하는 것 방지.
+        #   토글 재그리기는 _draw_from_spec 을 직접 호출하므로 컨투어가 유지된다.
+        self.hide_core_fiber_contour()
         if ops_model is None:
             return
 
@@ -2197,6 +2235,56 @@ class Viewer3D:
         if r <= 1.00:
             return (1.00, 0.60, 0.00, 1.0)       # 주황 — 한계
         return (1.00, 0.20, 0.20, 1.0)           # 빨강 — NG
+
+    def show_core_fiber_contour(self, walls_data):
+        """코어벽 면을 fiber 응력비(D/C)에 따라 jet 컨투어 색칠(상용 프로그램 느낌).
+
+        각 코어벽을 길이방향 fiber 띠 사각형으로 분할해 면 색을 입힌다.
+        walls_data: [{'corners': (bl, br, tr, tl) 각 (3,) world 좌표,
+                      'widths': [fiber 폭...], 'ratios': [fiber D/C...]}].
+        """
+        self._ensure_ops_visuals()
+        verts: List[np.ndarray] = []
+        faces: List[List[int]] = []
+        fcols: List[Tuple[float, float, float, float]] = []
+        vi = 0
+        for wd in walls_data:
+            bl, br, tr, tl = (np.asarray(p, dtype=np.float32)
+                              for p in wd['corners'])
+            widths = wd.get('widths') or []
+            ratios = wd.get('ratios') or []
+            total = float(sum(widths)) or 1.0
+            acc = 0.0
+            for i, w in enumerate(widths):
+                x0 = acc / total
+                x1 = (acc + w) / total
+                acc += w
+                p0 = bl + (br - bl) * x0
+                p1 = bl + (br - bl) * x1
+                p2 = tl + (tr - tl) * x1
+                p3 = tl + (tr - tl) * x0
+                verts.extend([p0, p1, p2, p3])
+                faces.append([vi, vi + 1, vi + 2])
+                faces.append([vi, vi + 2, vi + 3])
+                c = self._ratio_to_jet(ratios[i] if i < len(ratios) else 0.0)
+                fcols.append(c)
+                fcols.append(c)
+                vi += 4
+        if verts:
+            self._ops_core_mesh.set_data(
+                vertices=np.array(verts, dtype=np.float32),
+                faces=np.array(faces, dtype=np.uint32),
+                face_colors=np.array(fcols, dtype=np.float32))
+            self._ops_core_mesh.visible = True
+        else:
+            self._ops_core_mesh.visible = False
+        self.canvas.update()
+
+    def hide_core_fiber_contour(self):
+        """코어 fiber 컨투어 면 숨김."""
+        if getattr(self, '_ops_core_mesh', None) is not None:
+            self._ops_core_mesh.visible = False
+            self.canvas.update()
 
     def show_member_ratio_bands(self, ops_model, ratios: Dict[int, float]):
         """5단계 색상으로 부재 색칠 (물량산출 탭 진입 시 호출).

@@ -951,7 +951,8 @@ function _addGroupLabels(data) {
       // [물량탭] 트럭 없음 — 화물 묶음(-Z 범위 0~-tw)의 *맨 뒤 너머*에 라벨을 둬
       //   컴포넌트에 가려지지 않게 한다(운송의 '뒤로 밀기'와 동일 컨셉).
       labelY = first.truck_height_m / 2;       // 화물 높이 중앙
-      labelZ = -first.truck_width_m - 1.5;     // 화물 폭 맨 뒤 + 1.5m 여유
+      // [2026-06-07] 모듈 하나 뒤(-화물폭) 에서 추가로 15m 더 뒤.
+      labelZ = -first.truck_width_m - 15;
     } else {
       labelY = first.vehicle_height_offset_m +
                (first.truck_height_m - first.vehicle_height_offset_m) / 2;
@@ -1528,16 +1529,22 @@ def _qty_fake_truck(items_in_type: List, gap_y_mm: float) -> Truck:
     max_* 는 그 타입 인스턴스를 모두 담을 만큼 크게(렌더는 hide_truck 으로 끔).
     vehicle_height_offset=0 → 화물 바닥(z=0) 배치.
     """
+    # [2026-06-08] max_width 는 *한 줄(-Y) 폭* 만 — 인스턴스는 QTY_ROW_LIMIT 개마다
+    #   다음 줄(+X)로 접히므로 전체 합이 아니라 한 줄(최대 QTY_ROW_LIMIT 개)의 폭이
+    #   실제 -Y 범위다. 이 값이 강조 박스 -Y 길이·라벨 뒤 위치(-폭-15)를 결정한다.
+    #   (배치 center_y 는 max_width/2 가 상쇄돼 영향 없음 → 안전하게 좁혀도 됨.)
     max_len = 1.0
-    width_sum = 0.0
+    row_width_sum = 0.0
     max_h = 1.0
-    for it in items_in_type:
+    for i, it in enumerate(items_in_type):
         L = float(getattr(it, "length", 0.0) or 0.0)
         W = float(getattr(it, "width", 0.0) or 0.0)
         h = float(getattr(it, "height", getattr(it, "thickness", 0.0)) or 0.0)
         max_len = max(max_len, L)
-        width_sum += W + gap_y_mm
+        if i < QTY_ROW_LIMIT:          # 첫 줄(최대 QTY_ROW_LIMIT 개)만 폭 누적
+            row_width_sum += W + gap_y_mm
         max_h = max(max_h, h)
+    width_sum = row_width_sum
     return Truck(
         name="(물량)", truck_type="lowbed",
         max_length=max(max_len, 1.0),

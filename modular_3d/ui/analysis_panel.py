@@ -253,6 +253,10 @@ class AnalysisPanel(QWidget):
     column_segments_changed = pyqtSignal(int)
     # (2026-05-19 Phase 6) 정책 라디오 변경 — 운송탭 캐시 무효화 트리거.
     policy_changed = pyqtSignal(str)
+    # Pushover 역량곡선 실행 요청 — 무거운 비선형 해석이라 명시 버튼으로 트리거.
+    pushover_requested = pyqtSignal()
+    # 코어 fiber 응력 컨투어 3D 색칠 요청 — walls_data(코너·폭·응력비 dict 목록).
+    core_contour_requested = pyqtSignal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -352,6 +356,34 @@ class AnalysisPanel(QWidget):
         # 긴 부재명은 "…" 로 줄여 숫자 열을 침범하지 않게.
         self._tree.setTextElideMode(Qt.ElideRight)
         self._tree.currentItemChanged.connect(self._on_tree_item_changed)
+
+        # 코어 슬래브-벽체 격막 연결부 검토 표(모델링지침 8장) — 코어 그룹별 안전성.
+        #   해석 시 자동 갱신(populate_ops). 코어 검토 결과 있을 때만 표시(없으면 숨김).
+        #   부재력 트리 위 요약 표로 둔다.
+        self._conn_table = QTableWidget()
+        self._conn_table.setColumnCount(5)
+        self._conn_table.setHorizontalHeaderLabels(
+            ['코어', '수요 Vu(kN)', 'φΣVn(kN)', '비율', '판정'])
+        self._conn_table.verticalHeader().setVisible(False)
+        self._conn_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self._conn_table.setSelectionMode(QTableWidget.NoSelection)
+        self._conn_table.setMaximumHeight(150)
+        self._conn_table.horizontalHeader().setStretchLastSection(True)
+        self._conn_table.setVisible(False)
+
+        # Pushover 역량곡선 실행 버튼 — 무거운 비선형 해석이라 명시 실행(자동 해석과 별개).
+        from PyQt5.QtWidgets import QPushButton as _QPB
+        self._pushover_btn = _QPB('Pushover 역량곡선')
+        self._pushover_btn.setToolTip(
+            '코어 포함 모델의 비선형 pushover 역량곡선(X·Y)을 계산해 표시합니다')
+        self._pushover_btn.clicked.connect(lambda: self.pushover_requested.emit())
+        member_lay.addWidget(self._pushover_btn)
+        # 코어 fiber 응력 다이어그램 버튼 — 해석 결과(wall_responses)로 자체 다이얼로그.
+        self._fiber_btn = _QPB('코어 응력 다이어그램')
+        self._fiber_btn.setToolTip('코어벽 fiber 위치별 콘크리트·철근 응력·항복을 표시합니다')
+        self._fiber_btn.clicked.connect(self._on_fiber_diagram)
+        member_lay.addWidget(self._fiber_btn)
+        member_lay.addWidget(self._conn_table)
         member_lay.addWidget(self._tree)
 
         # [2026-06-02 완전 분리] 부재력 트리는 탭 묶음(_tabs) 밖, root 에 직접 둔다.
@@ -375,7 +407,12 @@ class AnalysisPanel(QWidget):
         """
         for i in range(self._case_combo.count()):
             if self._case_combo.itemData(i, _Qt.UserRole) == 'ENVELOPE':
-                self._case_combo.setCurrentIndex(i)
+                # [2026-06-07] 이미 ENVELOPE 가 선택돼 있어도(첫 진입 등) 색·트리가
+                #   D+L 로 남지 않도록 변경 핸들러를 강제로 한 번 돌린다.
+                if self._case_combo.currentIndex() == i:
+                    self._on_case_index_changed(i)
+                else:
+                    self._case_combo.setCurrentIndex(i)
                 return
 
     def select_dl_case(self):
@@ -709,8 +746,112 @@ class AnalysisPanel(QWidget):
 
         # 탭 2: AnalysisMember 트리
         self._fill_member_tree_ops(analysis_model, comp_labels, active)
+        # 코어 슬래브-벽체 연결부 검토 표 갱신(지진 base_reactions 기준, 코어 없으면 숨김).
+        self._fill_core_connection_table()
         # [2026-05-30] 요약 탭 제거로 부재별 내부력이 첫 탭(인덱스 0).
         self._tabs.setCurrentIndex(0)
+
+    def _on_fiber_diagram(self):
+        """코어 fiber 응력 다이어그램 — 해석 결과(wall_responses)로 다이얼로그 표시."""
+        from PyQt5.QtWidgets import QMessageBox
+        am = getattr(self, '_model', None)
+        scene = getattr(self, '_scene', None)
+        results = getattr(self, '_all_results', None) or {}
+        res = results.get('Ex') or results.get('Ey')
+        if (am is None or res is None
+                or not getattr(res, 'wall_responses', None)
+                or not getattr(am, 'walls', None)):
+            QMessageBox.information(
+                self, '코어 응력',
+                '코어 응력 데이터가 없습니다. 코어 포함 모델로 구조해석을 먼저 실행하세요.')
+            return
+        from modular_3d.model.core import Core, normalize_core_rebar
+        from modular_3d.ui.fiber_stress_dialog import FiberStressDialog
+        om = getattr(self, '_ops_model', None)
+        wall_data = {}
+        contour = []
+        for wid, w in am.walls.items():
+            resp = res.wall_responses.get(wid)
+            if not resp:
+                continue
+            gid, fl = -1, 0
+            for cid in w.source_comp_ids:
+                c = scene.components.get(cid) if scene else None
+                if isinstance(c, Core):
+                    gid = int(getattr(c, 'group_id', 0))
+                    fl = int(getattr(c, 'floor_index', 0))
+                    break
+            cfg = scene.core_rebar.get(gid) if (scene and gid >= 0) else None
+            fy = normalize_core_rebar(cfg).get('fy', 400.0)
+            label = f'코어그룹{gid} {fl + 1}층 (벽{wid})'
+            steel = list(resp.get('fiber_steel', []))
+            wall_data[label] = {
+                'widths': list(w.fiber_widths),
+                'conc': list(resp.get('fiber_conc', [])),
+                'steel': steel,
+                'fy': fy,
+            }
+            # 3D 면 컨투어용 — 코너 좌표(ops_model.node_tags) + 응력비(철근 D/C)
+            if om is not None and fy > 0:
+                try:
+                    corners = (om.node_tags[w.n_bl], om.node_tags[w.n_br],
+                               om.node_tags[w.n_tr], om.node_tags[w.n_tl])
+                except (KeyError, AttributeError, TypeError):
+                    corners = None
+                if corners is not None:
+                    contour.append({
+                        'corners': corners,
+                        'widths': list(w.fiber_widths),
+                        'ratios': [abs(float(s)) / fy for s in steel],
+                    })
+        if contour:
+            self.core_contour_requested.emit(contour)
+        FiberStressDialog(wall_data, self).exec_()
+
+    def _fill_core_connection_table(self):
+        """코어 슬래브-벽체 격막 연결부 검토 표 — 지진(Ex 우선, 없으면 Ey) base_reactions
+        기준. 코어/결과 없으면 표를 숨긴다. 미입력(슬래브 철근 0)이면 위험으로 표시된다."""
+        from PyQt5.QtWidgets import QTableWidgetItem
+        from PyQt5.QtGui import QColor
+        tbl = self._conn_table
+        am = getattr(self, '_model', None)
+        scene = getattr(self, '_scene', None)
+        results = getattr(self, '_all_results', None) or {}
+        res = results.get('Ex') or results.get('Ey')
+        if (am is None or scene is None or res is None
+                or not getattr(am, 'walls', None)):
+            tbl.setVisible(False)
+            return
+        direction = 'X' if results.get('Ex') is not None else 'Y'
+        try:
+            from modular_3d.analysis.slab_connection import (
+                check_core_group_connections)
+            # [#2c 해결 2026-07-01] 층별 정석 수요 = 코어 노드 수평반력(다이어프램 제약
+            #   전달력, OpsResults.core_node_reactions). 상부층 합 = 베이스 반력으로 평형
+            #   검증되어 신뢰 가능(구 wall_responses 전단력은 11~25% 불일치라 폐기). 노드
+            #   반력 없으면 간이(베이스 반력 합)로 폴백.
+            chk = check_core_group_connections(
+                am, scene, res.base_reactions, direction,
+                core_node_reactions=getattr(res, 'core_node_reactions', None))
+        except Exception:
+            tbl.setVisible(False)
+            return
+        if not chk:
+            tbl.setVisible(False)
+            return
+        tbl.setRowCount(len(chk))
+        for i, (g, r) in enumerate(sorted(chk.items())):
+            ratio_txt = '∞' if r['ratio'] == float('inf') else f"{r['ratio']:.2f}"
+            cells = [f'그룹 {g}', f"{r['Vu'] / 1000:.0f}",
+                     f"{r['phiVn'] / 1000:.0f}", ratio_txt,
+                     '안전' if r['safe'] else '위험']
+            for c, v in enumerate(cells):
+                it = QTableWidgetItem(v)
+                if c == 4:
+                    it.setForeground(QColor('#1F7A3D') if r['safe']
+                                     else QColor('#C0392B'))
+                tbl.setItem(i, c, it)
+        tbl.setVisible(True)
 
     def _populate_case_combo_initial(self):
         """콤보박스 초기 항목 — 활성 5 종 + 비활성 추가 조합 (KDS 향후 구현용)."""

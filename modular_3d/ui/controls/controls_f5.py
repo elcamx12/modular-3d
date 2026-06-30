@@ -215,6 +215,14 @@ class F5Mixin:
         if not comps:
             self._dim_panel.set_mode_text('[불러오기: 빈 모델]')
             return
+        # [2026-06-08] 불러온 씬의 층수를 F5 상단 층 SpinBox 에 반영.
+        #   emit=False 로 시그널을 막아 '다층 완성품 복제 없음' 정책을 유지하면서
+        #   표시값만 18 등 실제 층수로 맞춘다(재생성 부작용 없음).
+        if self._f5_panel is not None and hasattr(self._f5_panel, 'set_floors'):
+            try:
+                self._f5_panel.set_floors(int(n_floors), emit=False)
+            except Exception:
+                pass
         # 미리보기 템플릿 보관(클릭 확정까지). full_scene 플래그로 commit/ghost 가
         # '다층 완성품 — 복제 없음' 경로를 타게 한다.
         self._import_templates = comps

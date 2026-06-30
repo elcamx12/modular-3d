@@ -208,6 +208,8 @@ class MainWindow(QMainWindow):
         if hasattr(self._controller, '_set_beam_section_type'):
             self._design_props.beam_section_changed.connect(
                 self._controller._set_beam_section_type)
+        # 코어 그룹 철근 설정(코어 슬래브 선택 시 입력) → scene.core_rebar 갱신.
+        self._design_props.core_rebar_changed.connect(self._on_core_rebar_changed)
 
         # (2026-05-24) AI 최적배치 영역 제거에 따라 속성 패널 ↔ F5 층수 양방향
         # 연동도 제거. 층수는 F5 패널 상단 SpinBox 가 단일 컨트롤이며, 그
@@ -224,8 +226,8 @@ class MainWindow(QMainWindow):
         )
         # (2026-05-13) 폭 확장 — 한글 라벨 잘림 방지.
         # [디자인 통일] 종합탭 톤 카드 패딩 수용 위해 폭 소폭 확대.
-        self._palette.setFixedWidth(240)
-        self._design_props.setFixedWidth(330)
+        self._palette.setFixedWidth(180)   # [2026-06-07] 240→180 (버튼 너비 3/4)
+        self._design_props.setFixedWidth(264)   # [2026-06-07] 330→264 (4/5)
 
         # ── 모듈 정의 탭 (2026-05-24 디자인 2분리) ──────────
         # 배치 설계 탭과 완전 분리된 독립 작업공간(자체 Scene·Viewer·Controller).
@@ -302,6 +304,13 @@ class MainWindow(QMainWindow):
         if hasattr(self._analysis_panel, 'policy_changed'):
             self._analysis_panel.policy_changed.connect(
                 self._on_policy_changed_for_evaluation)
+        # Pushover 역량곡선 버튼 → 비선형 해석 + 그래프(코어 포함 모델).
+        if hasattr(self._analysis_panel, 'pushover_requested'):
+            self._analysis_panel.pushover_requested.connect(self._run_pushover)
+        # 코어 응력 다이어그램 버튼 → 3D 코어벽 면 컨투어 색칠(D/C jet).
+        if hasattr(self._analysis_panel, 'core_contour_requested'):
+            self._analysis_panel.core_contour_requested.connect(
+                self._show_core_contour)
         self._tab_final = self._tab_evaluation  # deprecated alias
         # [2026-05-31] 비교 탭 — 저장된 .case.json 들을 가로 4 개까지 나열.
         from .compare_panel import ComparePanel
@@ -557,10 +566,8 @@ class MainWindow(QMainWindow):
         self._design_left_split.setSizes([0, 800])
         self._design_left_split.setChildrenCollapsible(True)
         self._design_left_lay.addWidget(self._design_left_split, stretch=1)
-        # [2026-05-30 B3] 3D 뷰 바로 아래 z축 단면(수평 평면 절단) 슬라이더.
+        # [2026-06-07] z축/y축 단면을 토글 버튼 2개(상호 배타) + 슬라이더 1개로 통합.
         self._design_left_lay.addWidget(self._build_section_slider())
-        # [2026-06-05] y축 단면(수직 평면 절단) 슬라이더 — z축 단면과 동일 방식.
-        self._design_left_lay.addWidget(self._build_section_y_slider())
         # [2026-06-02] 벽 채움면 / 실 표기 표시 토글 (체크박스 2개). (내 작업)
         self._design_left_lay.addWidget(self._build_wall_room_toggles())
         self._design_right_pane = QWidget()
@@ -608,7 +615,7 @@ class MainWindow(QMainWindow):
 
         # 우측 속성 패널 — 부재 속성 + 실 속성(선택 시 전환)
         right = QWidget()
-        right.setFixedWidth(330)
+        right.setFixedWidth(264)   # [2026-06-07] 330→264 (배치설계 우측 패널 4/5)
         rv = QVBoxLayout(right)
         rv.setContentsMargins(0, 0, 0, 0)
         rv.setSpacing(8)
@@ -622,30 +629,108 @@ class MainWindow(QMainWindow):
         return page
 
     def _build_section_slider(self) -> QWidget:
-        """[B3] 3D 화면 z축 단면(수평 평면 절단) 컨트롤 — 체크박스 + 슬라이더.
+        """[2026-06-07] z축/y축 단면 컨트롤 — 토글 버튼 2개(상호 배타) + 슬라이더 1개.
 
-        체크 ON 이면 슬라이더 높이(z, mm) 위쪽을 잘라 평면을 본다(three.js 클리핑).
+        - 'z축 단면' / 'y축 단면' 버튼은 동시에 켜지지 않는다(하나 켜면 다른 하나 꺼짐).
+          둘 다 꺼진 상태도 가능(클리핑 없음).
+        - 슬라이더 1개가 현재 켜진 축의 절단 위치를 제어한다(three.js 클리핑).
         """
         box = QWidget()
         lay = QHBoxLayout(box)
         lay.setContentsMargins(6, 2, 6, 2)
-        self._section_check = QCheckBox('단면')
-        self._section_check.setToolTip(
-            '체크 시 슬라이더 높이에서 위쪽을 잘라 평면을 봅니다.')
-        lay.addWidget(self._section_check)
+        self._section_axis = None   # None / 'z' / 'y'
+        self._section_btn_z = QPushButton('z축 단면')
+        self._section_btn_z.setCheckable(True)
+        self._section_btn_z.setToolTip('켜면 슬라이더 높이(z) 위쪽을 잘라 평면을 봅니다.')
+        self._section_btn_y = QPushButton('y축 단면')
+        self._section_btn_y.setCheckable(True)
+        self._section_btn_y.setToolTip('켜면 슬라이더 위치(y)보다 작은 쪽을 잘라 평면을 봅니다.')
+        lay.addWidget(self._section_btn_z)
+        lay.addWidget(self._section_btn_y)
         self._section_slider = QSlider(Qt.Horizontal)
-        # 범위는 단면을 켤 때 -100 ~ 건물 최고점으로 동적 갱신(_update_section_range).
         self._section_slider.setRange(-100, 10000)
         self._section_slider.setValue(10000)
         self._section_slider.setSingleStep(100)
+        self._section_slider.setEnabled(False)
         lay.addWidget(self._section_slider, stretch=1)
-        self._section_label = QLabel('z = 10000 mm')
+        self._section_label = QLabel('—')
         self._section_label.setFixedWidth(120)
         lay.addWidget(self._section_label)
-        self._section_check.toggled.connect(self._on_section_toggled)
-        self._section_slider.valueChanged.connect(self._on_section_changed)
+        self._section_btn_z.toggled.connect(self._on_section_axis_z_toggled)
+        self._section_btn_y.toggled.connect(self._on_section_axis_y_toggled)
+        self._section_slider.valueChanged.connect(self._on_section_slider_changed)
         box.setMaximumHeight(34)
         return box
+
+    def _on_section_axis_z_toggled(self, checked: bool):
+        """z축 버튼 토글 — 켜면 y축 끄고 z 단면 활성, 끄면 클리핑 해제."""
+        if getattr(self, '_section_axis_guard', False):
+            return
+        self._section_axis_guard = True
+        try:
+            if checked:
+                self._section_btn_y.setChecked(False)
+                self._section_axis = 'z'
+            elif self._section_axis == 'z':
+                self._section_axis = None
+        finally:
+            self._section_axis_guard = False
+        self._activate_section_axis()
+
+    def _on_section_axis_y_toggled(self, checked: bool):
+        """y축 버튼 토글 — 켜면 z축 끄고 y 단면 활성, 끄면 클리핑 해제."""
+        if getattr(self, '_section_axis_guard', False):
+            return
+        self._section_axis_guard = True
+        try:
+            if checked:
+                self._section_btn_z.setChecked(False)
+                self._section_axis = 'y'
+            elif self._section_axis == 'y':
+                self._section_axis = None
+        finally:
+            self._section_axis_guard = False
+        self._activate_section_axis()
+
+    def _activate_section_axis(self):
+        """현재 켜진 축에 맞춰 슬라이더 범위/값을 세팅하고 클리핑을 적용."""
+        axis = self._section_axis
+        self._section_slider.setEnabled(axis is not None)
+        three = getattr(self._viewer, 'three', None)
+        if axis == 'z':
+            self._update_section_range()          # 슬라이더 범위/값 갱신(z)
+            if three is not None and hasattr(three, 'set_section_y'):
+                three.set_section_y(0.0, False)   # 다른 축 클리핑 해제
+        elif axis == 'y':
+            self._update_section_y_range()        # 슬라이더 범위/값 갱신(y)
+            if three is not None and hasattr(three, 'set_section_z'):
+                three.set_section_z(0.0, False)
+        else:
+            # 둘 다 꺼짐 — 모든 클리핑 해제.
+            if three is not None:
+                if hasattr(three, 'set_section_z'):
+                    three.set_section_z(0.0, False)
+                if hasattr(three, 'set_section_y'):
+                    three.set_section_y(0.0, False)
+            self._section_label.setText('—')
+            return
+        self._on_section_slider_changed()
+
+    def _on_section_slider_changed(self, *_):
+        """슬라이더 변경 → 현재 켜진 축의 클리핑 평면 갱신."""
+        axis = getattr(self, '_section_axis', None)
+        if axis is None:
+            return
+        val = float(self._section_slider.value())
+        three = getattr(self._viewer, 'three', None)
+        if axis == 'z':
+            self._section_label.setText(f'z = {int(val)} mm')
+            if three is not None and hasattr(three, 'set_section_z'):
+                three.set_section_z(val, True)
+        else:
+            self._section_label.setText(f'y = {int(val)} mm')
+            if three is not None and hasattr(three, 'set_section_y'):
+                three.set_section_y(val, True)
 
     def _build_wall_room_toggles(self) -> QWidget:
         """[2026-06-02] 배치설계 표시 토글 — 벽 채움면 + 실 표기를 한 체크박스로.
@@ -665,8 +750,28 @@ class MainWindow(QMainWindow):
         self._wall_room_check.toggled.connect(self._on_wall_room_toggled)
         lay.addWidget(self._wall_room_check)
         lay.addStretch(1)
+        # [2026-06-11] 카메라 프리셋 버튼 — 아이소메트릭 / 위에서 보기(정확히 90°).
+        self._btn_view_iso = QPushButton('아이소뷰')
+        self._btn_view_iso.setToolTip('건물 전체를 아이소메트릭(비스듬한 입체) 시점으로 봅니다.')
+        self._btn_view_iso.clicked.connect(self._on_view_iso)
+        self._btn_view_top = QPushButton('위에서 보기')
+        self._btn_view_top.setToolTip('정확히 위에서 아래로(90°) 내려다보는 평면 시점으로 봅니다.')
+        self._btn_view_top.clicked.connect(self._on_view_top)
+        for _b in (self._btn_view_iso, self._btn_view_top):
+            _b.setMaximumHeight(26)
+            lay.addWidget(_b)
         box.setMaximumHeight(34)
         return box
+
+    def _on_view_iso(self):
+        three = getattr(self._viewer, 'three', None)
+        if three is not None and hasattr(three, 'set_view_iso'):
+            three.set_view_iso()
+
+    def _on_view_top(self):
+        three = getattr(self._viewer, 'three', None)
+        if three is not None and hasattr(three, 'set_view_top'):
+            three.set_view_top()
 
     def _on_wall_room_toggled(self, checked: bool) -> None:
         if hasattr(self._controller, 'set_wall_fill_visible'):
@@ -695,50 +800,8 @@ class MainWindow(QMainWindow):
         self._section_slider.setValue(z_max)   # 켜는 순간엔 전체가 보이는 위치
         self._section_slider.blockSignals(False)
 
-    def _on_section_toggled(self, checked: bool):
-        """단면 체크 토글 — 켜질 때 슬라이더 범위를 현재 건물 높이에 맞춘다."""
-        if checked:
-            self._update_section_range()
-        self._on_section_changed()
-
-    def _on_section_changed(self, *_):
-        """단면 체크/슬라이더 변경 → three.js 클리핑 평면 갱신."""
-        z = float(self._section_slider.value())
-        enabled = self._section_check.isChecked()
-        self._section_label.setText(f'z = {int(z)} mm')
-        three = getattr(self._viewer, 'three', None)
-        if three is not None and hasattr(three, 'set_section_z'):
-            three.set_section_z(z, enabled)
-
-    def _build_section_y_slider(self) -> QWidget:
-        """[2026-06-05] 3D 화면 y축 단면(수직 평면 절단) 컨트롤 — 체크박스 + 슬라이더.
-
-        체크 ON 이면 슬라이더 위치(y, mm) 보다 작은 쪽을 잘라 평면을 본다.
-        z축 단면(_build_section_slider)과 완전히 동일한 방식(three.js 클리핑).
-        """
-        box = QWidget()
-        lay = QHBoxLayout(box)
-        lay.setContentsMargins(6, 2, 6, 2)
-        self._section_y_check = QCheckBox('Y축 단면')
-        self._section_y_check.setToolTip(
-            '체크 시 슬라이더 위치(y)보다 작은 쪽을 잘라 평면을 봅니다.')
-        lay.addWidget(self._section_y_check)
-        self._section_y_slider = QSlider(Qt.Horizontal)
-        # 범위는 단면을 켤 때 건물 y 최소~최대로 동적 갱신(_update_section_y_range).
-        self._section_y_slider.setRange(-10000, 10000)
-        self._section_y_slider.setValue(-10000)
-        self._section_y_slider.setSingleStep(100)
-        lay.addWidget(self._section_y_slider, stretch=1)
-        self._section_y_label = QLabel('y = -10000 mm')
-        self._section_y_label.setFixedWidth(120)
-        lay.addWidget(self._section_y_label)
-        self._section_y_check.toggled.connect(self._on_section_y_toggled)
-        self._section_y_slider.valueChanged.connect(self._on_section_y_changed)
-        box.setMaximumHeight(34)
-        return box
-
     def _update_section_y_range(self):
-        """y축 단면 슬라이더 범위를 건물 y 최소~최대로 갱신(z축 갱신과 동일 패턴)."""
+        """y축 단면 슬라이더 범위를 건물 y 최소~최대로 갱신(통합 슬라이더 사용)."""
         from modular_3d.render.mesh_builder import build_component_mesh
         y_min = None
         y_max = None
@@ -756,25 +819,10 @@ class MainWindow(QMainWindow):
             y_min, y_max = -10000, 10000
         y_min = int(round(y_min))
         y_max = max(int(round(y_max)), y_min + 100)
-        self._section_y_slider.blockSignals(True)
-        self._section_y_slider.setRange(y_min, y_max)
-        self._section_y_slider.setValue(y_min)   # 켜는 순간엔 전체가 보이는 위치
-        self._section_y_slider.blockSignals(False)
-
-    def _on_section_y_toggled(self, checked: bool):
-        """y축 단면 체크 토글 — 켜질 때 슬라이더 범위를 현재 건물 폭에 맞춘다."""
-        if checked:
-            self._update_section_y_range()
-        self._on_section_y_changed()
-
-    def _on_section_y_changed(self, *_):
-        """y축 단면 체크/슬라이더 변경 → three.js 클리핑 평면 갱신."""
-        y = float(self._section_y_slider.value())
-        enabled = self._section_y_check.isChecked()
-        self._section_y_label.setText(f'y = {int(y)} mm')
-        three = getattr(self._viewer, 'three', None)
-        if three is not None and hasattr(three, 'set_section_y'):
-            three.set_section_y(y, enabled)
+        self._section_slider.blockSignals(True)
+        self._section_slider.setRange(y_min, y_max)
+        self._section_slider.setValue(y_min)   # 켜는 순간엔 전체가 보이는 위치
+        self._section_slider.blockSignals(False)
 
     def _build_joint_edit_tab(self) -> QWidget:
         """접합부 조정 탭: 중앙(3D 와이어프레임) + 우 접합부 UI placeholder.
@@ -1511,9 +1559,9 @@ class MainWindow(QMainWindow):
                 )
             # [2026-05-11 v4] 탭 진입 시 자동 해석 실행 (기존 F6 동작)
             self._run_analysis_if_needed()
-            # (2026-05-19 작업 5) 구조해석 탭 복귀 시 케이스를 D+L 로 되돌림.
-            if hasattr(self._analysis_panel, 'select_dl_case'):
-                self._analysis_panel.select_dl_case()
+            # [2026-06-07] 구조해석 진입 시 초기 하중조합을 지배조합(ENVELOPE)으로.
+            if hasattr(self._analysis_panel, 'select_envelope_case'):
+                self._analysis_panel.select_envelope_case()
         elif idx == TAB_SECTION:
             # [2026-05-31 P2] 단면 설계 탭 — 좌 공유 와이어프레임 마운트 +
             # 진입 시 '모두 통일' 자동 수렴 → 좌측 5단계 응력비 색.
@@ -2553,6 +2601,52 @@ class MainWindow(QMainWindow):
     def _on_room_selected(self, room_id: int):
         room = self._scene.rooms.get(room_id) if room_id > 0 else None
         self._show_room_props(room)
+
+    def _on_core_rebar_changed(self, group_id: int, cfg: dict):
+        """코어 슬래브 패널의 철근 변경 → scene.core_rebar[group_id] 갱신.
+        다음 해석모델 빌드 때 이 값이 fiber 철근비·재료 강도로 반영된다."""
+        gid = int(group_id)
+        if gid > 0:
+            self._scene.core_rebar[gid] = dict(cfg)
+
+    def _run_pushover(self):
+        """Pushover 역량곡선 — 코어 포함 모델을 X·Y 비선형 변위제어 해석 후 그래프 표시.
+        무거운 해석이라 자동 해석과 별개로 버튼으로 명시 실행한다(대기 커서)."""
+        from PyQt5.QtWidgets import QApplication, QMessageBox
+        from PyQt5.QtCore import Qt
+        try:
+            from modular_3d.analysis.topology import build_analysis_model
+            from modular_3d.analysis.ops_builder import build_ops_model
+            from modular_3d.analysis.ops_solver import solve_pushover
+            from modular_3d.ui.capacity_curve_dialog import CapacityCurveDialog
+            am = build_analysis_model(self._scene)
+            if not getattr(am, 'walls', None):
+                QMessageBox.warning(
+                    self, 'Pushover',
+                    '코어벽(RC 코어)이 없어 pushover 를 실행할 수 없습니다.')
+                return
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                curves = {}
+                for d in ('X', 'Y'):
+                    om = build_ops_model(am, scene=self._scene, verify=False)
+                    curves[d] = solve_pushover(
+                        om, self._scene, d, target_drift=0.02, with_gravity=True)
+            finally:
+                QApplication.restoreOverrideCursor()
+            CapacityCurveDialog(curves, self).exec_()
+        except Exception as e:
+            QMessageBox.warning(self, 'Pushover 실패', f'{type(e).__name__}: {e}')
+
+    def _show_core_contour(self, walls_data):
+        """코어 fiber 응력 컨투어 — vispy 뷰어에 코어벽 면 D/C 색칠(상용 느낌)."""
+        try:
+            if hasattr(self._viewer, 'show_core_fiber_contour'):
+                self._viewer.show_core_fiber_contour(walls_data)
+        except Exception as e:
+            from modular_3d._utils.debug import dprint
+            dprint('ANALYSIS',
+                   f'[CORE_CONTOUR] 색칠 실패: {type(e).__name__}: {e}')
 
     def _show_room_props(self, room):
         """실 선택 시 실 패널 표시(부재 패널 숨김), 해제 시 반대."""

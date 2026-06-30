@@ -19,10 +19,20 @@ from typing import Optional
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QComboBox,
+    QDoubleSpinBox, QGridLayout, QSpinBox, QPushButton, QDialog,
+    QDialogButtonBox,
 )
 
 from modular_3d.model import ComponentType, Scene, effective_beam_section_type
+from modular_3d.model.core import CORE_REBAR_DEFAULT, normalize_core_rebar
 from modular_3d.ui.fonts import F_BODY, F_HEAD, ensure_fonts_loaded
+
+
+# KS 이형철근 공칭 단면적 (mm²) — 배근 → 철근비 환산용.
+_REBAR_AREA = {
+    'D10': 71.33, 'D13': 126.7, 'D16': 198.6, 'D19': 286.5,
+    'D22': 387.1, 'D25': 506.7, 'D29': 642.4, 'D32': 794.2,
+}
 
 
 # ── 종합탭 톤 디자인 토큰 ─────────────────────────────────
@@ -51,17 +61,104 @@ _NO_BEAM_TYPES = {
 }
 
 
+class RebarCalcDialog(QDialog):
+    """배근(개수×직경) → 철근비 또는 철근 단면적 환산 보조 다이얼로그.
+
+    두 모드:
+    - 철근비 모드(기본): ρ = (개수×직경면적) / (콘크리트 폭×길이). 코어벽 경계/웹용.
+    - 면적 모드(area_mode=True): As = 개수×직경면적 만 산출(콘크리트 칸 생략).
+      슬래브 연결부 철근(수집재·다우얼)처럼 단면적 자체가 필요한 입력용.
+    확인 시 호출처가 rho() 또는 area() 로 결과를 가져간다.
+    """
+
+    def __init__(self, init_w=0.0, init_len=0.0, title='배근 환산',
+                 area_mode=False, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self._rho = 0.0
+        self._area_mode = bool(area_mode)
+        lay = QVBoxLayout(self)
+        grid = QGridLayout()
+
+        self._n = QSpinBox()
+        self._n.setRange(0, 500)
+        self._n.setValue(8)
+        self._dia = QComboBox()
+        for _name, _area in _REBAR_AREA.items():
+            self._dia.addItem(_name, _area)
+        self._dia.setCurrentText('D25')
+        grid.addWidget(QLabel('철근 개수'), 0, 0)
+        grid.addWidget(self._n, 0, 1)
+        grid.addWidget(QLabel('철근 직경'), 1, 0)
+        grid.addWidget(self._dia, 1, 1)
+
+        self._w = self._len = None
+        if not self._area_mode:
+            self._w = QDoubleSpinBox()
+            self._w.setRange(1.0, 100000.0)
+            self._w.setDecimals(0)
+            self._w.setValue(float(init_w))
+            self._w.setSuffix(' mm')
+            self._len = QDoubleSpinBox()
+            self._len.setRange(1.0, 100000.0)
+            self._len.setDecimals(0)
+            self._len.setValue(float(init_len))
+            self._len.setSuffix(' mm')
+            grid.addWidget(QLabel('콘크리트 폭'), 2, 0)
+            grid.addWidget(self._w, 2, 1)
+            grid.addWidget(QLabel('콘크리트 길이'), 3, 0)
+            grid.addWidget(self._len, 3, 1)
+        lay.addLayout(grid)
+
+        self._result = QLabel()
+        self._result.setWordWrap(True)
+        lay.addWidget(self._result)
+
+        self._n.valueChanged.connect(self._recalc)
+        self._dia.currentIndexChanged.connect(self._recalc)
+        if not self._area_mode:
+            self._w.valueChanged.connect(self._recalc)
+            self._len.valueChanged.connect(self._recalc)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+        self._recalc()
+
+    def _recalc(self, *args):
+        a_s = self.area()
+        if self._area_mode:
+            self._result.setText(f'철근량 As = {a_s:.0f} mm²')
+            return
+        a_c = self._w.value() * self._len.value()
+        self._rho = (a_s / a_c) if a_c > 0 else 0.0
+        self._result.setText(
+            f'철근비 = {self._rho * 100:.3f} %   '
+            f'(As={a_s:.0f} mm², Ac={a_c:.0f} mm²)')
+
+    def rho(self) -> float:
+        return self._rho
+
+    def area(self) -> float:
+        return self._n.value() * float(self._dia.currentData())
+
+
 class DesignPropertiesPanel(QWidget):
     """디자인 탭 우측 패널 — 활성/선택 부재 정보 + 보 단면 타입 선택."""
 
     # (comp_id, 'shs'|'h') — 선택 부재의 보 단면 타입 변경 요청.
     beam_section_changed = pyqtSignal(int, str)
+    # (group_id, {rho_boundary, rho_web, fck, fy}) — 코어 그룹 철근 설정 변경 요청.
+    #   코어 슬래브 선택 시 입력하며, 그 그룹의 코어벽 전체(전 층)에 적용된다.
+    core_rebar_changed = pyqtSignal(int, dict)
 
     def __init__(self, scene: Scene, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._scene = scene
         self._sel_id = -1
         self._loading = False
+        self._rebar_gid = 0   # 현재 철근 입력 대상 코어 그룹(0=없음)
         self._setup_ui()
         self.refresh_active(None)
         self.refresh_selected(-1)
@@ -148,6 +245,127 @@ class DesignPropertiesPanel(QWidget):
         _z_note.setWordWrap(True)
         lay.addWidget(_z_note)
 
+        # ── 코어 철근 (코어 슬래브 선택 시 표시 — 이 코어 그룹 전체에 적용) ─────
+        #   경계요소·웹 수직 철근비 + 콘크리트/철근 강도. fiber 해석에 직접 반영된다.
+        #   경계요소 길이·fiber 수는 자동(코드 규정). 미입력 그룹은 기본값 사용.
+        self._rebar_box = QWidget()
+        _rb = QVBoxLayout(self._rebar_box)
+        _rb.setContentsMargins(0, 8, 0, 0)
+        _rb.setSpacing(6)
+        _rb_cap = QLabel('코어 철근 (이 코어 그룹 전체)')
+        _rb_cap.setStyleSheet(
+            f"font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+            f" color: {_HEAD_FG}; font-size: 15px; font-weight: 700;"
+            " background: transparent;"
+        )
+        _rb.addWidget(_rb_cap)
+
+        def _mk_spin(minimum, maximum, step, decimals, suffix):
+            sp = QDoubleSpinBox()
+            sp.setRange(minimum, maximum)
+            sp.setSingleStep(step)
+            sp.setDecimals(decimals)
+            sp.setSuffix(suffix)
+            sp.setStyleSheet(
+                f"font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+                f" font-size: 14px; padding: 3px 6px; color: {_BODY_FG};"
+                f" border: 1px solid {_CARD_BORDER}; border-radius: 6px;"
+                f" background: {_CARD_BG}; min-height: 22px;"
+            )
+            sp.valueChanged.connect(self._on_rebar_changed)
+            return sp
+
+        def _mk_cap(text):
+            q = QLabel(text)
+            q.setStyleSheet(
+                f"font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+                f" color: {_SUB_FG}; font-size: 13px; background: transparent;"
+            )
+            return q
+
+        self._sp_rho_be = _mk_spin(0.0, 10.0, 0.1, 2, ' %')
+        self._sp_rho_web = _mk_spin(0.0, 5.0, 0.1, 2, ' %')
+        self._sp_fck = _mk_spin(10.0, 100.0, 1.0, 0, ' MPa')
+        self._sp_fy = _mk_spin(200.0, 700.0, 10.0, 0, ' MPa')
+
+        _grid = QGridLayout()
+        _grid.setContentsMargins(0, 0, 0, 0)
+        _grid.setHorizontalSpacing(8)
+        _grid.setVerticalSpacing(6)
+        def _mk_calc_btn(target):
+            b = QPushButton('배근…')
+            b.setStyleSheet(
+                f"font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+                f" font-size: 12px; padding: 2px 8px; color: {_HEAD_FG};"
+                f" border: 1px solid {_CARD_BORDER}; border-radius: 6px;"
+                f" background: {_CARD_BG}; min-height: 22px;"
+            )
+            b.setToolTip('철근 개수·직경으로 철근비를 계산해 채웁니다')
+            b.clicked.connect(lambda: self._open_rebar_calc(target))
+            return b
+
+        _grid.addWidget(_mk_cap('경계 철근비'), 0, 0)
+        _grid.addWidget(self._sp_rho_be, 0, 1)
+        _grid.addWidget(_mk_calc_btn('be'), 0, 2)
+        _grid.addWidget(_mk_cap('웹 철근비'), 1, 0)
+        _grid.addWidget(self._sp_rho_web, 1, 1)
+        _grid.addWidget(_mk_calc_btn('web'), 1, 2)
+        _grid.addWidget(_mk_cap('콘크리트 fck'), 2, 0)
+        _grid.addWidget(self._sp_fck, 2, 1)
+        _grid.addWidget(_mk_cap('철근 fy'), 3, 0)
+        _grid.addWidget(self._sp_fy, 3, 1)
+        _rb.addLayout(_grid)
+
+        # ── 슬래브 연결부 철근 (지침 8장: 수집재 As,col1 · 다우얼 As,dw · 슬래브 fck) ──
+        #   슬래브-벽체 격막 연결부 전단강도 검토용. 면적(mm²) 직접 또는 배근으로 환산.
+        _sl_cap = QLabel('슬래브 연결부 철근 (지침 8장)')
+        _sl_cap.setStyleSheet(
+            f"font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+            f" color: {_HEAD_FG}; font-size: 14px; font-weight: 700;"
+            " background: transparent; padding-top: 4px;"
+        )
+        _rb.addWidget(_sl_cap)
+
+        self._sp_col_area = _mk_spin(0.0, 200000.0, 100.0, 0, ' mm²')
+        self._sp_dowel_area = _mk_spin(0.0, 200000.0, 100.0, 0, ' mm²')
+        self._sp_slab_fck = _mk_spin(10.0, 100.0, 1.0, 0, ' MPa')
+
+        def _mk_area_btn(spin):
+            b = QPushButton('배근…')
+            b.setStyleSheet(
+                f"font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+                f" font-size: 12px; padding: 2px 8px; color: {_HEAD_FG};"
+                f" border: 1px solid {_CARD_BORDER}; border-radius: 6px;"
+                f" background: {_CARD_BG}; min-height: 22px;"
+            )
+            b.setToolTip('철근 개수·직경으로 단면적을 계산해 채웁니다')
+            b.clicked.connect(lambda: self._open_area_calc(spin))
+            return b
+
+        _grid2 = QGridLayout()
+        _grid2.setContentsMargins(0, 0, 0, 0)
+        _grid2.setHorizontalSpacing(8)
+        _grid2.setVerticalSpacing(6)
+        _grid2.addWidget(_mk_cap('수집재 As'), 0, 0)
+        _grid2.addWidget(self._sp_col_area, 0, 1)
+        _grid2.addWidget(_mk_area_btn(self._sp_col_area), 0, 2)
+        _grid2.addWidget(_mk_cap('다우얼 As'), 1, 0)
+        _grid2.addWidget(self._sp_dowel_area, 1, 1)
+        _grid2.addWidget(_mk_area_btn(self._sp_dowel_area), 1, 2)
+        _grid2.addWidget(_mk_cap('슬래브 fck'), 2, 0)
+        _grid2.addWidget(self._sp_slab_fck, 2, 1)
+        _rb.addLayout(_grid2)
+
+        _rb_note = QLabel('미입력 시 기본값(경계 2%·웹 0.4%·fck27·fy400) 적용')
+        _rb_note.setStyleSheet(
+            f"font-family: '{F_HEAD}', 'Malgun Gothic', sans-serif;"
+            f" color: {_SUB_FG}; font-size: 11px; background: transparent;"
+        )
+        _rb_note.setWordWrap(True)
+        _rb.addWidget(_rb_note)
+        lay.addWidget(self._rebar_box)
+        self._rebar_box.setVisible(False)
+
         # (2026-05-13) 코어 CAD 입력 섹션 제거 — 코어벽 만드는 기능(팔레트) +
         # 코어 슬래브 생성 버튼이 별도 제공되므로 본 자리 불필요.
 
@@ -175,6 +393,7 @@ class DesignPropertiesPanel(QWidget):
         if comp_id <= 0 or comp_id not in self._scene.components:
             self._selected_label.setText('선택 부재: (없음)')
             self._sec_row.setVisible(False)
+            self._rebar_box.setVisible(False)
             return
         comp = self._scene.components[comp_id]
         # [E4] 타입 표기 — 독립부재는 '모듈A-1', 종속/기타는 타입명.
@@ -196,6 +415,7 @@ class DesignPropertiesPanel(QWidget):
             f'  크기={size_str} mm'
         )
         self._refresh_section_combo(comp)
+        self._refresh_rebar_section(comp)
 
     def _refresh_section_combo(self, comp):
         """보 단면 타입 콤보 — 직접선택 부재는 활성, 종속/합체는 부모 따라감(비활성)."""
@@ -224,4 +444,70 @@ class DesignPropertiesPanel(QWidget):
         if not self._sec_combo.isEnabled():
             return
         self.beam_section_changed.emit(self._sel_id, self._sec_combo.currentData())
+
+    # ── 코어 철근 섹션 ───────────────────────────────
+    def _refresh_rebar_section(self, comp):
+        """코어 슬래브 선택 시에만 철근 입력 표시 — 그 그룹의 현재값(없으면 기본값)을
+        4 필드에 채운다. 철근비는 내부 비율(0.02) ↔ 표시 %(2.0) 로 변환."""
+        if comp.comp_type != ComponentType.CORE_SLAB:
+            self._rebar_box.setVisible(False)
+            self._rebar_gid = 0
+            return
+        gid = int(getattr(comp, 'group_id', 0))
+        self._rebar_gid = gid
+        # 배근 환산 기본 콘크리트 면적용 — 그룹 대표 코어벽 치수(첫 코어벽).
+        self._rebar_wall_L, self._rebar_wall_t = 6000.0, 300.0
+        for _c in self._scene.components.values():
+            if (_c.comp_type == ComponentType.CORE
+                    and int(getattr(_c, 'group_id', 0)) == gid):
+                self._rebar_wall_L = float(_c.dimensions.get('width', 6000.0))
+                self._rebar_wall_t = float(_c.dimensions.get('depth', 300.0))
+                break
+        cfg = normalize_core_rebar(self._scene.core_rebar.get(gid))
+        # setValue 가 valueChanged 를 쏘므로 _loading 가드로 되먹임 방지.
+        self._loading = True
+        self._sp_rho_be.setValue(cfg['rho_boundary'] * 100.0)
+        self._sp_rho_web.setValue(cfg['rho_web'] * 100.0)
+        self._sp_fck.setValue(cfg['fck'])
+        self._sp_fy.setValue(cfg['fy'])
+        self._sp_col_area.setValue(cfg['slab_collector_area'])
+        self._sp_dowel_area.setValue(cfg['slab_dowel_area'])
+        self._sp_slab_fck.setValue(cfg['slab_fck'])
+        self._loading = False
+        self._rebar_box.setVisible(True)
+
+    def _on_rebar_changed(self, *args):
+        if self._loading or self._rebar_gid <= 0:
+            return
+        cfg = {
+            'rho_boundary': self._sp_rho_be.value() / 100.0,
+            'rho_web': self._sp_rho_web.value() / 100.0,
+            'fck': self._sp_fck.value(),
+            'fy': self._sp_fy.value(),
+            'slab_collector_area': self._sp_col_area.value(),
+            'slab_dowel_area': self._sp_dowel_area.value(),
+            'slab_fck': self._sp_slab_fck.value(),
+        }
+        self.core_rebar_changed.emit(self._rebar_gid, cfg)
+
+    def _open_rebar_calc(self, target: str):
+        """배근 환산 다이얼로그 → 결과 철근비를 경계/웹 필드에 채운다(→ 시그널 발동).
+        콘크리트 면적 기본값: 경계요소 = 두께 × lbe, 웹 = 두께 × 웹길이(대표 코어벽 추정)."""
+        L = float(getattr(self, '_rebar_wall_L', 6000.0))
+        t = float(getattr(self, '_rebar_wall_t', 300.0))
+        lbe = min(max(0.15 * L, t), 0.4 * L)
+        if target == 'be':
+            w0, len0, title, sp = t, lbe, '경계요소 배근 → 철근비', self._sp_rho_be
+        else:
+            w0, len0, title, sp = (t, max(L - 2.0 * lbe, 1.0),
+                                   '웹 배근 → 철근비', self._sp_rho_web)
+        dlg = RebarCalcDialog(w0, len0, title=title, parent=self)
+        if dlg.exec_() == QDialog.Accepted:
+            sp.setValue(dlg.rho() * 100.0)   # valueChanged → core_rebar_changed
+
+    def _open_area_calc(self, target_spin):
+        """배근 → 철근 단면적(개수×직경) 다이얼로그 → 결과 면적을 슬래브 철근 필드에 채운다."""
+        dlg = RebarCalcDialog(title='배근 → 철근량', area_mode=True, parent=self)
+        if dlg.exec_() == QDialog.Accepted:
+            target_spin.setValue(dlg.area())   # valueChanged → core_rebar_changed
 

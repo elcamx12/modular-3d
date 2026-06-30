@@ -2029,6 +2029,16 @@ def _collect_core_data(om):
         else:
             continue   # 대각·기울어진 부재 제외
         core_lines.append((mid, m.n1, m.n2, axis))
+
+    # [2026-06-24 MVLEM] 코어벽이 막대(core_column) 대신 AnalysisModel.walls 4노드로
+    #   바뀌었다 → walls 노드도 코어측으로 수집(직접 매칭용). 노드는 중심선(half_t)이라
+    #   기존 wide-column 과 같은 위치 → R09 거리 임계(_CORE_LATERAL_MAX) 그대로 유효
+    #   (offset 보정 불필요). walls 변 선사영은 MVLEM 4노드가 중간분할 불가라 제외 —
+    #   코너 직접매칭으로 충분한지 검증, 부족 시 P3b-2 에서 보강.
+    for w in getattr(am, 'walls', {}).values():
+        for nid in (w.n_bl, w.n_br, w.n_tr, w.n_tl):
+            if om.node_tags.get(nid) is not None:
+                core_nids.add(nid)
     return core_nids, core_lines
 
 
@@ -2428,10 +2438,18 @@ def apply_all_joint_rules(om, dofs: Tuple[int, ...] = (1, 2, 3)) -> int:
     # 일괄 분할 — 룰들이 누적한 사영점을 보별로 한 번에 처리.
     n += _split_edges_and_link_corners(om, edge_split_map, dofs)
     # R09 — (a) 직접 노드 매칭 + (b) 사영점을 core_split_map 에 누적.
+    # [함정·2026-06-08] 코어 접합은 수직(UZ=3)을 묶으면 안 된다. 매 층마다 모듈
+    # 노드를 코어벽에 UZ 까지 강결합하면 수직 강성이 큰 코어가 인접 모듈을
+    # 떠받쳐 모듈 기둥이 중력을 못 받고(축력≈0), 그 하중이 경계 보로 새어
+    # 전단으로 터진다(코어 접합 모듈 위치마다 NG, 적용하중≫반력 = 평형 붕괴).
+    # 코어는 횡력 전달(다이어프램)만 담당해야 하므로 수평(1,2)+회전(4,5,6)만
+    # 묶고 UZ 는 푼다 → 모듈이 제 기둥으로 중력을 내림. (A:NG137→0·평형회복,
+    # B/C 회귀 없음 검증.)
+    core_dofs = (1, 2, 4, 5, 6)
     core_split_map: Dict[int, List[Tuple[int, np.ndarray]]] = {}
-    n += apply_core_joint(om, core_split_map=core_split_map)                 # R09
-    # 코어 선을 사영점에서 분할 + 외부노드 6 DOF 결합 (truss/콘크리트 종류 보존).
-    n += _split_core_lines(om, core_split_map, (1, 2, 3, 4, 5, 6))
+    n += apply_core_joint(om, core_dofs, core_split_map=core_split_map)      # R09
+    # 코어 선을 사영점에서 분할 + 외부노드 결합 (truss/콘크리트 종류 보존, UZ 제외).
+    n += _split_core_lines(om, core_split_map, core_dofs)
     return n
 
 

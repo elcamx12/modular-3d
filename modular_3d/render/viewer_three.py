@@ -350,6 +350,14 @@ class ViewerThree:
             f'window.setSectionY({float(y)}, '
             f'{"true" if enabled else "false"});')
 
+    def set_view_iso(self) -> None:
+        """[2026-06-11] 카메라를 아이소메트릭 시점으로 이동하고 전체를 화면에 맞춤."""
+        self._run_js('window.setViewIso && window.setViewIso();')
+
+    def set_view_top(self) -> None:
+        """[2026-06-11] 카메라를 정확히 위에서 내려다보는(90°) 시점으로 이동."""
+        self._run_js('window.setViewTop && window.setViewTop();')
+
     def is_ops_view_active(self) -> bool:
         return False
 

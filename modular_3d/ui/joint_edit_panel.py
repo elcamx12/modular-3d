@@ -24,6 +24,24 @@ from PyQt5.QtWidgets import (
 from modular_3d.ui.fonts import F_BODY, F_HEAD, ensure_fonts_loaded
 
 
+# [2026-06-07] 범례 표기 — 규칙 ID(R0x_...) → 한국어 명칭.
+#   (diaphragm 은 영어 그대로 두라는 사용자 요청 → 매핑에 넣지 않음)
+_RULE_ID_KO = {
+    'R01_mod_mod_h':   '모듈간 수평접합',
+    'R02_mod_mod_v':   '모듈간 수직접합',
+    'R03_panel_mod':   '패널-모듈 접합',
+    'R04_panel_panel': '패널간 접합',
+    'R05_wall_floor_v': '벽-바닥 수직접합',
+    'R06_wall_mod':    '벽-모듈 접합',
+    'R07_wall_wall_h': '벽간 수평접합',
+    'R08_wall_cant':   '벽-캔틸레버 접합',
+    'R09_core':        '코어 접합',
+    'R10_user_pin':    '사용자 핀접합',
+    'R11_user_rigid':  '사용자 강접합',
+    'USER_ADD':        '사용자 추가 접합',
+}
+
+
 # ── 종합탭 톤 디자인 토큰 ─────────────────────────────────
 _PAGE_BG     = "#EDF2F7"
 _CARD_BG     = "#FFFFFF"
@@ -321,20 +339,13 @@ class JointEditPanel(QWidget):
         b = info.get('b_comp', 0)
         is_rigid = bool(info.get('is_rigid', False))
         prop = '강접' if is_rigid else '핀'
-        ax, ay = info.get('a_xy', (0, 0))
-        bx, by = info.get('b_xy', (0, 0))
-        vertical = abs(ax - bx) < 1.0 and abs(ay - by) < 1.0
-        kind = '수직(적층)' if vertical else '수평(인접)'
-        rid = info.get('rule_id', '')
         # comp id 0 은 보조점(사영점·다이어프램 마스터 등) — "부재 #0" 대신 표기.
         a_label = f'부재 #{a}' if a else '보조점'
         b_label = f'부재 #{b}' if b else '보조점'
+        # [2026-06-09] 표시 텍스트 2줄로 축약(기존 5줄 → 잘림 방지). 현재 성질 위주.
         self._sel_info.setText(
             f'{a_label} ↔ {b_label}\n'
-            f'현재 성질: {prop}\n'
-            f'유형: {kind}\n'
-            f'규칙: {rid}\n'
-            f'(같은 평면 위치의 모든 층에 함께 적용)'
+            f'현재 성질: {prop}'
         )
         for btn in (self._btn_remove, self._btn_pin, self._btn_rigid):
             btn.setEnabled(True)
@@ -413,7 +424,8 @@ class JointEditPanel(QWidget):
                     self._rule_visible[_rid] = vis
                     self.rule_visibility_changed.emit(_rid, vis)
                 chk.toggled.connect(_on_toggle)
-                disp = rid
+                # [2026-06-07] 범례를 'R01_mod_mod_h' 같은 코드 대신 한국어 명칭으로.
+                disp = _RULE_ID_KO.get(rid, rid)
             self._rule_checks[rid] = chk
             row_lay.addWidget(chk)
             line = QLabel(f'⬤  {disp}')

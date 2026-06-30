@@ -196,6 +196,57 @@ def _classify_4_beams_by_direction(
     return long_ids, short_ids, long_len, short_len
 
 
+def _group_perimeter_beams_by_direction(
+    member_ids: List[int], model: AnalysisModel
+) -> Tuple[List[int], List[int], float, float]:
+    """둘레 보 N개(한 변이 여러 토막날 수 있음)를 장축/단축 방향으로 분류.
+
+    [함정] module_bottom_beam 은 모듈 내부 중간보가 긴 변에 붙으면 그 변이 2토막
+    이상으로 쪼개져 4개가 아니라 6·8개가 된다. _classify_4_beams_by_direction 은
+    정확히 4개를 요구하므로 그런 모듈의 바닥하중이 통째로 누락됐다(바닥패널 없는
+    모듈전용 건물 강재 물량 ½ 버그). 본 함수는 보가 어느 축에 평행한지(방향) +
+    슬래브 범위로 분류하므로 토막 수와 무관하게 동작한다.
+
+    깨끗한 4개일 때는 _classify_4_beams_by_direction 과 동일 결과(회귀 0). 같은
+    변의 토막들은 같은 그룹에 들어가고, _distribute_slab_pressure 가 보별로
+    '단위길이당 UDL' 을 더하므로 토막 길이의 합 = 변 길이가 되어 총하중 보존.
+
+    Returns: (long_ids, short_ids, long_len, short_len)  중심선 기준 변 길이.
+    """
+    dirs: Dict[int, np.ndarray] = {}
+    pts: List[Tuple[float, float]] = []
+    for mid in member_ids:
+        m = model.members[mid]
+        c1 = model.nodes[m.n1].coord
+        c2 = model.nodes[m.n2].coord
+        v = np.array([c2[0] - c1[0], c2[1] - c1[1]], dtype=float)
+        L = float(np.hypot(v[0], v[1]))
+        if L < 1e-9:
+            continue
+        dirs[mid] = v / L
+        pts.append((float(c1[0]), float(c1[1])))
+        pts.append((float(c2[0]), float(c2[1])))
+    if not dirs:
+        return [], [], 0.0, 0.0
+    ref = next(iter(dirs.values()))
+    perp = np.array([-ref[1], ref[0]], dtype=float)
+    group_par: List[int] = []    # ref 에 평행한 보
+    group_perp: List[int] = []   # ref 에 수직인 보
+    for mid, u in dirs.items():
+        if abs(float(np.dot(u, ref))) >= 0.7071:
+            group_par.append(mid)
+        else:
+            group_perp.append(mid)
+    arr = np.array(pts, dtype=float)
+    span_par = float((arr @ ref).max() - (arr @ ref).min())
+    span_perp = float((arr @ perp).max() - (arr @ perp).min())
+    # ref 에 평행한 보는 ref 축을 따라 뻗는다 → 그 변의 길이 = span_par.
+    # span_par 이 장변이면 group_par 가 장변 보.
+    if span_par >= span_perp:
+        return group_par, group_perp, span_par, span_perp
+    return group_perp, group_par, span_perp, span_par
+
+
 def _distribute_slab_pressure(
     pressure_n_mm2: float,
     long_ids: List[int],
@@ -693,16 +744,37 @@ def _apply_slab_loads(scene: Scene, model: AnalysisModel, result: LoadResult) ->
                         continue
                     mem_ids.append(mid)
                     seen.add(mid)
-        if len(mem_ids) != 4:
+        # [함정] 모듈 내부 중간보가 긴 변에 붙으면 그 변이 2토막 이상으로 쪼개져
+        # module_bottom_beam 이 4개가 아니라 6·8개가 된다. 과거 'len!=4 → continue'
+        # 는 그런 모듈의 바닥하중을 통째로 누락시켰다(바닥패널 없는 모듈전용
+        # 건물의 강재 물량이 ½ 로 떨어지던 버그). 방향+범위 분류로 N개를 처리.
+        if len(mem_ids) < 2:
             continue
 
-        long_ids, short_ids, long_len, short_len = _classify_4_beams_by_direction(mem_ids, model)
+        long_ids, short_ids, long_len, short_len = (
+            _group_perimeter_beams_by_direction(mem_ids, model))
         # 실제 슬래브 면적 = 컴포넌트 dimensions (보 중심선 사각형이 아닌 외곽).
         # 보 중심선 면적 (long_len × short_len) 만 쓰면 보 외측 슬래브가 누락되어
         # 약 8% 자중·활하중 부족 (4m × 6m 모듈 기준 24m² → 22.04m²).
         slab_w_real = float(comp.dimensions.get('width', long_len))
         slab_d_real = float(comp.dimensions.get('depth', short_len))
         slab_area_real = slab_w_real * slab_d_real
+
+        # 방어: 한 방향만 잡힌 비정상 perimeter → 총하중을 둘레보 길이비로 균등
+        # UDL 분배(총량 보존). 정상 모듈/패널은 두 방향이 모두 있어 안 탄다.
+        if not long_ids or not short_ids or short_len < 1e-9 or long_len < 1e-9:
+            valid_ids = [mid for mid in mem_ids
+                         if model.get_member_length(mid) > 1e-9]
+            tot_len = sum(model.get_member_length(mid) for mid in valid_ids)
+            if tot_len > 1e-9 and slab_area_real > 0:
+                _accumulate(result, valid_ids,
+                            p_dead * slab_area_real / tot_len, is_live=False)
+                _accumulate(result, valid_ids,
+                            p_live * slab_area_real / tot_len, is_live=True)
+                result.total_slab_dead_n += p_dead * slab_area_real
+                result.total_live_n += p_live * slab_area_real
+            continue
+
         slab_area_centerline = long_len * short_len
         # pressure 보정: 분배 식은 보 중심선 기반이지만 적용량은 실제 면적에 맞춤
         if slab_area_centerline > 1e-6:

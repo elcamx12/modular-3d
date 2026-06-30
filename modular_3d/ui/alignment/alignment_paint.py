@@ -534,9 +534,12 @@ class AlignmentCanvasPaintMixin:
         반환: (snapped_wx, snapped_wy, snap_point_or_None)
         snap_point: (cx, cy) 또는 None (그리드 폴백 시)
         """
+        from modular_3d.카탈로그.tolerances import (
+            HOVER_SNAP_RADIUS_MM, GRID_SNAP_MM,
+        )
         if threshold_mm is None:
-            from modular_3d.카탈로그.tolerances import HOVER_SNAP_RADIUS_MM
             threshold_mm = float(HOVER_SNAP_RADIUS_MM)
+        _grid = float(GRID_SNAP_MM)
         scene = self._controller._scene.components
         best_d = float('inf')
         best_p = None
@@ -554,9 +557,9 @@ class AlignmentCanvasPaintMixin:
         if best_p is not None:
             snapped_x, snapped_y, snap_p = float(best_p[0]), float(best_p[1]), best_p
         else:
-            # 그리드 폴백
-            snapped_x = round(wx / 100.0) * 100.0
-            snapped_y = round(wy / 100.0) * 100.0
+            # 격자 폴백 (GRID_SNAP_MM, 현재 5mm)
+            snapped_x = round(wx / _grid) * _grid
+            snapped_y = round(wy / _grid) * _grid
             snap_p = None
 
         # 자동 갭 보정 — 활성 부재 정보가 있을 때만 (PREVIEW / DEPENDENCY_PICK 시점)

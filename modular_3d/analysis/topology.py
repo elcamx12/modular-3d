@@ -94,6 +94,38 @@ class AnalysisMember:
 
 
 @dataclass
+class AnalysisWall:
+    """해석용 RC 벽 요소 (MVLEM_3D 매핑). 1D 막대(AnalysisMember)와 분리한다.
+
+    [함정] 막대 전제 코드(get_member_length·n1/n2 순회 등)는 이 클래스를 절대
+    건드리지 않는다 — walls 는 AnalysisModel.walls 로 members 와 '별도 dict'.
+    4 코너 노드(반시계: 하좌→하우→상우→상좌) + 수직 fiber 다발로 면내 비선형
+    (콘크리트/철근) + 면외 plate(MVLEM_3D 자체) 거동을 표현한다.
+    [노드 위치] P1 검증상 중심면/외면 면내거동 동일(0%) → 외면 배치로 모듈 접합
+    강체팔 제거 가능(D2). fiber 폭 합 = 벽 길이 L, thickness = 벽 두께 t.
+    """
+    id: int
+    n_bl: int                    # 하좌 노드 ID
+    n_br: int                    # 하우
+    n_tr: int                    # 상우
+    n_tl: int                    # 상좌 (반시계 순서)
+    m: int                       # 수직 fiber 수
+    fiber_widths: List[float]    # m 개 — 길이방향 분할 폭(합 = L)
+    fiber_rhos: List[float]      # m 개 — fiber 별 철근비
+    fiber_confined: List[bool]   # m 개 — 횡구속(경계요소) 여부
+    thickness: float             # 벽 두께 t
+    role: str = 'core_wall'
+    source_comp_ids: List[int] = field(default_factory=list)
+    fck: float = 27.0            # 콘크리트 압축강도 (MPa) — 그룹별 철근설정 반영
+    fy: float = 400.0            # 철근 항복강도 (MPa) — 그룹별 철근설정 반영
+
+    def __repr__(self):
+        return (f"Wall({self.id}, m={self.m}, "
+                f"corners=[{self.n_bl},{self.n_br},{self.n_tr},{self.n_tl}], "
+                f"role={self.role}, src={self.source_comp_ids})")
+
+
+@dataclass
 class Diaphragm:
     """단일 컴포넌트(또는 종속 캔틸 포함)의 바닥 다이어프램 그룹.
 
@@ -116,6 +148,9 @@ class Diaphragm:
 class AnalysisModel:
     nodes: Dict[int, AnalysisNode] = field(default_factory=dict)
     members: Dict[int, AnalysisMember] = field(default_factory=dict)
+    # [2026-06-24 MVLEM] RC 벽 요소 — 막대(members)와 분리. ops_builder 가 walls
+    #   루프로 MVLEM_3D 등록. _extract_core 가 코어벽을 여기 생성(P2b 예정).
+    walls: Dict[int, "AnalysisWall"] = field(default_factory=dict)
     comp_to_members: Dict[int, List[int]] = field(default_factory=dict)
     comp_to_nodes: Dict[int, List[int]] = field(default_factory=dict)
     diaphragms: List[Diaphragm] = field(default_factory=list)
@@ -190,6 +225,10 @@ class _LocalExtract:
     # 캔틸레버 슬래브 anchor 키(부모 면 쪽 2 코너) — 후속 매칭에서 제외용.
     anchor_keys: List[Tuple[int, int, int]] = field(default_factory=list)
     merge_group: Optional[str] = None
+    # [2026-06-24 MVLEM] RC 벽(코어벽) local dict 목록 — 4코너 노드키(bl/br/tr/tl)
+    #   + fiber 메타(m·widths·rhos·confined·thickness·role). build_analysis_model 이
+    #   글로벌 ID 로 AnalysisWall 생성.
+    walls: List[dict] = field(default_factory=list)
 
 
 def _extract_module(comp: Module) -> _LocalExtract:
@@ -526,48 +565,56 @@ def _extract_vertical_module(comp: Vertical3Module) -> _LocalExtract:
     return _LocalExtract(coords=coords, members=members, merge_group=None)
 
 
-def _extract_core(comp: Core) -> _LocalExtract:
-    """Core (RC 코어벽) → 고정 경계용 단순 선 프레임.
+def _core_fiber_division(L: float, t: float,
+                         rho_be: float = 0.02, rho_web: float = 0.004):
+    """코어벽 단면 fiber 분할 — 양끝 경계요소(세분·고철근) + 중앙 웹(균등·저철근).
 
-    [정책 2026-06-03 — 트러스 격자 폐기 → 고정 경계]
-    코어를 강성 요소가 아니라 '바닥처럼 안 움직이는 고정 경계'로 본다
-    (ops_builder._step_fix_base_nodes 가 코어 노드를 전부 6DOF 고정). 따라서
-    면내 강성을 표현하던 트러스 등가 격자(column/runner/truss_v/h/d)를 버리고,
-    R09 접합 인터페이스 + 고정 노드 확보용 단순 선만 만든다. 짧은벽·ㅗ자 연결에서
-    격자가 mechanism 을 만들어 발산하던 문제가 원천 제거된다.
+    [경계요소 구분 — D5] 경계요소 길이 lbe = clamp(0.15·L, [t, 0.4·L]) 각 끝(자동),
+      fiber 수 경계 각 2 + 웹 4(자동). 철근비는 사용자 입력값(rho_be·rho_web)을 받되
+      미지정 시 기본(경계 2%·웹 0.4%). 강도(fck·fy)는 재료 단계(ops_builder)에서 반영.
+    반환: (widths[], rhos[], confined[]) — 길이방향 좌→우, sum(widths)=L.
+    """
+    lbe = min(max(0.15 * L, t), 0.4 * L)
+    web = L - 2.0 * lbe
+    if web <= 1.0:
+        # 짧은 벽 — 경계/웹 구분 무의미 → 전체를 경계요소 4분할(횡구속).
+        n = 4
+        return [L / n] * n, [rho_be] * n, [True] * n
+    n_be, n_web = 2, 4
+    be_each, web_each = lbe / n_be, web / n_web
+    widths = [be_each] * n_be + [web_each] * n_web + [be_each] * n_be
+    rhos = [rho_be] * n_be + [rho_web] * n_web + [rho_be] * n_be
+    confined = [True] * n_be + [False] * n_web + [True] * n_be
+    return widths, rhos, confined
 
-    [형상] 코어벽 길이방향 중심선(로컬 y=half_t)을 3 z 레벨에 수평선으로 생성:
-      - z=0            : 바닥 (role core_bottom_runner)
-      - z=h-SECTION_W  : 모듈 천장보 레벨 (role core_ceiling_runner) — 천장 접합
-                         사영용. 모듈 천장보(z=h-SECTION_W)와 같은 평면이라 R09 성립.
-      - z=h+gap        : 코어 슬래브 받침 (role core_top_runner)
-    + 양 끝 수직 기둥선(role core_column, z 레벨 사이 분절)으로 형상·고정 노드 확보.
-    강성은 무의미(전부 고정)하나 부재 등록/단면이 깨지지 않게 유효값을 유지한다.
 
-    [짧은 벽] L<=t 면 수평선 길이가 0 이하 → 수직 기둥선 1줄(x 중앙)만 만든다.
-    인접 벽·슬래브 노드와 _round_key 통합 또는 ㄷ자 빈공간 연결선으로 결합된다.
+def _extract_core(comp: Core, rebar: "dict | None" = None) -> _LocalExtract:
+    """Core (RC 코어벽) → MVLEM_3D 벽 1개 (4 코너 노드 + fiber 메타).
+
+    [2026-06-24 MVLEM 전환] 옛 '고정 경계 단순 선'(core_column+runner 막대)을 폐기.
+    코어벽을 AnalysisWall(별도 dict)로 만들어 ops_builder 가 MVLEM_3D 로 등록(P3) →
+    실제 변형·비선형 거동을 갖는다. 한 Core(한 층) = 1 벽 요소.
+    [함정] 이 함수는 members 를 비우고 walls 만 채운다 — ops_builder 가 walls→MVLEM
+    등록을 마쳐야(P3) 코어가 강성을 갖는다. P2b 단독 상태에선 코어 노드가 요소 없이
+    free(해석 발산) — P3 와 한 쌍으로 완성된다.
+
+    [형상] 노드는 중심선(로컬 y=half_t)·벽 전체 길이(x=0~L)·높이(z=0~h)의 4 코너:
+      하좌(0,0) 하우(L,0) 상우(L,h) 상좌(0,h) — 반시계. 다층 적층·이형 교차부는
+      _round_key 좌표 병합으로 노드 공유(아래층 상단 = 위층 하단).
+      (D2 외면 배치/강체팔 보정은 P3 R09 에서; P1 검증상 면내거동은 노드위치 무관.)
+
+    [fiber] _core_fiber_division 으로 양끝 경계요소+중앙 웹 분할(D5).
+    [짧은 벽] L<=t 라도 4 코너는 동일 생성(fiber 분할만 전체 경계요소로 위임).
     """
     L = float(comp.dimensions['width'])
     t = float(comp.dimensions['depth'])
     h = float(comp.dimensions['height'])
 
     ax, ay = comp._anchor_offset(L, t)
-    rot = comp.rotation
-    pos = comp.position
-    to_world = make_local_to_world(ax, ay, rot, pos)
+    to_world = make_local_to_world(ax, ay, comp.rotation, comp.position)
     half_t = t / 2.0
 
-    # z 레벨 — 바닥 / 슬래브받침. 중복 제거 후 정렬(예외 방어).
-    # [2026-06-03] 천장보 레벨(z=h-SECTION_W) 수평선은 코어벽마다 독립이라 박스
-    # 모서리에서 끊긴다 → 코어 슬래브가 천장보 레벨에도 폐곡선(core_ceiling_runner)을
-    # 만들어 박스로 닫는다(_extract_core_slab). 여기선 바닥·슬래브받침 수평선 + 기둥만.
-    z_floor = 0.0
-    z_top = h + MODULE_JOINT_GAP_MM
-    run_role = {z_floor: 'core_bottom_runner', z_top: 'core_top_runner'}
-    z_levels = sorted({z_floor, z_top})
-
     coords: Dict[Tuple[int, int, int], np.ndarray] = {}
-    members: List[dict] = []
 
     def _key(x: float, z: float) -> Tuple[int, int, int]:
         w = to_world(x, half_t, z)
@@ -575,36 +622,29 @@ def _extract_core(comp: Core) -> _LocalExtract:
         coords[k] = w
         return k
 
-    inner_width = L - t
-    x0 = half_t           # 길이방향 끝(기둥 중심) — 외곽 두께 안쪽.
-    x1 = L - half_t
+    # 상단 z = h + 접합갭 — 다층 적층 시 위층 바닥(다음 층 position.z)과 같은 world z
+    #   가 되어 _round_key 로 노드 공유(아래층 상단 = 위층 하단). gap 누락 시 20mm 어긋나
+    #   적층 노드가 분리된다(기존 _extract_core 가 z_top=h+gap 쓴 이유).
+    z_top = h + MODULE_JOINT_GAP_MM
+    # 4 코너 (반시계: 하좌 → 하우 → 상우 → 상좌)
+    bl = _key(0.0, 0.0)
+    br = _key(L, 0.0)
+    tr = _key(L, z_top)
+    tl = _key(0.0, z_top)
 
-    if inner_width > 1.0:
-        # 정상 벽 — 각 z 레벨 수평선 + 양 끝 수직 기둥선.
-        for z in z_levels:
-            members.append(dict(
-                n1_key=_key(x0, z), n2_key=_key(x1, z),
-                kind='beam', role=run_role.get(z, 'core_ceiling_runner'),
-                section_w=t, section_h=SECTION_W_MM, section_t=t,
-            ))
-        for xe in (x0, x1):
-            for za, zb in zip(z_levels[:-1], z_levels[1:]):
-                members.append(dict(
-                    n1_key=_key(xe, za), n2_key=_key(xe, zb),
-                    kind='column', role='core_column',
-                    section_w=t, section_h=t, section_t=t,
-                ))
-    else:
-        # 짧은 벽 — 수직 기둥선 1줄(x 중앙)만(수평선은 길이 0이라 생략).
-        xc = L / 2.0
-        for za, zb in zip(z_levels[:-1], z_levels[1:]):
-            members.append(dict(
-                n1_key=_key(xc, za), n2_key=_key(xc, zb),
-                kind='column', role='core_column',
-                section_w=t, section_h=t, section_t=t,
-            ))
+    # 그룹별 철근 설정(rebar) → fiber 철근비·강도. 미지정 시 기본값(normalize_core_rebar).
+    from modular_3d.model.core import normalize_core_rebar
+    rc = normalize_core_rebar(rebar)
+    widths, rhos, confined = _core_fiber_division(
+        L, t, rho_be=rc['rho_boundary'], rho_web=rc['rho_web'])
+    walls = [dict(
+        bl_key=bl, br_key=br, tr_key=tr, tl_key=tl,
+        m=len(widths), fiber_widths=widths, fiber_rhos=rhos,
+        fiber_confined=confined, thickness=t, role='core_wall',
+        fck=rc['fck'], fy=rc['fy'],
+    )]
 
-    return _LocalExtract(coords=coords, members=members, merge_group=None)
+    return _LocalExtract(coords=coords, members=[], walls=walls, merge_group=None)
 
 
 def _extract_core_slab_polygon(comp: CoreSlab, poly) -> _LocalExtract:
@@ -769,9 +809,17 @@ _EXTRACTORS = {
 }
 
 
-def _extract_one(comp: Component) -> Optional[_LocalExtract]:
+def _extract_one(comp: Component,
+                 core_rebar: "dict | None" = None) -> Optional[_LocalExtract]:
     fn = _EXTRACTORS.get(type(comp))
-    return fn(comp) if fn else None
+    if fn is None:
+        return None
+    # 코어벽만 그룹별 철근 설정을 주입(다른 부재는 comp 만). core_rebar 는
+    #   {group_id: 설정} 사전 — comp.group_id 로 조회(없으면 None → 기본값).
+    if type(comp) is Core:
+        rebar = (core_rebar or {}).get(int(getattr(comp, 'group_id', 0)))
+        return fn(comp, rebar)
+    return fn(comp)
 
 
 # ── (삭제됨) _merge_adjacent_module_nodes ────────────────────
@@ -977,8 +1025,9 @@ def build_analysis_model(scene: Scene) -> AnalysisModel:
     next_node_id = 1
     next_mem_id = 1
 
+    core_rebar = getattr(scene, 'core_rebar', None)
     for comp in scene.components.values():
-        local = _extract_one(comp)
+        local = _extract_one(comp, core_rebar)
         if local is None:
             continue
 
@@ -1024,6 +1073,27 @@ def build_analysis_model(scene: Scene) -> AnalysisModel:
                 n3=n3, n4=n4,
             )
             model.comp_to_members.setdefault(comp.id, []).append(mid)
+
+        # [2026-06-24 MVLEM] walls → AnalysisWall (글로벌 ID). members 와 별도 dict.
+        #   4코너 노드키를 gid 로 해석해 model.walls 에 등록. comp_to_members 엔 넣지
+        #   않는다(막대 전제 소비처가 wall id 를 member 로 오인하지 않도록).
+        for wd in local.walls:
+            wid = next_mem_id
+            next_mem_id += 1
+            model.walls[wid] = AnalysisWall(
+                id=wid,
+                n_bl=local_key_to_gid[wd['bl_key']],
+                n_br=local_key_to_gid[wd['br_key']],
+                n_tr=local_key_to_gid[wd['tr_key']],
+                n_tl=local_key_to_gid[wd['tl_key']],
+                m=wd['m'],
+                fiber_widths=list(wd['fiber_widths']),
+                fiber_rhos=list(wd['fiber_rhos']),
+                fiber_confined=list(wd['fiber_confined']),
+                thickness=wd['thickness'], role=wd['role'],
+                source_comp_ids=[comp.id],
+                fck=float(wd.get('fck', 27.0)), fy=float(wd.get('fy', 400.0)),
+            )
 
     # [2026-05-13 종속 관계 정책]
     # 종속 관계로 얽힌 부재의 인접 노드를 같은 nid 로 통합 → 같은 컴포넌트 내부의
@@ -1430,6 +1500,118 @@ def _consolidate_dependent_nodes(model: AnalysisModel, scene: Scene) -> None:
                                 corner_targets[nid_a] = tgt
                                 corner_targets[nid_b] = tgt
 
+    # [2026-06-24 MVLEM] 코어 walls 노드 적층·교차 공유 — 같은 group_id 다른 cid 의
+    #   wall 코너 노드를 두 갈래로 통합한다. 코어가 이제 변형하므로(옛 고정경계와
+    #   달리) 이 통합이 끊기면 위·아래층 또는 모서리로 힘이 전달되지 않는다.
+    # [CoT — 두 갈래]
+    #  (a) 다층 적층: 같은 xy(<1mm) + dz≤500 → 위층 base ↔ 아래층 top 공유(노드 페어).
+    #  (b) 이형 교차부 [P2c-2]: ㄷ/ㅁ/L자 모서리에서 두 벽이 평면도상 실제로 맞닿을
+    #      때만 통합. [실제 겹침 판정] 노드는 중심선상이라 평면 범위 한 방향이 0폭 →
+    #      두께 t 를 더해 각 벽의 '외곽 사각형'을 만들고, 직각인 두 벽 사각형이 실제로
+    #      겹치는지(AABB 교차)로 판정한다. 거리 임계 추정이 아니라 물리적 접촉 그 자체를
+    #      본다 — 두께가 다르거나 어긋나도, 떨어진 벽은 사각형이 안 겹쳐 자연히 제외된다.
+    #      겹치면 각 z 레벨에서 두 중심선 직각 교차점(세로벽 x, 가로벽 y)에 가장 가까운
+    #      코너 1쌍씩 통합 + 그 좌표를 교차점으로 보정(생성순서 무관 좌우 대칭).
+    _CONTACT_EPS = 1.0    # 딱 맞닿은 면이 격자·부동소수 오차로 떨어져 보이는 것 보정
+    wall_cores: Dict[int, List[int]] = {}
+    for _comp in scene.components.values():
+        if isinstance(_comp, Core):
+            wall_cores.setdefault(int(getattr(_comp, 'group_id', 0)), []).append(_comp.id)
+
+    # 벽별 외곽 사각형·회전·중심선·두께·코너노드 — (b) 겹침 판정용
+    _wall_info: Dict[int, tuple] = {}
+    for _cid in [c for cs in wall_cores.values() for c in cs]:
+        _comp = scene.components.get(_cid)
+        _ns = [(nid, model.nodes[nid].coord) for nid in model.comp_to_nodes.get(_cid, [])
+               if nid in model.nodes]
+        if not _ns or _comp is None:
+            continue
+        _xs = [c[0] for _, c in _ns]
+        _ys = [c[1] for _, c in _ns]
+        _t = float(_comp.dimensions.get('depth', 0.0))
+        _rot = int(round(float(getattr(_comp, 'rotation', 0)))) % 180
+        _cx = (min(_xs) + max(_xs)) / 2.0
+        _cy = (min(_ys) + max(_ys)) / 2.0
+        if _rot == 90:   # 세로벽 — 중심선 x 고정, y 가 길이방향
+            _rect = (_cx - _t / 2.0, _cx + _t / 2.0, min(_ys), max(_ys))
+        else:            # 가로벽 — 중심선 y 고정, x 가 길이방향
+            _rect = (min(_xs), max(_xs), _cy - _t / 2.0, _cy + _t / 2.0)
+        _wall_info[_cid] = (_rect, _rot, _cx, _cy, _t, _ns)
+
+    def _rect_overlap(r1, r2):
+        return (r1[0] - _CONTACT_EPS <= r2[1] and r2[0] - _CONTACT_EPS <= r1[1]
+                and r1[2] - _CONTACT_EPS <= r2[3] and r2[2] - _CONTACT_EPS <= r1[3])
+
+    # (a) 다층 적층 — 노드 페어
+    for _cids in wall_cores.values():
+        _nc = [(nid, model.nodes[nid].coord, cid) for cid in _cids
+               for nid in model.comp_to_nodes.get(cid, []) if nid in model.nodes]
+        for _ii in range(len(_nc)):
+            for _jj in range(_ii + 1, len(_nc)):
+                _na, _ca, _cia = _nc[_ii]
+                _nb, _cb, _cib = _nc[_jj]
+                if _cia == _cib:
+                    continue
+                if (float(np.linalg.norm(_ca[:2] - _cb[:2])) <= 1.0
+                        and abs(float(_ca[2] - _cb[2])) <= 500.0):
+                    pairs.append((_na, _nb))
+
+    # (b) 이형 교차부 — 모든 층 형상이 같은 코어이므로, 모서리(직각 두 벽이 실제 겹치는
+    #     곳)는 한 번만 판정하고 전 층에 일괄 적용한다.
+    # [CoT]
+    #  1) 같은 group 의 벽을 '평면 정체성'(외곽 사각형)으로 묶는다 — 같은 정체성 =
+    #     위치·방향 같고 층만 다른 같은 벽(전 층 형상 동일 전제).
+    #  2) 정체성 대표 1벌로 직각·실제겹침·교차점을 한 번만 계산(층 무관 동일).
+    #  3) 노드는 층마다 별개이므로 통합 자체는 층별로 하되, 두 정체성의 벽을 floor 로
+    #     매칭해 각 층 코너를 같은 교차점에 모은다 → 전 층 일관(층마다 다른 코너 선택 X).
+    for _cids in wall_cores.values():
+        _by_ident: Dict[tuple, list] = {}
+        for _cid in _cids:
+            if _cid not in _wall_info:
+                continue
+            _rk = _wall_info[_cid][0]
+            _ik = (round(_rk[0], 1), round(_rk[1], 1), round(_rk[2], 1), round(_rk[3], 1))
+            _by_ident.setdefault(_ik, []).append(_cid)
+        _idents = list(_by_ident.items())
+        for _p in range(len(_idents)):
+            for _q in range(_p + 1, len(_idents)):
+                _grpa = _idents[_p][1]
+                _grpb = _idents[_q][1]
+                _ra, _rota, _cxa, _cya, _ta, _ = _wall_info[_grpa[0]]
+                _rb, _rotb, _cxb, _cyb, _tb, _ = _wall_info[_grpb[0]]
+                if _rota == _rotb:                 # 평행/일직선 — 모서리 아님
+                    continue
+                if not _rect_overlap(_ra, _rb):    # 실제로 안 맞닿음 → 제외
+                    continue
+                # 직각 교차점(세로벽 중심선 x, 가로벽 중심선 y) — 층 무관 동일
+                if _rota == 90:                    # a 세로, b 가로
+                    _xc, _yc = _cxa, _cyb
+                else:                              # a 가로, b 세로
+                    _xc, _yc = _cxb, _cya
+                # 모서리 코너만 통합되도록 교차점 근접 가드(통과벽의 먼 끝 코너 제외)
+                _guard = max(_ta, _tb) * 1.5 + _CONTACT_EPS
+                # 전 층 적용: 두 정체성의 벽을 floor 로 매칭
+                _fa = {int(getattr(scene.components.get(c), 'floor_index', 0)): c for c in _grpa}
+                _fb = {int(getattr(scene.components.get(c), 'floor_index', 0)): c for c in _grpb}
+                for _fl in set(_fa) & set(_fb):
+                    _za: Dict[float, list] = {}
+                    for nid, c in _wall_info[_fa[_fl]][5]:
+                        _za.setdefault(round(float(c[2]), 1), []).append((nid, c))
+                    _zb: Dict[float, list] = {}
+                    for nid, c in _wall_info[_fb[_fl]][5]:
+                        _zb.setdefault(round(float(c[2]), 1), []).append((nid, c))
+                    for _zk in set(_za) & set(_zb):
+                        _ka = min(_za[_zk], key=lambda t: (t[1][0]-_xc)**2 + (t[1][1]-_yc)**2)
+                        _kb = min(_zb[_zk], key=lambda t: (t[1][0]-_xc)**2 + (t[1][1]-_yc)**2)
+                        _da = ((_ka[1][0]-_xc)**2 + (_ka[1][1]-_yc)**2) ** 0.5
+                        _db = ((_kb[1][0]-_xc)**2 + (_kb[1][1]-_yc)**2) ** 0.5
+                        if _da > _guard or _db > _guard:
+                            continue
+                        pairs.append((_ka[0], _kb[0]))
+                        _tgt = np.array([_xc, _yc, _ka[1][2]], dtype=np.float64)
+                        corner_targets[_ka[0]] = _tgt
+                        corner_targets[_kb[0]] = _tgt
+
     if not pairs:
         return
 
@@ -1479,6 +1661,18 @@ def _consolidate_dependent_nodes(model: AnalysisModel, scene: Scene) -> None:
         if getattr(m, 'n4', 0) in remap:
             m.n4 = remap[m.n4]
 
+    # [2026-06-24 MVLEM] walls 4코너 노드도 재배선 (members 와 동일 처리 — 누락 시
+    #   wall 이 삭제된 drop 노드를 가리켜 적층 공유가 깨진다)
+    for w in model.walls.values():
+        if w.n_bl in remap:
+            w.n_bl = remap[w.n_bl]
+        if w.n_br in remap:
+            w.n_br = remap[w.n_br]
+        if w.n_tr in remap:
+            w.n_tr = remap[w.n_tr]
+        if w.n_tl in remap:
+            w.n_tl = remap[w.n_tl]
+
     # comp_to_nodes 교체 (drop → keep) + 중복 제거
     for cid, nids in list(model.comp_to_nodes.items()):
         new_nids: List[int] = []
@@ -1504,6 +1698,21 @@ def _consolidate_dependent_nodes(model: AnalysisModel, scene: Scene) -> None:
         node = model.nodes.get(root)
         if node is not None:
             node.coord = tgt
+
+    # 교차부 통합으로 벽 끝 코너가 교차점으로 이동하면 하변 길이가 변한다 → fiber 폭
+    # 합(원본 L)과 노드 기하가 어긋나 MVLEM_3D 경고('Node coordinates do not match sum
+    # of fiber widths')·강성 왜곡이 난다. 통합으로 길이가 변한 wall 만 fiber_widths 를
+    # 실제 하변 길이에 비례 재정규화(경계요소/웹 분할 비율은 보존 — 단순 스케일).
+    for w in model.walls.values():
+        nb = model.nodes.get(w.n_bl)
+        nr = model.nodes.get(w.n_br)
+        if nb is None or nr is None:
+            continue
+        L_geo = float(np.linalg.norm(nr.coord[:2] - nb.coord[:2]))
+        L_fib = float(sum(w.fiber_widths))
+        if L_fib > 1e-6 and L_geo > 1e-6 and abs(L_geo - L_fib) > 1.0:
+            s = L_geo / L_fib
+            w.fiber_widths = [x * s for x in w.fiber_widths]
 
 
 

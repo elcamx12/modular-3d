@@ -73,11 +73,18 @@ _EMPTY_COLOR = "#a0a8b5"
 _CASE_COLORS = ["#7BB3F0", "#3A78D6", "#BBD7F8"]  # A/B/C 막대 색
 
 # [2026-06-06] 물량·비용·공기 값 순위 색 — 흰 배경에서 잘 보이는 톤.
-_RANK_MAX = "#1E8E3E"  # 초록 — 가장 큰 값
+_RANK_MAX = "#D32F2F"  # [2026-06-08] 색 교체 — 가장 큰 값을 빨강으로
 _RANK_MID = "#E8820C"  # 주황 — 중간 값
-_RANK_MIN = "#D32F2F"  # 빨강 — 가장 작은 값
+_RANK_MIN = "#1E8E3E"  # [2026-06-08] 색 교체 — 가장 작은 값을 초록으로
 
 _SLOT_COUNT = 3
+
+# [2026-06-07] 뷰별 빈 상태 안내 문구.
+_EMPTY_VIEW_TEXT = {
+    "plan":    "2D 평면도\n(scene 정보 없음)",
+    "layout":  "실배치\n(실 미지정 또는 scene 정보 없음)",
+    "section": "거실 단면\n(거실 미지정 또는 scene 정보 없음)",
+}
 
 
 # ── 포매터 ─────────────────────────────────────────────────
@@ -129,7 +136,7 @@ class _CaseBox(QFrame):
         self.setStyleSheet("QFrame#caseBox { background: transparent;"
                             " border: none; }")
         self.setMinimumWidth(200)
-        self.setFixedHeight(640)  # [2026-06-05] A/B/C 이미지 카드를 아래로 더 키움(520→640)
+        self.setFixedHeight(240)  # [2026-06-08] 병합: 팀원 3뷰 비교탭 + 내 박스높이 240 유지
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         self._root = QVBoxLayout(self)
@@ -226,10 +233,13 @@ class _CaseBox(QFrame):
         top.setSpacing(8)
         btn_plan = self._mk_toggle_btn("2D 평면도", active=(self._active_view == "plan"))
         btn_plan.clicked.connect(lambda: self._set_view("plan"))
+        btn_layout = self._mk_toggle_btn("실배치", active=(self._active_view == "layout"))
+        btn_layout.clicked.connect(lambda: self._set_view("layout"))
         btn_sec = self._mk_toggle_btn("거실 단면", active=(self._active_view == "section"))
         # [2026-06-02] 거실 단면 토글 → view 전환만. 카드 안에 단면 직접 그림.
         btn_sec.clicked.connect(lambda: self._set_view("section"))
         top.addWidget(btn_plan)
+        top.addWidget(btn_layout)
         top.addWidget(btn_sec)
         top.addStretch(1)
         btn_x = QPushButton("✕")
@@ -251,44 +261,36 @@ class _CaseBox(QFrame):
         img.setStyleSheet(
             f"background: white; border-radius: 12px; border: 1px solid #EEF2F7;"
         )
-        if self._active_view == "plan":
-            pix = _decode_layout_pixmap(self._case)
-            if pix is not None and not pix.isNull():
-                # 박스 안에 KeepAspectRatio 로 채움 — _AutoScaleImageLabel 대체.
-                # 크기 변동을 위해 별도 위젯 사용.
-                img = _AutoScalePixmapLabel()
-                img.setRawPixmap(pix)
-                img.setStyleSheet(
-                    "background: white; border-radius: 12px;"
-                    " border: 1px solid #EEF2F7;"
-                )
-            else:
-                img.setText("저장된 평면도 없음")
-                img.setStyleSheet(
-                    f"font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
-                    f" color: {_EMPTY_COLOR}; font-size: 14px;"
-                    " background: white; border-radius: 12px;"
-                    " border: 1px solid #EEF2F7;"
-                )
+        # [2026-06-07] 세 뷰 모두 case scene 에서 직접 렌더(평면/실배치/단면).
+        #   plan   = 부재 5종+코어 색 구분(글자 없음, 내벽·개구부 숨김)
+        #   layout = 실 용도색 + 개구부 + 내벽 + 내부기둥
+        #   section= 거실 단면(기존)
+        # plan/layout 은 우측에 범례를 붙인다(부재 색 / 실 용도색).
+        view_pix, legend_items = self._build_view(self._active_view)
+        if view_pix is not None and not view_pix.isNull():
+            img = _AutoScalePixmapLabel()
+            img.setRawPixmap(view_pix)
+            img.setStyleSheet(
+                "background: white; border-radius: 12px;"
+                " border: 1px solid #EEF2F7;"
+            )
         else:
-            # [2026-06-02] 카드 안 거실 단면 — case scene 복원 → render_section_pixmap
-            section_pix = self._build_section_pixmap()
-            if section_pix is not None and not section_pix.isNull():
-                img = _AutoScalePixmapLabel()
-                img.setRawPixmap(section_pix)
-                img.setStyleSheet(
-                    "background: white; border-radius: 12px;"
-                    " border: 1px solid #EEF2F7;"
-                )
-            else:
-                img.setText("거실 단면\n(거실 미지정 또는 scene 정보 없음)")
-                img.setStyleSheet(
-                    f"font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
-                    f" color: {_EMPTY_COLOR}; font-size: 14px;"
-                    " background: white; border-radius: 12px;"
-                    " border: 1px dashed #C9D2DD;"
-                )
-        v.addWidget(img, stretch=1)
+            img.setText(_EMPTY_VIEW_TEXT.get(self._active_view, "표시할 내용 없음"))
+            img.setStyleSheet(
+                f"font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+                f" color: {_EMPTY_COLOR}; font-size: 14px;"
+                " background: white; border-radius: 12px;"
+                " border: 1px dashed #C9D2DD;"
+            )
+        if legend_items:
+            body = QHBoxLayout()
+            body.setContentsMargins(0, 0, 0, 0)
+            body.setSpacing(8)
+            body.addWidget(img, stretch=1)
+            body.addWidget(self._mk_legend(legend_items), alignment=Qt.AlignTop)
+            v.addLayout(body, stretch=1)
+        else:
+            v.addWidget(img, stretch=1)
         self._root.addWidget(big_box)
 
     def _mk_toggle_btn(self, text: str, active: bool) -> QPushButton:
@@ -314,13 +316,81 @@ class _CaseBox(QFrame):
             )
         return btn
 
+    def _mk_legend(self, items) -> QWidget:
+        """범례 패널 — [색 스와치 + 라벨] 행 목록. items=[(라벨,(r,g,b)),...]."""
+        box = QFrame()
+        box.setStyleSheet(
+            "QFrame { background: #F7FAFC; border: 1px solid #E3EAF2;"
+            " border-radius: 10px; }"
+        )
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(10, 9, 12, 9)
+        lay.setSpacing(6)
+        for label, (r, g, b) in items:
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(7)
+            sw = QLabel()
+            sw.setFixedSize(13, 13)
+            sw.setStyleSheet(
+                f"background: rgb({r},{g},{b});"
+                " border: 1px solid rgba(0,0,0,0.18); border-radius: 3px;"
+            )
+            txt = QLabel(label)
+            txt.setStyleSheet(
+                f"font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
+                f" color: {_BODY_FG}; font-size: 12px; border: none;"
+                " background: transparent;"
+            )
+            row.addWidget(sw)
+            row.addWidget(txt)
+            row.addStretch(1)
+            lay.addLayout(row)
+        lay.addStretch(1)
+        return box
+
     def _set_view(self, v: str) -> None:
-        if v not in ("plan", "section"):
+        if v not in ("plan", "layout", "section"):
             return
         if v == self._active_view:
             return
         self._active_view = v
         self._render()
+
+    def _restore_scene(self):
+        """case 의 scene_state → Scene 복원. 부재 없으면 None."""
+        scene_state = (self._case or {}).get('scene') or {}
+        if not scene_state.get('components'):
+            return None
+        from modular_3d.io.scene_io import state_dict_to_scene
+        scene, _n = state_dict_to_scene(scene_state)
+        return scene
+
+    def _build_view(self, view: str):
+        """뷰에 맞는 (QPixmap, 범례항목) 반환. 범례 없으면 항목은 []. 실패 시 (None, []).
+
+        범례항목 = [(라벨, (r,g,b)), ...]. plan=부재 카테고리, layout=실 용도.
+        """
+        if view == "section":
+            return self._build_section_pixmap(), []
+        try:
+            scene = self._restore_scene()
+            if scene is None:
+                return None, []
+            from modular_3d.ui.compare_plan_render import (
+                render_plan_pixmap, render_rooms_pixmap,
+                plan_legend_items, rooms_legend_items,
+            )
+            if view == "plan":
+                return render_plan_pixmap(scene, max_size=1600), plan_legend_items(scene)
+            if view == "layout":
+                return render_rooms_pixmap(scene, max_size=1600), rooms_legend_items(scene)
+            return None, []
+        except Exception:
+            import traceback
+            print("[compare_panel view] 오류:\n" + traceback.format_exc(),
+                  flush=True)
+            return None, []
 
     def _build_section_pixmap(self):
         """[2026-06-02] case 의 scene_state 를 Scene 으로 복원해 거실 단면을
@@ -364,24 +434,31 @@ def _val_style(color: str, total: bool) -> str:
     )
 
 
-def _rank_colors(nums: List[Optional[float]]) -> List[Optional[str]]:
+def _rank_colors(nums: List[Optional[float]],
+                 higher_is_better: bool = False) -> List[Optional[str]]:
     """A/B/C 숫자값을 크기 순위로 색 매핑.
 
-    최대=초록·최소=빨강·중간=주황. 같은 값은 같은 색(최대로 같으면 둘 다 초록 등).
-    비교 가능한 값이 2개 미만이면 색칠 안 함(None).
+    기본(higher_is_better=False, 비용·공기·물량처럼 작을수록 좋음):
+      최대=빨강·최소=초록·중간=주황.
+    higher_is_better=True(유효면적처럼 클수록 좋음):
+      최대=초록·최소=빨강·중간=주황 (위와 반대).
+    같은 값은 같은 색. 비교 가능한 값이 2개 미만이면 색칠 안 함(None).
     """
     present = [x for x in nums if isinstance(x, (int, float))]
     if len(present) < 2:
         return [None, None, None]
     mx, mn = max(present), min(present)
+    # 클수록 좋으면 큰 값에 '좋은 색(초록)', 작은 값에 '나쁜 색(빨강)'.
+    big_col = _RANK_MIN if higher_is_better else _RANK_MAX
+    small_col = _RANK_MAX if higher_is_better else _RANK_MIN
     out: List[Optional[str]] = []
     for x in nums:
         if not isinstance(x, (int, float)):
             out.append(None)
         elif x == mx:
-            out.append(_RANK_MAX)
+            out.append(big_col)
         elif x == mn:
-            out.append(_RANK_MIN)
+            out.append(small_col)
         else:
             out.append(_RANK_MID)
     return out
@@ -820,13 +897,21 @@ class ComparePanel(QWidget):
                 except Exception:
                     out.append(None)
             return out
+        def eff_ratio_num(ev):
+            eff = (ev.get("headline") or {}).get("effective_area_floor1") or {}
+            if not eff.get("gross_m2"):
+                return None
+            return eff.get("ratio_pct")
+        # (키, 값목록, is_total, higher_is_better)
+        #   higher_is_better=True → 클수록 좋음(유효면적): 큰값=초록·작은값=빨강.
         rank_targets = [
-            ("steel_ton",     _nums(steel_t),            False),  # 물량(강재 총중량)
-            ("cost_total",    _nums(cost('total_krw')),  True),   # 비용(총비용)
-            ("schedule_days", _nums(sched_days),         False),  # 공기(총 공기)
+            ("eff_ratio",     _nums(eff_ratio_num),      False, True),   # 유효면적(클수록 좋음)
+            ("steel_ton",     _nums(steel_t),            False, False),  # 물량(강재 총중량)
+            ("cost_total",    _nums(cost('total_krw')),  True,  False),  # 비용(총비용)
+            ("schedule_days", _nums(sched_days),         False, False),  # 공기(총 공기)
         ]
-        for key, nums, is_total in rank_targets:
-            colors = _rank_colors(nums)
+        for key, nums, is_total, higher_better in rank_targets:
+            colors = _rank_colors(nums, higher_is_better=higher_better)
             lbls = self._value_labels.get(key, [])
             default = _TOTAL_FG if is_total else _BODY_FG
             for lbl, c in zip(lbls, colors):

@@ -347,7 +347,9 @@ class EvaluationPanel(QWidget):
         # 상단 툴바 — 제목 제거, 우측 저장 버튼만.
         toolbar = QWidget()
         tb_lay = QHBoxLayout(toolbar)
-        tb_lay.setContentsMargins(12, 6, 12, 4)
+        # [2026-06-07] 툴바를 납작하게 — 상단 카드 제목이 '종합 결과 저장' 버튼과
+        #   거의 같은 높이에서 시작하도록(버튼이 카드들을 아래로 밀던 문제 해소).
+        tb_lay.setContentsMargins(12, 2, 12, 0)
         tb_lay.setSpacing(8)
         tb_lay.addStretch(1)
         self._save_btn = QPushButton("종합 결과 저장")
@@ -355,9 +357,9 @@ class EvaluationPanel(QWidget):
         self._save_btn.setStyleSheet(
             "QPushButton {"
             f" font-family: '{F_BODY}', 'Malgun Gothic', sans-serif;"
-            " padding: 9px 20px; border: 1px solid #1F4E79;"
+            " padding: 4px 16px; border: 1px solid #1F4E79;"
             " border-radius: 6px; background: #fff; color: #1F4E79;"
-            " font-weight: 700; font-size: 15px; }"
+            " font-weight: 700; font-size: 14px; }"
             "QPushButton:hover { background: #1F4E79; color: #fff; }"
         )
         self._save_btn.clicked.connect(self.save_case_requested.emit)
@@ -369,7 +371,8 @@ class EvaluationPanel(QWidget):
         body = QWidget()
         body.setStyleSheet(f"QWidget {{ background: {_PAGE_BG}; }}")
         body_lay = QVBoxLayout(body)
-        body_lay.setContentsMargins(22, 14, 22, 22)
+        # [2026-06-07] 상단 여백 0 — 카드 제목을 저장 버튼 높이까지 최대한 끌어올림.
+        body_lay.setContentsMargins(22, 0, 22, 10)
         body_lay.setSpacing(22)
         root.addWidget(body, stretch=1)
 
@@ -389,7 +392,9 @@ class EvaluationPanel(QWidget):
         # ── 좌측 컬럼 ─────────────────────────────────────
         left_col = QVBoxLayout()
         left_col.setSpacing(0)
-        body_row.addLayout(left_col, stretch=28)
+        # [2026-06-07] 좌(건물개요·부재구성) 가로 1.5배, 중(2D·공정바) 1.3배로 더 넓히고
+        #   우(강재·운송·종합비용)는 그대로 둬 상대적으로 좁아지게: 좌 37→56, 중 48→62.
+        body_row.addLayout(left_col, stretch=56)
 
         # 1) 건물 개요 — 좌 2열 그리드
         self._head_strip = _card(min_height=200)
@@ -413,8 +418,9 @@ class EvaluationPanel(QWidget):
         case_col.addWidget(self._case_eval_lbl["host"])
         head_grid.addLayout(nums_col, stretch=1)
         head_grid.addLayout(case_col, stretch=1)
+        # [2026-06-07] 건물 개요 높이 더 키움(2→3).
         left_col.addWidget(self._build_titled_section("건물 개요", self._head_strip),
-                           stretch=2)
+                           stretch=3)
 
         # 2) 부재 구성
         self._b_card, self._b_inner = _scroll_card(min_height=420)
@@ -424,7 +430,7 @@ class EvaluationPanel(QWidget):
         # ── 중앙 컬럼: 2D 평면도(상) + 공정바(하) ──────────
         mid_col = QVBoxLayout()
         mid_col.setSpacing(0)
-        body_row.addLayout(mid_col, stretch=38)
+        body_row.addLayout(mid_col, stretch=62)
 
         # 1) 2D 평면도 — 중앙 상단, 크게 (stretch=5)
         self._layout_card = _card(min_height=0)
@@ -434,8 +440,9 @@ class EvaluationPanel(QWidget):
         self._layout_img.setStyleSheet("background: #fff;")
         self._layout_img.setText("평면설계 탭에서 모듈을 배치하세요.")
         layout_inner.addWidget(self._layout_img)
+        # [2026-06-08] 2D 평면도 더 키움(5→6), 공정바 6/7 로 낮춤(7→6).
         mid_col.addWidget(self._build_titled_section("2D 평면도", self._layout_card),
-                          stretch=5)
+                          stretch=6)
 
         # 2) 공정바 — 2D 평면도 아래 (작게), 우상단 "총 공기" 배지 (stretch=2)
         self._e_card = _card(min_height=0)
@@ -450,12 +457,12 @@ class EvaluationPanel(QWidget):
         )
         mid_col.addWidget(self._build_titled_section(
             "공정바", self._e_card, right_widget=self._sched_total_lbl),
-            stretch=2)
+            stretch=6)
 
         # ── 우측 컬럼: 강재 자재비(상, 큼) + 운송 + 종합비용 ─
         right_col = QVBoxLayout()
         right_col.setSpacing(0)
-        body_row.addLayout(right_col, stretch=34)
+        body_row.addLayout(right_col, stretch=15)
 
         # 1) 강재·콘크리트 물량 + 자재비 — 우측 상단, 큰 카드 (stretch=5)
         self._c_card, self._c_inner = _scroll_card(min_height=0)
@@ -465,14 +472,15 @@ class EvaluationPanel(QWidget):
             f" font-size: 13px; color: {_SUB_FG}; padding: 5px 12px;"
             " background: #EEF4FF; border-radius: 12px;"
         )
+        # [2026-06-08] 우측 세로 비율 재조정(강재 비율 유지·운송 5/6·종합비용 8/7).
+        #   정수 해상도로 강재 14 / 운송 5 / 종합비용 7. '정책: N종' 라벨은 제거.
         right_col.addWidget(self._build_titled_section(
-            "강재·콘크리트 물량 + 자재비", self._c_card,
-            right_widget=self._c_policy_lbl), stretch=5)
+            "강재·콘크리트 물량 + 자재비", self._c_card), stretch=14)
 
-        # 2) 운송 — stretch=1
+        # 2) 운송
         self._d_card, self._d_inner = _scroll_card(min_height=0)
         right_col.addWidget(self._build_titled_section("운송", self._d_card),
-                            stretch=1)
+                            stretch=5)
 
         # 3) 종합비용
         self._cost_strip = QFrame()
@@ -481,24 +489,28 @@ class EvaluationPanel(QWidget):
             f"QFrame#costStrip {{ background: {_CARD_BG};"
             f" border: 1.5px solid #C9D2DD; border-radius: 26px; }}"
         )
-        self._cost_lay = QHBoxLayout(self._cost_strip)
-        self._cost_lay.setContentsMargins(20, 18, 20, 18)
-        self._cost_lay.setSpacing(18)
+        # [2026-06-07] 종합비용을 한 줄(6칸) → 3열×2행 그리드로. 가로로 길던 6칸이
+        #   2줄로 접혀 우측 컬럼 최소폭이 줄고(좌/중 확장), 세로 공간도 더 활용한다.
+        from PyQt5.QtWidgets import QGridLayout
+        self._cost_lay = QGridLayout(self._cost_strip)
+        self._cost_lay.setContentsMargins(20, 14, 20, 14)
+        self._cost_lay.setHorizontalSpacing(16)
+        self._cost_lay.setVerticalSpacing(10)
         self._cost_cells: Dict[str, QLabel] = {}
-        for label, key, emphasize in (
+        for i, (label, key, emphasize) in enumerate((
             ("자재비", "material", False),
             ("운송비", "transport", False),
             ("노무비", "labor", False),
             ("경비",   "equip",     False),
             ("간접비·이윤·부가세", "indirect", False),
             ("공사비 (총합)", "total", True),
-        ):
+        )):
             cell, val_lbl = self._mk_cost_cell(label, "—", emphasize)
-            self._cost_lay.addWidget(cell)
+            self._cost_lay.addWidget(cell, i // 3, i % 3)
             self._cost_cells[key] = val_lbl
         self._cost_strip.setMinimumHeight(0)
         right_col.addWidget(self._build_titled_section("종합비용", self._cost_strip),
-                            stretch=1)
+                            stretch=7)
 
         self._last_data: Optional[Dict[str, Any]] = None
 
@@ -521,10 +533,11 @@ class EvaluationPanel(QWidget):
         v = QVBoxLayout(host)
         # 모든 묶음 하단에 20px 마진 — 컬럼 setSpacing(0) 과 짝지어 정렬 보장.
         v.setContentsMargins(0, 0, 0, 20)
-        v.setSpacing(8)
+        # [2026-06-07] 박스 밖 제목과 박스 사이 거리를 1/2 로(8→4), 제목 높이도 축소(40→26).
+        v.setSpacing(4)
         title_host = QWidget()
         title_host.setStyleSheet("background: transparent;")
-        title_host.setFixedHeight(40)
+        title_host.setFixedHeight(26)
         title_row = QHBoxLayout(title_host)
         title_row.setContentsMargins(0, 0, 0, 0)
         title_row.addWidget(_section_title(title))
@@ -603,7 +616,8 @@ class EvaluationPanel(QWidget):
         # 연면적. (지하층·footprint 은 종합비교에 안 들어가서 제외.)
         # 패널 개수는 members.panels 합계.
         panels = (self._last_data or {}).get("members", {}).get("panels", {}) or {}
-        n_panels = sum(int(v or 0) for v in panels.values())
+        # [2026-06-08] 종합 탭 패널 개수에서 내벽 제외.
+        n_panels = sum(int(v or 0) for k, v in panels.items() if k != "interior_wall")
         vals = [
             (h.get("floors_above_ground", 0), "층"),
             (h.get("modules_total", 0), "개"),
@@ -635,18 +649,16 @@ class EvaluationPanel(QWidget):
         self._b_inner.addWidget(mod_title)
         if mods:
             # [2026-06-01] 부재 컬럼을 기둥/천장보/바닥보 3 개로 분리 표시.
+            # [2026-06-08] 폭·길이·면적 3열 → '크기(m)' 한 열("3.4X9.3")로 통합(면적 제거).
             tbl = self._table(
-                ["타입", "폭 m", "길이 m", "면적 ㎡",
-                 "기둥", "천장보", "바닥보", "개수"],
+                ["타입", "크기(m)", "기둥", "천장보", "바닥보", "개수"],
                 [[mt["name"],
-                  f"{mt['width_m']:.1f}",
-                  f"{mt['length_m']:.1f}",
-                  f"{mt['area_m2']:.2f}",
+                  f"{mt['width_m']:.1f}X{mt['length_m']:.1f}",
                   str(mt.get("columns_section", mt.get("sections", "—"))),
                   str(mt.get("top_beams_section", "—")),
                   str(mt.get("bottom_beams_section", "—")),
                   f"{mt['count']}"] for mt in mods],
-                stretch_col=4,
+                stretch_col=2,
             )
             # [2026-06-01] max-height 풀어서 카드 안 빈 공간 흡수.
             tbl.setMaximumHeight(16777215)
@@ -667,6 +679,10 @@ class EvaluationPanel(QWidget):
         pnl_title.setMaximumHeight(28)
         self._b_inner.addWidget(pnl_title)
         ptypes = m.get("panels_by_type", []) or []
+        # [2026-06-08] 종합 탭에서 내벽은 패널 타입 표에서 제외.
+        #   신규 데이터는 is_interior 플래그, 예전 저장본은 라벨('내벽')로도 거른다.
+        ptypes = [p for p in ptypes
+                  if not p.get("is_interior") and p.get("class_label") != "내벽"]
         if ptypes:
             ptbl = self._table(
                 ["종류", "폭 m", "깊이 m", "부재", "개수"],
@@ -680,10 +696,10 @@ class EvaluationPanel(QWidget):
         else:
             panels = m.get("panels", {}) or {}
             if any(panels.values()):
+                # [2026-06-08] 종합 탭 분해 표기에서 내벽 제외.
                 text = QLabel(
                     f"바닥패널 {panels.get('floor_panel', 0)} · "
                     f"벽패널 {panels.get('struct_wall', 0)} · "
-                    f"내벽 {panels.get('interior_wall', 0)} · "
                     f"코어슬래브 {panels.get('core_slab', 0)}"
                 )
                 text.setStyleSheet("color: #555; font-size: 11px;")
@@ -746,8 +762,12 @@ class EvaluationPanel(QWidget):
             tbl = self._table(
                 ["단면", "길이(mm)", "본수", "총길이(m)", "총중량(t)"],
                 tbl_rows,
-                stretch_col=None,
+                stretch_col=0,
             )
+            # [2026-06-08] 우측 컬럼이 좁아 표가 가로 스크롤되던 문제 → 단면 컬럼을
+            #   stretch(폭에 맞춤)로 두고 가로 스크롤바를 끈다(가로 휠 제거).
+            from PyQt5.QtCore import Qt as _Qt
+            tbl.setHorizontalScrollBarPolicy(_Qt.ScrollBarAlwaysOff)
             # 표 max-height 풀어서 카드 안 빈 공간 흡수.
             tbl.setMaximumHeight(16777215)
             self._c_inner.addWidget(tbl, stretch=1)
@@ -771,9 +791,11 @@ class EvaluationPanel(QWidget):
         self._c_inner.addWidget(slab_lbl)
 
         if cost:
+            # [2026-06-08] 우측 컬럼이 좁아 한 줄이 넘쳐 가로 스크롤이 생기던 문제 →
+            #   강재·데크를 1줄, 콘크리트·합계를 다음 줄로 나눈다(줄바꿈 + word wrap).
             cost_lbl = QLabel(
                 f"자재비 — 강재 {_won(cost.get('steel_cost', 0))} · "
-                f"데크 {_won(cost.get('deck_cost', 0))} · "
+                f"데크 {_won(cost.get('deck_cost', 0))}<br>"
                 f"콘크리트 {_won(cost.get('concrete_cost', 0))}  ⎮  "
                 f"<b>합계 {_won(cost.get('total_cost', 0))}</b>"
             )
@@ -783,6 +805,7 @@ class EvaluationPanel(QWidget):
                 " padding-top: 4px; background: transparent;"
             )
             cost_lbl.setTextFormat(Qt.RichText)
+            cost_lbl.setWordWrap(True)
             self._c_inner.addWidget(cost_lbl)
             if cost.get("has_missing_price"):
                 miss = QLabel("⚠️ 일부 단가가 누락되어 자재비가 부정확할 수 있습니다.")

@@ -786,6 +786,17 @@ def _is_in_lookahead() -> bool:
 # → 결과 캐시해서 16개 모듈 결정을 16번 계산하지 않고 1번만.
 _module_truck_cache: Dict[Tuple, str] = {}
 
+# [2026-06-08] 모듈 타입(=캐시 키)이 새로 처리될 때마다 호출되는 진행 콜백.
+#   pack_items 가 UI 콜백을 set_module_progress_cb 로 꽂는다. 캐시 미스(=새 타입)
+#   1회당 1번 호출 → "한 타입 끝났다" 표시용. 미설정(None)이면 아무 일 없음.
+_module_progress_cb = None
+
+
+def set_module_progress_cb(cb) -> None:
+    """모듈 타입 처리 진행 콜백 설정(None 이면 해제)."""
+    global _module_progress_cb
+    _module_progress_cb = cb
+
 
 def _module_cache_key(item: "Module", trucks_sig: tuple, cost_mode: str) -> Tuple:
     """모듈 사양 + 트럭 세트 시그너처 + 비용 모드 = 캐시 키."""
@@ -908,6 +919,12 @@ def _select_best_new_truck(
         scored.sort(key=lambda x: x[0])
         chosen = scored[0][1]
         _module_truck_cache[key] = chosen.name
+        # [2026-06-08] 새 모듈 타입 처리 완료 — 진행 콜백 호출(누적 타입 수 전달).
+        if _module_progress_cb is not None:
+            try:
+                _module_progress_cb(len(_module_truck_cache))
+            except Exception:
+                pass
         return chosen
 
     # 재귀 (시뮬 안) — *첫 결정만* pref_once cand 강제 + 이후 가장 싼 트럭

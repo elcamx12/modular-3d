@@ -293,15 +293,10 @@ class SectionDesignPanel(QWidget):
         self._type_list.clear()
         for t in self._types:
             mark = '' if t.get('ok', True) else '  [NG]'
-            # [7B-4a] 층별·종합 개수: "모듈A-1-1 (1층 2·2층 1, 총 3)".
-            fc = t.get('floor_counts') or {}
+            # [2026-06-08] 층별 분해 표기 제거 — 우측 패널이 길어지는 문제 →
+            #   "1층 2·2층 1" 식 대신 전체 합계만 "(N개)" 로 짧게 쓴다.
             cnt = t.get('count', 0)
-            cstr = ''
-            if fc:
-                per = '·'.join(f"{fl}층 {n}" for fl, n in sorted(fc.items()))
-                cstr = f"  ({per}, 총 {cnt})"
-            elif cnt:
-                cstr = f"  (총 {cnt})"
+            cstr = f"  ({cnt}개)" if cnt else ''
             it = QListWidgetItem(f"{t.get('label', '?')}{cstr}{mark}")
             it.setData(Qt.UserRole, t.get('rep_comp_id', -1))
             it.setData(Qt.UserRole + 1, t.get('label', ''))   # [7B-2] 라벨 매칭용

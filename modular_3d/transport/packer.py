@@ -295,10 +295,15 @@ def _effective_cargo_limit(truck: Truck, site: SiteLimit) -> float:
 
 
 # ── 막힘 사유 진단 (가장 적합한 후보 트럭의 위반 사유) ─────
-def _diagnose_blocked(item, trucks: List[Truck], site: SiteLimit) -> str:
-    """item 이 어떤 트럭으로도 못 실릴 때, "가장 적합한" 트럭의 위반 사유로
-    구체 막힘 사유를 만든다. 가장 적합 = can_carry 위반 사유 수가 가장 적은
-    트럭. 그 트럭으로도 막힌 이유들이 핵심 제약."""
+def _diagnose_blocked(item, trucks: List[Truck], site: SiteLimit,
+                      spacing: "Optional[SpacingParams]" = None) -> str:
+    """item 이 어떤 트럭으로도 못 실릴 때 구체 막힘 사유를 만든다.
+
+    1순위 = can_carry(단일 한도) 위반 사유. 그 사유가 하나도 없으면(=단일 치수·
+    중량은 트럭 한도 내) 패킹 단계의 *적재간격* 제약(양끝 여유 제외 유효 길이,
+    유효 폭, 차높이 포함 외측높이)을 직접 따져 원인을 찾아 보고한다. 그래도
+    못 찾으면 혼적/누적 GVW 등 조합 제약으로 안내한다.
+    """
     if not trucks:
         return "호환 트럭 없음"
     best_truck: Optional[Truck] = None
@@ -310,10 +315,38 @@ def _diagnose_blocked(item, trucks: List[Truck], site: SiteLimit) -> str:
         if best_truck is None or len(r.reasons) < len(best_reasons):
             best_truck = tr
             best_reasons = r.reasons
-    if best_truck is None:
-        return "원인 분석 실패"
-    return (f"트럭 '{best_truck.name}' 기준 — "
-            + " / ".join(best_reasons))
+    if best_truck is not None:
+        return (f"트럭 '{best_truck.name}' 기준 — "
+                + " / ".join(best_reasons))
+
+    # ── can_carry 통과인데 막힘 → 적재간격(양끝 여유 등) 기하 제약 분석 ──
+    L = float(getattr(item, 'length', 0.0) or 0.0)
+    W = float(getattr(item, 'width', 0.0) or 0.0)
+    H = float(getattr(item, 'height', getattr(item, 'thickness', 0.0)) or 0.0)
+    if spacing is not None:
+        geom: list[str] = []
+        for tr in trucks:
+            why = []
+            usable_len = tr.max_length - 2 * spacing.truck_edge_clearance_mm
+            if L > usable_len:
+                why.append(
+                    f"유효 적재길이 {usable_len:.0f}mm(양끝 여유 "
+                    f"{spacing.truck_edge_clearance_mm:.0f}×2 제외) < 화물 길이 {L:.0f}mm")
+            eff_w = _eff_truck_width(tr, spacing)
+            if W > eff_w:
+                why.append(f"유효 적재폭 {eff_w:.0f}mm < 화물 폭 {W:.0f}mm")
+            outer_h = H + tr.vehicle_height_offset
+            if outer_h > tr.max_height:
+                why.append(
+                    f"외측높이 {outer_h:.0f}mm(차높이 {tr.vehicle_height_offset:.0f}+화물 "
+                    f"{H:.0f}) > 트럭 높이 {tr.max_height:.0f}mm")
+            if why:
+                geom.append(f"트럭 '{tr.name}' — " + " / ".join(why))
+        if geom:
+            return "단일 한도는 통과하나 적재간격(여유) 제약으로 막힘 · " + " | ".join(geom[:2])
+    return ("단일 치수·중량은 트럭 한도 내이나 회차 배정 실패 — 혼적 시 누적 "
+            "총중량(GVW)·길이 합산 또는 적재간격 제약일 수 있습니다. 트럭 대수·"
+            "현장 한도(GVW)·적재간격 설정을 확인하세요.")
 
 
 # ── 트럭 단일사양 최대 적재 헬퍼 (recheck 진단용) ─────────────────
@@ -392,7 +425,7 @@ def _pack_modules(
             and m.length <= tr.max_length - 2 * spacing.truck_edge_clearance_mm
         ]
         if not ok_trucks:
-            blocked.append((m, _diagnose_blocked(m, compat, site)))
+            blocked.append((m, _diagnose_blocked(m, compat, site, spacing)))
             continue
         best = _closest_fit_truck(ok_trucks, m.length, m.weight)
         usable = best.max_length - 2 * spacing.truck_edge_clearance_mm
@@ -439,7 +472,7 @@ def _pack_horizontal_stacked(
         if ok:
             valid.append((p, ok))
         else:
-            blocked.append((p, _diagnose_blocked(p, compat, site)))
+            blocked.append((p, _diagnose_blocked(p, compat, site, sp)))
     if not valid:
         return [], blocked
 
@@ -537,7 +570,7 @@ def _pack_dependent_panels(
         if ok:
             valid.append((p, ok))
         else:
-            blocked.append((p, _diagnose_blocked(p, compat, site)))
+            blocked.append((p, _diagnose_blocked(p, compat, site, sp)))
     if not valid:
         return [], blocked, sc
 
@@ -818,6 +851,7 @@ def pack_items(
     use_v2: bool = True,
     use_bb: bool = True,
     economics=None,
+    progress=None,
 ) -> PackResult:
     """모듈·패널 → 회차 산정 — Best-Fit + 다중 시드 + VND + 무게중심 보정.
 
@@ -857,7 +891,7 @@ def pack_items(
         # Phase 5 — 패널 BB + 모듈 V2 단순 매핑 분리 처리
         return _pack_items_bb(
             modules, panels, trucks, site, spacing,
-            cost_mode=cost_mode, economics=economics,
+            cost_mode=cost_mode, economics=economics, progress=progress,
         )
 
     # Legacy 경로 — 통합 V2/V1
@@ -926,7 +960,7 @@ def _build_trip_from_placements(
 #   맨 위 잔여층 패널만 모아 한 번 더 분기한정으로 재배차한다.
 #   → 분기한정 호출이 층수와 무관하게 "기준 1회 + 자투리 1회"로 고정된다.
 # ════════════════════════════════════════════════════════════════════
-VERTICAL_GROUP_FLOORS = 3  # 한 복제 묶음 = 3개 층
+VERTICAL_GROUP_FLOORS = 2  # [2026-06-08] 한 복제 묶음 = 2개 층(기존 3 → 2, 부하↓)
 
 
 def classify_panels_into_groups(
@@ -968,6 +1002,68 @@ def _panel_group_key(p: Panel) -> tuple:
         int(getattr(p, "group_id", 0)),
         p.name,
     )
+
+
+def _fit_panels_one_truck(panels, truck, site, spacing, cost_mode, economics):
+    """[2026-06-08] panels 전부가 truck 한 대에 (충돌·무게·길이·개수 포함) 실리면
+    그 placements 를 반환, 아니면 None. 충돌 판정은 기존 분기한정(pack_panels_bb)을
+    *단일 트럭* 으로 재사용한다 → 과적/충돌 트럭이 절대 만들어지지 않게 보장."""
+    from .packer_bb import pack_panels_bb, MAX_TRIP_PANELS
+    if not panels or len(panels) > MAX_TRIP_PANELS:
+        return None
+    try:
+        res, _c, _s = pack_panels_bb(
+            list(panels), [truck], site, spacing, cost_mode, economics)
+    except Exception:
+        return None
+    # 한 회차에 전부 실렸으면 합격(여러 회차로 쪼개졌으면 한 트럭엔 안 들어간 것).
+    if len(res) == 1 and len(res[0][2]) == len(panels):
+        return res[0][2]
+    return None
+
+
+def _consolidate_scrap_greedy(
+    pool, scrap_truck, trucks, site, spacing, cost_mode, economics,
+):
+    """[2026-06-08 사용자 알고리즘] 전 묶음 자투리 패널 + 잔여를 한 풀로 모아,
+    무게 내림차순으로 한 트럭씩 채운다. 매 추가마다 *단일 트럭 분기한정* 으로
+    충돌·무게·길이·개수를 검증하므로(과적/충돌 원천 차단) 결과 트럭은 모두 유효.
+    같은 규격이 반복되면 다음 외곽 반복이 자연히 같은 구성을 다시 만들어 사실상
+    복제된다(매 트럭이 ≤7패널·단일트럭 BB 라 폭발 없음 → 부하↓). 끝까지 못 채운
+    트럭은 부분적재 그대로 운송(자투리 허용)."""
+    from .packer_bb import MAX_TRIP_PANELS, pack_panels_bb
+    trips: List[Trip] = []
+    remaining = sorted(
+        list(pool), key=lambda p: -float(getattr(p, "weight", 0.0) or 0.0))
+    guard = 0
+    while remaining and guard < 100000:
+        guard += 1
+        chosen: List[Panel] = []
+        chosen_pl = None
+        i = 0
+        # ① 무게순으로 한 트럭을 채운다 — 추가할 때마다 단일트럭 BB 로 검증.
+        while i < len(remaining) and len(chosen) < MAX_TRIP_PANELS:
+            pl = _fit_panels_one_truck(
+                chosen + [remaining[i]], scrap_truck,
+                site, spacing, cost_mode, economics)
+            if pl is not None:
+                chosen.append(remaining.pop(i))   # 채택(다음 무거운 것 계속)
+                chosen_pl = pl
+            else:
+                i += 1
+        if not chosen:
+            # 가장 무거운 것 단독도 scrap_truck 에 안 들어감(드묾) → 다른 트럭으로 일반 BB.
+            try:
+                fb, _c, _s = pack_panels_bb(
+                    remaining, trucks, site, spacing, cost_mode, economics)
+            except Exception:
+                fb = []
+            for (_pat, tr, pls) in fb:
+                trips.append(_build_trip_from_placements(0, tr, [], pls, spacing))
+            break
+        trips.append(
+            _build_trip_from_placements(0, scrap_truck, [], chosen_pl, spacing))
+    return trips
 
 
 def _pack_panels_modular_replicated(
@@ -1038,66 +1134,24 @@ def _pack_panels_modular_replicated(
             trip_no += 1
         scrap_bundles.append([mapping[id(pl.item)] for pl in scrap_placements])
 
-    # ── 자투리 + 잔여층 재배차 (분기한정 + 복제) ──
-    # [함정/핵심] 자투리 풀을 한 번에 분기한정하면 한 회차 조합이 C(풀,7) 로
-    #   폭발한다(18층 28패널 → 미종료). 그러나 자투리는 *같은 1벌이 K벌 반복*되는
-    #   복제 구조다. 그래서 "자투리 1벌이 한 트럭에 m벌 들어가는지"(무게·패널수
-    #   기준)만 보고, m벌짜리 작은 분기한정 1회를 풀어 K/m 회차로 복제한다.
-    #   → 분기한정 규모가 m벌(≤7패널)로 고정돼 폭발 불가 + 같은 규격엔 항상 같은
-    #     트럭(결정론) → 그리디의 트럭 불일치 결함 제거.
-    if scrap_bundles or extra_scrap:
-        from .packer_bb import pack_panels_bb, MAX_TRIP_PANELS
-
-        # 한 트럭에 실을 자투리 벌 수 m — 무게 한도와 회차 패널 상한(7) 중 작은 쪽.
-        m = 1
-        if scrap_bundles:
-            w1 = sum(float(p.weight) for p in scrap_bundles[0])
-            n1 = max(1, len(scrap_bundles[0]))
-            active = [t for t in trucks if getattr(t, "active", True)]
-            Wmax = max((_effective_cargo_limit(t, site) for t in active), default=0.0)
-            m_weight = int(Wmax // w1) if w1 > 0 else len(scrap_bundles)
-            m_panel = MAX_TRIP_PANELS // n1
-            m = max(1, min(m_weight, m_panel, len(scrap_bundles)))
-
-        full_count = len(scrap_bundles) // m if scrap_bundles else 0
+    # ── 자투리 통합 — 무게순 그리디 + 단일트럭 분기한정(충돌) 검증 ──
+    # [2026-06-08 사용자 알고리즘] 전 묶음의 자투리(저적재 회차)는 동일 규격이다.
+    #   이를 잔여층과 함께 한 풀로 모아 무게 내림차순 그리디로 한 트럭씩 채운다.
+    #   매 추가마다 단일 트럭 분기한정으로 충돌·무게·길이·개수를 검증하므로
+    #   (과적/충돌 차단) 자투리 풀 전체를 한 번에 분기한정하던 폭발(C(풀,7))이 없다.
+    #   끝까지 못 채운 트럭은 부분적재 그대로(자투리 허용).
+    scrap_truck = base_rows[scrap_i][1]
+    pool: List[Panel] = [p for b in scrap_bundles for p in b] + extra_scrap
+    if pool:
         _prof_log(
-            f"  [복제진단] 자투리 {len(scrap_bundles)}벌 → 트럭당 {m}벌, "
-            f"full {full_count}트럭 복제 + 나머지·잔여 1회 — 분기한정 복제"
+            f"  [자투리통합] 자투리벌 {len(scrap_bundles)}개 + 잔여 {len(extra_scrap)}개"
+            f" = 패널 {len(pool)}개 → 무게순 그리디(단일트럭 BB 검증)"
         )
-
-        # ① full 묶음(크기 m)은 모두 동일 규격 → 대표 1회만 분기한정 후 복제.
-        if full_count > 0:
-            ref_panels = [p for b in scrap_bundles[:m] for p in b]
-            ref_bb, _rc, _rs = pack_panels_bb(
-                ref_panels, trucks, site, spacing, cost_mode, economics,
+        final_trips.extend(
+            _consolidate_scrap_greedy(
+                pool, scrap_truck, trucks, site, spacing, cost_mode, economics,
             )
-            ref_sorted = sorted(ref_panels, key=_panel_group_key)
-            for ci in range(full_count):
-                chunk_panels = [
-                    p for b in scrap_bundles[ci * m:(ci + 1) * m] for p in b
-                ]
-                chunk_sorted = sorted(chunk_panels, key=_panel_group_key)
-                cmap = {
-                    id(ref_sorted[j]): chunk_sorted[j] for j in range(len(ref_sorted))
-                }
-                for (_pat, truck, pls) in ref_bb:
-                    new_pls = [replace(pl, item=cmap[id(pl.item)]) for pl in pls]
-                    final_trips.append(
-                        _build_trip_from_placements(trip_no, truck, [], new_pls, spacing)
-                    )
-                    trip_no += 1
-
-        # ② 나머지 자투리 벌(K mod m) + 잔여층 → 작은 분기한정 1회.
-        rest = [p for b in scrap_bundles[full_count * m:] for p in b] + extra_scrap
-        if rest:
-            rest_bb, _ec, _es = pack_panels_bb(
-                rest, trucks, site, spacing, cost_mode, economics,
-            )
-            for (_pat, truck, pls) in rest_bb:
-                final_trips.append(
-                    _build_trip_from_placements(trip_no, truck, [], pls, spacing)
-                )
-                trip_no += 1
+        )
 
     return final_trips
 
@@ -1105,13 +1159,19 @@ def _pack_panels_modular_replicated(
 def _pack_items_bb(
     modules: List[Module], panels: List[Panel], trucks: List[Truck],
     site: SiteLimit, spacing: SpacingParams, cost_mode: str, economics,
+    progress=None,
 ) -> PackResult:
     """Phase 5 — 모듈은 V2 단순 매핑 (모듈만), 패널은 분기한정 (BB).
 
     두 결과 합쳐 PackResult 반환.
+    progress(msg): 진행 표시 콜백 — 모듈 타입 처리·패널 적재 완료 시 호출.
     """
     from .packer_balance import balance_trips
     from .packer_bb import pack_panels_bb
+    from .packer_core import set_module_progress_cb
+    # [2026-06-08] 모듈 타입(캐시 키)마다 진행 콜백 호출되게 연결.
+    if progress is not None:
+        set_module_progress_cb(lambda n: progress(f"모듈 타입 {n}개 완료"))
 
     # ── 1단계 — 모듈만 V2 호출 (패널 0개) ──
     # V2 의 모듈 빠른 경로 (캐시) 활용. 6m 합산 예외도 V2 가 처리.
@@ -1143,6 +1203,9 @@ def _pack_items_bb(
             if id(m) not in placed and id(m) not in already:
                 compat = _module_compatible_trucks(trucks)
                 module_blocked.append((m, _diagnose_blocked(m, compat, site)))
+
+    # [2026-06-08] 모듈 단계 종료 — 진행 콜백 해제(패널 단계는 별도 메시지).
+    set_module_progress_cb(None)
 
     # ── 2단계 — 패널 BB ──
     # [CoT] 분기: 완전한 3층 묶음이 2개 이상이면 "층묶음 복제" 경로(기준 묶음만
@@ -1189,6 +1252,13 @@ def _pack_items_bb(
                     trip_no, truck, sub_panels, placements, spacing,
                 )
                 panel_trips.append(new_trip)
+
+    # [2026-06-08] 패널 단계 1회 종료 — 완료 표시.
+    if progress is not None and panels:
+        try:
+            progress("패널 적재 완료")
+        except Exception:
+            pass
 
     # ── 합치기 ──
     all_trips = list(module_trips) + list(panel_trips)

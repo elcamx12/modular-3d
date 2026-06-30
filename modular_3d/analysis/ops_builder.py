@@ -263,7 +263,10 @@ def _geom_transf_tag(kind: str, vec_xz: Tuple[float, float, float]) -> int:
     if key in _geom_transf_cache:
         return _geom_transf_cache[key]
     tag = len(_geom_transf_cache) + 1
-    ops.geomTransf('Linear', tag, *vec_xz)
+    # [2026-06-24 MVLEM] 기둥(수직 축력재)은 PDelta(2차효과·고층 softening 반영),
+    #   보(수평)는 Linear. 코어 MVLEM_3D 는 자체 정식이라 geomTransf 미사용(프레임만).
+    _gt = 'PDelta' if kind == 'column' else 'Linear'
+    ops.geomTransf(_gt, tag, *vec_xz)
     _geom_transf_cache[key] = tag
     return tag
 
@@ -355,6 +358,39 @@ def _step_register_members(om: OpsModel, am: AnalysisModel) -> None:
         ops.uniaxialMaterial('Elastic', truss_mat_tag, RC_WALL_E_MPA)
     except Exception:
         pass   # 이미 등록된 경우 무시
+
+    # [2026-06-29 #6] 코어벽 fiber 재료 — 그룹별 강도(fck·fy)마다 별도 태그를 캐시한다
+    #   (같은 강도조합은 재사용해 중복 등록 방지). 웹(비횡구속)/경계(횡구속) Concrete02 +
+    #   철근 Steel02. 파라미터: 웹 fpc=-fck, εc0=-0.002, fpcu=-0.2fck, εu=-0.006, λ=0.1,
+    #   ft=0.33√fck, Ets=ft/0.002. 경계는 횡구속으로 강도·연성↑(fck×1.185, εc0=-0.004,
+    #   εu=-0.015). 철근 fy·E200GPa·b0.01·R0 20·cR1 0.925·cR2 0.15. 미입력 그룹은 fck27·
+    #   fy400(SD400) 기본값(_extract_core 의 normalize_core_rebar) 이 흘러와 종전과 동일.
+    import math as _math
+    _mv_mat_cache: Dict[tuple, tuple] = {}
+    _mv_mat_next = [9101]   # 강도조합당 3 태그씩 증가(웹·경계·철근). 전단(90000~)과 분리.
+
+    def _mv_materials(fck: float, fy: float) -> tuple:
+        key = (round(float(fck), 1), round(float(fy), 1))
+        cached = _mv_mat_cache.get(key)
+        if cached is not None:
+            return cached
+        base = _mv_mat_next[0]
+        _mv_mat_next[0] += 3
+        web_t, be_t, st_t = base, base + 1, base + 2
+        ft = 0.33 * _math.sqrt(max(float(fck), 1.0))
+        ets = ft / 0.002
+        fck_be = float(fck) * 1.185   # 경계요소 횡구속 강도 증가(간이)
+        try:
+            ops.uniaxialMaterial('Concrete02', web_t,
+                                 -float(fck), -0.002, -0.2 * float(fck), -0.006, 0.1, ft, ets)
+            ops.uniaxialMaterial('Concrete02', be_t,
+                                 -fck_be, -0.004, -0.2 * fck_be, -0.015, 0.1, ft, ets)
+            ops.uniaxialMaterial('Steel02', st_t,
+                                 float(fy), 200000.0, 0.01, 20.0, 0.925, 0.15)
+        except Exception:
+            pass
+        _mv_mat_cache[key] = (web_t, be_t, st_t)
+        return (web_t, be_t, st_t)
     # 노드별 elasticBeamColumn 연결 여부 — truss only 노드 식별용.
     node_has_beam: Dict[int, bool] = {}
     for _m in am.members.values():
@@ -440,6 +476,53 @@ def _step_register_members(om: OpsModel, am: AnalysisModel) -> None:
             ))
         next_tag += 1
 
+    # [2026-06-24 MVLEM] AnalysisModel.walls → MVLEM_3D 요소 등록.
+    #   4노드 반시계(하좌 n_bl→하우 n_br→상우 n_tr→상좌 n_tl, P1 검증된 순서).
+    #   전단재료는 wall 별 K=G·A/h (2D 검증서 발견: -matShear 는 N/mm 힘-변형 강성을
+    #   직접 받음 → G(MPa) 그대로 주면 안 됨). 경계 fiber=횡구속 콘크리트(_MV_CONC_BE).
+    from modular_3d.카탈로그.materials import RC_WALL_G_MPA as _GW
+    for wid, w in am.walls.items():
+        A_w = float(sum(w.fiber_widths)) * float(w.thickness)
+        h_w = abs(float(am.nodes[w.n_tl].coord[2] - am.nodes[w.n_bl].coord[2]))
+        K_sh = (_GW * A_w / h_w) if h_w > 1.0 else (_GW * A_w)
+        # 전단 재료 태그는 fiber 재료(9101~, 강도조합별)와 확실히 분리된 영역(90000~)을
+        #   쓴다 — 부재가 거의 없는 순수 코어 모델에서 wall id 가 작아도 fiber 재료 태그와
+        #   겹치지 않도록(점검 2026-06-29).
+        sh_tag = 90000 + wid
+        try:
+            ops.uniaxialMaterial('Elastic', sh_tag, K_sh)
+        except Exception:
+            pass
+        _cw, _cb, _cs = _mv_materials(w.fck, w.fy)
+        mat_conc = [_cb if c else _cw for c in w.fiber_confined]
+        mat_steel = [_cs] * int(w.m)
+        thick = [float(w.thickness)] * int(w.m)
+        try:
+            ops.element('MVLEM_3D', next_tag, w.n_bl, w.n_br, w.n_tr, w.n_tl, int(w.m),
+                        '-thick', *thick,
+                        '-width', *[float(x) for x in w.fiber_widths],
+                        '-rho', *[float(x) for x in w.fiber_rhos],
+                        '-matConcrete', *mat_conc, '-matSteel', *mat_steel,
+                        '-matShear', sh_tag, '-CoR', 0.4)
+            om.beam_elements[next_tag] = (w.n_bl, w.n_br, 'mvlem', w.role)
+            om.member_to_ele_tag[wid] = next_tag
+            om.core_ele_tags.append(next_tag)
+            # [2026-06-24 MVLEM] spec 무결성 검증(verify_against_opensees, 태그집합 비교)
+            #   통과용으로 BeamRec 에 mvlem 태그 기록. (kind='mvlem' 으로 표시 — BeamColumn
+            #   재현 경로가 이 Rec 을 elasticBeamColumn 으로 오인하지 않도록 P5 에서 점검.)
+            if om.spec is not None:
+                from modular_3d.analysis.model_spec import BeamRec as _BRW
+                om.spec.beams.append(_BRW(
+                    tag=next_tag, n1=w.n_bl, n2=w.n_tr, kind='mvlem', role=w.role,
+                    section_w=float(w.thickness),
+                    section_h=float(sum(w.fiber_widths)),
+                    section_t=float(w.thickness),
+                    source_comp_ids=list(w.source_comp_ids),
+                ))
+        except Exception as e:
+            om.registration_failures.append((wid, f'MVLEM_3D wall {wid}: {e}'))
+        next_tag += 1
+
     # [2026-05-18] truss-only 노드 자동 fix — 회전 + 면외(out-of-plane) 변위.
     # 코어벽 truss 격자는 한 평면(예: XZ) 안에서만 강성을 제공하므로 그 평면에
     # 수직인 방향(예: Y) 변위가 어떤 truss 에도 안 잡혀 mechanism 발생.
@@ -490,6 +573,25 @@ def _step_register_members(om: OpsModel, am: AnalysisModel) -> None:
                 # self_check 가 가시화하도록 누적.
                 om.registration_failures.append((nid, f'truss-only OOP fix: {e}'))
 
+    # [#3 파생] 코어 슬래브/천장 보 노드의 무지지 Uz fix — 이 보들은 다이어프램 면내만
+    #   구속돼 Uz 강성 0 → 행렬 특이(UmfPack solve 실패, 특정 형상서 등가정적도 발산).
+    #   코어 슬래브=강체라 수직 처짐 0 이 물리적이고, 자중은 코어벽 노드력(_apply_eleload_
+    #   factored)으로 전달되므로 fix 가 거동에 무관(특이만 제거). 횡력은 면내 다이어프램.
+    _slab_uz_nids: Set[int] = set()
+    for _sm in am.members.values():
+        if getattr(_sm, 'role', None) in ('core_slab_beam', 'core_ceiling_runner'):
+            _slab_uz_nids.update((_sm.n1, _sm.n2))
+    for _snid in _slab_uz_nids:
+        if _snid not in om.node_tags:
+            continue
+        try:
+            ops.fix(_snid, 0, 0, 1, 0, 0, 0)
+            if om.spec is not None:
+                from modular_3d.analysis.model_spec import FixRec
+                om.spec.fixes.append(FixRec(tag=_snid, dofs=(0, 0, 1, 0, 0, 0)))
+        except Exception as e:
+            om.registration_failures.append((_snid, f'core_slab Uz fix: {e}'))
+
 
 def _step_fix_base_nodes(om: OpsModel, am: AnalysisModel) -> None:
     """5) 베이스 지점 — z_min 의 모든 기둥 base + 코어 셸 하단 노드 → 6DOF 고정.
@@ -528,14 +630,20 @@ def _step_fix_base_nodes(om: OpsModel, am: AnalysisModel) -> None:
                 n = am.nodes[nid]
                 if abs(n.coord[2] - z_min) <= _SAME_NODE_TOL:
                     base_set.add(n.id)
-    # [2026-06-03] 코어 노드 전부 6DOF 고정 — 코어를 '바닥처럼 안 움직이는' 고정
-    # 경계로 본다(트러스 격자 폐기). role 이 core_ 로 시작하는 모든 부재(슬래브 보
-    # 포함)의 노드를 고정해 코어가 강체 지지가 되고, R09(코어=master)로 묶인 모듈의
-    # 횡변위가 구속된다. R09 가 코어를 master(retained)로 쓰므로 fix 와 충돌 없음.
-    for m in am.members.values():
-        if str(getattr(m, 'role', '') or '').startswith('core_'):
-            for nid in (m.n1, m.n2):
-                if nid in am.nodes:
+    # [2026-06-24 MVLEM] 코어 전노드 6DOF 고정(옛 고정경계 2026-06-03)을 폐기한다 →
+    #   코어벽이 변형해야 비선형 거동을 갖는다. 대신 walls 의 '베이스 노드'(코어 최하단
+    #   z 근처)만 6DOF 고정한다. 코어슬래브 막대 노드는 고정 안 함(자체강성+다이어프램+
+    #   wall 상단 지지). [함정] 모듈 베이스 z(예 -100)와 코어 베이스 z(0)가 달라 전역
+    #   z_min 이 아닌 'walls 노드 중 최소 z'를 코어 베이스로 봐야 베이스가 누락되지 않는다.
+    _wall_zs = [float(am.nodes[nid].coord[2])
+                for w in am.walls.values()
+                for nid in (w.n_bl, w.n_br, w.n_tr, w.n_tl) if nid in am.nodes]
+    if _wall_zs:
+        wall_z_min = min(_wall_zs)
+        for w in am.walls.values():
+            for nid in (w.n_bl, w.n_br, w.n_tr, w.n_tl):
+                if (nid in am.nodes
+                        and abs(float(am.nodes[nid].coord[2]) - wall_z_min) <= _SAME_NODE_TOL):
                     base_set.add(nid)
 
     from modular_3d.analysis.model_spec import FixRec as _FR

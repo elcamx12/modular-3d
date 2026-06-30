@@ -288,6 +288,8 @@ def _build_members_from_section_types(
                 "count": cnt,
                 "sections": ", ".join(secs) if secs else
                             (str(t.get("summary", "") or "—")),
+                # [2026-06-08] 종합 탭에서 내벽 제외용 표식(데이터는 유지 → 비교탭 영향 없음).
+                "is_interior": isinstance(rep, InteriorWall),
             })
         # CoreSlab 등은 패널 목록에서 제외.
 
@@ -424,6 +426,8 @@ def _build_members(comps: List[Component]) -> Dict[str, Any]:
                 "depth_m": round(b_mm / 1000.0, 2),
                 "count": int(n),
                 "sections": ", ".join(secs) if secs else "—",
+                # [2026-06-08] 종합 탭에서 내벽 제외용 표식(데이터는 유지 → 비교탭 영향 없음).
+                "is_interior": (label == "내벽"),
             })
 
     attached = {

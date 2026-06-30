@@ -34,8 +34,13 @@ FP_SUPPORT_TOL_Z = 500.0
 SNAP_TRIGGER_MM = 100.0
 # 2D 캔버스 호버 시 부재 꼭지점 스냅 허용 반경 (mm).
 HOVER_SNAP_RADIUS_MM = 300.0
-# 2D 캔버스 그리드 스냅 단위.
-GRID_SNAP_MM = 100.0
+# 2D/3D 캔버스 격자 스냅 단위 — 부재 배치·이동·실 그리기·불러오기 재정렬의
+# 단일 진실원천. 빈 공간(꼭짓점/모서리/자동 갭 스냅에 안 걸릴 때) 폴백 격자.
+# [2026-06-24] 사용자 요청: 100mm → 5mm 미세 배치. 자동 갭(20mm)은 별개로 유지.
+# 함정: 이 값을 쓰는 곳이 alignment_paint(_f5_world_snap)·alignment_view(_room_snap)
+#        ·controls/__init__(MOVING/PLACEMENT_PREVIEW)·scene_io(로드 재정렬) 5계열이다.
+#        하드코딩 100.0 으로 되돌리지 말 것 — 반드시 이 상수를 import 해서 쓴다.
+GRID_SNAP_MM = 5.0
 
 # ── 사용자 신규 접합(add) 끝점 인식·분할 허용 거리 ────────
 # 접합부 설계 탭에서 사용자가 보 위 점을 클릭해 신규 접합을 추가할 때,
